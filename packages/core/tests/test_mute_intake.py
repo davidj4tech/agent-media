@@ -177,4 +177,9 @@ def test_unmuted_stream_plays_and_the_card_follows(state_env, monkeypatch):
     assert rid is not None
     assert sink.plays >= 1
     assert coord.before == 1
-    assert lines[:2] == ["First sentence here.", "Second one here."]
+    # Opens on the first sentence, then follows the voice. The clip loop marks
+    # every clip it plays, the first included, so the first line is said
+    # twice (before_speech, then speaking_line) — as on a finished reply.
+    assert lines[0] == "First sentence here."
+    assert [s for k, s in enumerate(lines) if k == 0 or s != lines[k - 1]] == [
+        "First sentence here.", "Second one here."]

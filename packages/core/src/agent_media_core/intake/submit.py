@@ -3063,6 +3063,12 @@ class _MuteDuckWatcher:
             self._coord.reapply_music_duck()
 
 
+# How long the history write waits for a streamed reply's source to finish
+# once playback is over (a cut, a supersede, a flush): the same bound a
+# finished reply's renders get. Past it the reply is archived as far as it got.
+_STREAM_ARCHIVE_WAIT_S = 120.0
+
+
 def _render_workers(n_sentences: int) -> int:
     """How many sentence renders may be in flight at once.
 
@@ -3095,9 +3101,11 @@ def _stream_clips(target: Target) -> bool:
     — when the first one was ready in well under a second.
 
     Remote-playlist targets only (the phone, which is where replies go). The
-    per-sentence local path would have to be taught to wait mid-loop for a clip
-    that has not rendered yet; the playlist path just appends, and the player
-    advances into the new items by itself.
+    per-sentence local path can wait mid-loop for a clip that has not rendered
+    yet — a streamed reply (`submit_stream`) does, on every target — but a
+    finished reply on it has never been asked to, and is left as it was; the
+    playlist path just appends, and the player advances into the new items by
+    itself.
 
     The cost, and the reason for the flag: `clip_durations_s` and the offsets
     behind `play_started_at + clip_starts_s` stop being known up front and
@@ -3899,11 +3907,39 @@ def _submit_event(event: Event,
                   *,
                   state: Optional[StateStore] = None,
                   coordinator: Optional[Coordinator] = None,
-                  sink: Optional[SinkSpeech] = None) -> Optional[int]:
-    """The body of `submit_event`, run with connection reuse on."""
-    text = event.text.strip()
-    if not text:
-        return None
+                  sink: Optional[SinkSpeech] = None,
+                  source=None) -> Optional[int]:
+    """The body of `submit_event` and `submit_stream`, run with connection
+    reuse on.
+
+    `source` is None for a finished reply: its sentences are split from
+    `event.text`, all known before anything is rendered. A streamed reply
+    (`submit_stream`) passes the iterable its sentences arrive from instead,
+    while the model is still writing them, and `event.text` is not read. Both
+    then run the same clip loop, which is the point of the one body: the
+    streaming lane used to be a second copy of it, and drifted — it had no
+    speech hold, no flush, no paragraph map, a different highlight rule, and
+    for two months a NameError on its first word that nobody heard (36dc6fc).
+    """
+    # Whether the sentences are still arriving. Everything the reply needs the
+    # whole text for up front — the gate's words, a silenced record, the
+    # remote-say bridge — gathers the source first, and from then on it is an
+    # iterator over a list that is already complete.
+    arriving = source is not None
+    if arriving:
+        text = ""
+    else:
+        text = event.text.strip()
+        if not text:
+            return None
+
+    def _gather() -> str:
+        """The streamed reply's whole text, waiting for the model to finish
+        it. Only for the branches that cannot speak without every word."""
+        nonlocal source
+        if not isinstance(source, list):
+            source = [s for s in source if s and s.strip()]
+        return " ".join(source)
 
     state = state or StateStore()
     coordinator = coordinator or Coordinator(state=state)
@@ -3915,25 +3951,53 @@ def _submit_event(event: Event,
     # The external speech gate (MEDIA_SPEECH_GATE_CMD; on red5 the
     # PHS-treatment rule). First, before anything is rendered, and closed on
     # failure. The gate keeps what it holds; history keeps the words.
-    if (not (event.metadata or {}).get("held")
-            and _gate_hold(target, _gate_text(state, event, text))):
-        return _record_silenced(state, event, target, text, None, "gate")
+    #
+    # A streamed reply asks first without the words: when the gate says speak
+    # there is nothing to wait for, and waiting for the words is waiting for
+    # the model to finish, which is the one thing streaming exists to avoid.
+    # On a hold it gathers the reply and asks again — the words may change
+    # its mind.
+    if not (event.metadata or {}).get("held"):
+        if arriving:
+            if (_gate_hold(target)
+                    and _gate_hold(target, _gate_text(state, event, _gather()))):
+                return _record_silenced(state, event, target, _gather(),
+                                        None, "gate")
+        elif _gate_hold(target, _gate_text(state, event, text)):
+            return _record_silenced(state, event, target, text, None, "gate")
 
     # The device asked for quiet, and this is an alert nobody asked for. Held
     # before the render, not after: unlike a muted pane there is nothing to
     # replay a clip *for* once the moment has gone, and the words survive in
-    # history either way. See `_ringer_silenced`.
+    # history either way. See `_ringer_silenced`. (A streamed reply is
+    # gathered only on this branch: being held is the one case where every
+    # word is needed before anything is decided.)
     held = _ringer_hold(target, event)
     if held:
-        return _record_silenced(state, event, target, text, held)
+        return _record_silenced(state, event, target,
+                                _gather() if arriving else text, held)
 
     # David is busy (free.py: a call, a quiet phone, a meeting, "busy for an
     # hour"). An alert is written down unspoken, as above; a reply is held
     # with a Play. Both are what the catch-up will read.
-    busy = _busy_hold(target, event, text[:300])
+    #
+    # A streamed reply asks free.py first, and is gathered only when busy is
+    # possible at all: a held reply is never played, so there is nothing to
+    # stream, and Jev needs its words.
+    if arriving:
+        try:
+            from .. import free as _free
+            _maybe_busy = not _free.answer()["free"]
+        except Exception:  # noqa: BLE001
+            _maybe_busy = False
+        busy = (_busy_hold(target, event, _gather()[:300])
+                if _maybe_busy else None)
+    else:
+        busy = _busy_hold(target, event, text[:300])
     if busy:
         if (event.metadata or {}).get("alert"):
-            return _record_silenced(state, event, target, text, busy, "busy")
+            return _record_silenced(state, event, target,
+                                    _gather() if arriving else text, busy, "busy")
         _hold_for_busy(event)
 
     # Remote-say bridge: on a headless feeder host (e.g. red5) whose rooms now
@@ -3945,7 +4009,8 @@ def _submit_event(event: Event,
     # lane for this target ⇒ the local render+play path below is unchanged.
     remote_say = _remote_say_cmd(target)
     if remote_say:
-        return _submit_remote_say(text, remote_say, coordinator, state, event)
+        return _submit_remote_say(_gather() if arriving else text, remote_say,
+                                  coordinator, state, event)
 
     engine, voice = _engine_and_voice(event, target)
     ext = _ext_for(engine)
@@ -4048,33 +4113,118 @@ def _submit_event(event: Event,
     if not muted:
         coordinator.pre_pause_remote()
 
-    sentences, sent_para = _split_sentences_with_paragraphs(text)
+    # The reply's sentences, and for each its paragraph, its clip's path and
+    # its render. Index i of all four is sentence i. A finished reply knows
+    # them all here; a streamed one learns them as the model writes them, from
+    # the feeder thread below, and `_sentence(i)` is how everything after
+    # this waits for one that may still be coming. Guarded by `_src_cond`
+    # only while they can grow.
+    _src_cond = threading.Condition()
+    _src_done = threading.Event()   # no sentence will be added after these
 
-    # Submit the sentence renders in order into a BOUNDED pool: the early
-    # sentences land first, and crowding the engine only delays them (see
-    # _render_workers). Without MEDIA_STREAM_CLIPS nothing plays until every
-    # one of them is done, so the order matters only for the streaming path.
-    outfiles = [
-        audio_dir / f"{stamp}--{event.source.value}--{i:03d}.{ext}"
-        for i in range(len(sentences))
-    ]
-    executor = concurrent.futures.ThreadPoolExecutor(
-        max_workers=_render_workers(len(sentences)))
-    futures = [
-        executor.submit(renderer, sentence, outfile,
-                        engine=engine, voice=voice, on_fallback=_on_fallback)
-        for sentence, outfile in zip(sentences, outfiles)
-    ]
-    executor.shutdown(wait=False)  # don't block; futures stay live
+    if not arriving:
+        sentences, sent_para = _split_sentences_with_paragraphs(text)
+
+        # Submit the sentence renders in order into a BOUNDED pool: the early
+        # sentences land first, and crowding the engine only delays them (see
+        # _render_workers). Without MEDIA_STREAM_CLIPS nothing plays until
+        # every one of them is done, so the order matters only for the
+        # streaming path.
+        outfiles = [
+            audio_dir / f"{stamp}--{event.source.value}--{i:03d}.{ext}"
+            for i in range(len(sentences))
+        ]
+        executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=_render_workers(len(sentences)))
+        futures = [
+            executor.submit(renderer, sentence, outfile,
+                            engine=engine, voice=voice, on_fallback=_on_fallback)
+            for sentence, outfile in zip(sentences, outfiles)
+        ]
+        executor.shutdown(wait=False)  # don't block; futures stay live
+        _src_done.set()
+    else:
+        sentences, sent_para, outfiles, futures = [], [], [], []
+        # The count is unknown, so the pool is sized by its own knob rather
+        # than by _render_workers. Each sentence is submitted the moment it
+        # arrives; a model writes far slower than the engine renders, so the
+        # pool is rarely more than one deep.
+        try:
+            _stream_workers = max(1, int(
+                os.environ.get("MEDIA_STREAM_RENDER_WORKERS", "3") or 3))
+        except ValueError:
+            _stream_workers = 3
+        executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=_stream_workers)
+        _feed_from = iter(source)
+
+        def _feed() -> None:
+            try:
+                for s in _feed_from:
+                    if not s or not s.strip():
+                        continue
+                    with _src_cond:
+                        outfile = (audio_dir / f"{stamp}--{event.source.value}"
+                                   f"--{len(sentences):03d}.{ext}")
+                        futures.append(executor.submit(
+                            renderer, s, outfile, engine=engine, voice=voice,
+                            on_fallback=_on_fallback))
+                        outfiles.append(outfile)
+                        # A sentencer fed by token deltas does not say where
+                        # paragraphs break: the reply is one paragraph.
+                        sent_para.append(0)
+                        sentences.append(s)
+                        _src_cond.notify_all()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("intake: streamed sentence source raised: %s", exc)
+            finally:
+                executor.shutdown(wait=False)
+                with _src_cond:
+                    _src_done.set()
+                    _src_cond.notify_all()
+
+        threading.Thread(target=_feed, name="speech-source",
+                         daemon=True).start()
+
+    def _sentence(i: int) -> bool:
+        """Whether sentence `i` exists — waiting for it while the source may
+        still produce it. Immediate for a finished reply."""
+        if _src_done.is_set():
+            return i < len(sentences)
+        with _src_cond:
+            while i >= len(sentences) and not _src_done.is_set():
+                _src_cond.wait(timeout=0.5)
+            return i < len(sentences)
+
+    def _text() -> str:
+        """The reply's text: the whole of it for a finished reply, the
+        sentences so far for one still arriving."""
+        if not arriving:
+            return text
+        with _src_cond:
+            return " ".join(sentences)
+
+    if arriving and not _sentence(0):
+        # The model said nothing speakable. Nothing rendered, nothing to
+        # archive: the same way out as a reply whose every render failed.
+        playback_lock.release()
+        if not muted:
+            coordinator.cancel_pre_pause()
+        return None
 
     # First clip path for sidecar / now_playing (render may still be in flight).
     first_clip = outfiles[0]
 
-    # Sidecar lives next to the first clip so the popup can show the full text.
-    try:
-        first_clip.with_suffix(".txt").write_text(text)
-    except OSError as e:  # noqa: BLE001
-        log.warning("intake: text sidecar write failed: %s", e)
+    def _write_sidecar() -> None:
+        # Sidecar lives next to the first clip so the popup can show the full
+        # text — for a streamed reply, the running text, rewritten as each
+        # sentence lands and once more when it is archived.
+        try:
+            first_clip.with_suffix(".txt").write_text(_text())
+        except OSError as e:  # noqa: BLE001
+            log.warning("intake: text sidecar write failed: %s", e)
+
+    _write_sidecar()
 
     do_highlight = _highlight_wanted(event, os.environ.get("TMUX_PANE") or "")
     # Not gated on do_highlight: the keystroke skip exists because grabbing
@@ -4089,7 +4239,11 @@ def _submit_event(event: Event,
     # Without streaming this resolves every future before anything plays, so
     # the reply waits on its SLOWEST sentence. With MEDIA_STREAM_CLIPS it waits
     # only for a lead of contiguous audio and the rest arrive during playback.
-    stream = _stream_clips(target) and not muted
+    #
+    # A streamed reply always streams (unless muted, which waits for every
+    # sentence and plays none): waiting for its slowest render would be
+    # waiting for the model to finish.
+    stream = (_stream_clips(target) or arriving) and not muted
     clip_data: list[tuple[str, Path]] = []  # (sentence, clip_path)
     clip_para: list[int] = []               # paragraph index per surviving clip
     durations: list[float] = []
@@ -4097,9 +4251,35 @@ def _submit_event(event: Event,
     _clip_sentences: list[str] = []
     # Held for the multi-list update only: the follow loop reads these lists
     # while the streaming thread appends to them, and a reader must never see
-    # a clip that has no duration yet.
+    # a clip that has no duration yet. A condition on that same lock is how
+    # the per-sentence loop waits for a clip that is still rendering.
     _clip_lock = threading.Lock()
+    _clip_cond = threading.Condition(_clip_lock)
     _rest_done = threading.Event()
+
+    def _rest_finished() -> None:
+        """Every sentence is resolved: say so, and wake a waiting clip loop."""
+        _rest_done.set()
+        with _clip_cond:
+            _clip_cond.notify_all()
+
+    # Set when a streamed reply is archived before its source finished (see
+    # _settle_rest_now): the row holds what had arrived, and says so.
+    _truncated = threading.Event()
+
+    def _clip_ready(i: int, give_up=None) -> bool:
+        """Whether clip `i` is in the reply — waiting for it while sentences
+        are still being resolved. Immediate once they all are.
+
+        `give_up`, asked every half second of waiting, ends the wait early
+        (False): a cut or a supersede should not have to wait for the model's
+        next sentence to be noticed."""
+        with _clip_cond:
+            while i >= len(clip_data) and not _rest_done.is_set():
+                if give_up is not None and give_up():
+                    break
+                _clip_cond.wait(timeout=0.5)
+            return i < len(clip_data)
 
     def _adopt(i: int) -> bool:
         """Resolve render `i` and add its clip to the reply. False if it failed."""
@@ -4132,6 +4312,9 @@ def _submit_event(event: Event,
             clip_para.append(sent_para[i])
             durations.append(dur)
             _clip_sentences.append(sentences[i])
+            _clip_cond.notify_all()
+        if arriving:
+            _write_sidecar()    # the popup shows the response as it grows
         return True
 
     # Set once the reply's first clips are in hand — the claim thread's
@@ -4149,17 +4332,23 @@ def _submit_event(event: Event,
             lead_s = float(os.environ.get("MEDIA_STREAM_LEAD_S", "6"))
         except ValueError:
             lead_s = 6.0
-        while lead_n < len(sentences):
+        if arriving:
+            # A reply still being written starts on its first clip. The lead
+            # covers renders that finish behind the voice; here what comes
+            # next is waiting on the model, and seconds of lead would be
+            # seconds of the model writing before a word is heard. An
+            # underrun is the follow loop's to restart (see `idle-active`).
+            lead_s = 0.0
+        while _sentence(lead_n):
             _adopt(lead_n)
             lead_n += 1
-            if sum(durations) >= lead_s:
+            if clip_data and sum(durations) >= lead_s:
                 break
-        if not clip_data:
-            for i in range(lead_n, len(sentences)):
-                _adopt(i)
-            lead_n = len(sentences)
-        if lead_n >= len(sentences):
-            _rest_done.set()        # the lead was the whole reply
+        # The loop does not stop before it has a clip, so a lead whose every
+        # sentence failed has already gone on to the ones behind it, which
+        # may still be fine.
+        if _src_done.is_set() and lead_n >= len(sentences):
+            _rest_finished()        # the lead was the whole reply
         _lead_ready.set()
 
     if stream:
@@ -4169,11 +4358,15 @@ def _submit_event(event: Event,
         # a whole first sentence (1.3s, 21 Sep) in series ahead of them.
         lead_n = 0
     else:
-        lead_n = len(sentences)
         _rest_done.set()
         _lead_ready.set()
-        for sentence, pi, outfile, future in zip(sentences, sent_para,
-                                                 outfiles, futures):
+        # Every sentence, in order — for a muted streamed reply, waiting for
+        # each as the model writes it.
+        _k = 0
+        while _sentence(_k):
+            sentence, pi, outfile, future = (sentences[_k], sent_para[_k],
+                                             outfiles[_k], futures[_k])
+            _k += 1
             try:
                 ok, err = future.result()
             except Exception as exc:  # noqa: BLE001
@@ -4196,6 +4389,7 @@ def _submit_event(event: Event,
                     pass
             clip_data.append((sentence, clip_path))
             clip_para.append(pi)
+        lead_n = len(sentences)
 
         # Compute per-clip offsets for a single spanning progress bar. ffprobe is a
         # subprocess per clip; probe them in parallel so a multi-sentence reply
@@ -4239,7 +4433,9 @@ def _submit_event(event: Event,
         grows under a reply that is already being spoken.
         """
         try:
-            for i in range(lead_n, len(sentences)):
+            i = lead_n - 1
+            while _sentence(i + 1):
+                i += 1
                 if not _adopt(i) or player is None:
                     continue
                 with _clip_lock:
@@ -4264,14 +4460,35 @@ def _submit_event(event: Event,
                     except Exception as e:  # noqa: BLE001 — rendered and archived
                         log.warning("intake: append_clips failed: %s", e)
         finally:
-            _rest_done.set()
+            _rest_finished()
 
     _rest_thread: Optional[threading.Thread] = None
 
     def _settle_rest_now() -> None:
         """Make sure every sentence has been resolved before the reply is
-        recorded — a reply whose audio ended early is still archived whole."""
+        recorded — a reply whose audio ended early is still archived whole.
+
+        For a streamed reply that means waiting for the model to finish
+        writing — but no longer than a finished reply waits for its renders
+        (_STREAM_ARCHIVE_WAIT_S). A model that hangs after the listener cut
+        it off must not hold the hook open for ever: past the limit the reply
+        is archived as far as it got, marked `truncated`, and the threads
+        still waiting on the source are daemons, so they do not keep the
+        process alive behind it."""
         if _rest_done.is_set():
+            return
+        if arriving:
+            t = _rest_thread
+            if t is None:
+                t = threading.Thread(target=_settle_rest,
+                                     name="speech-stream", daemon=True)
+                t.start()
+            t.join(timeout=_STREAM_ARCHIVE_WAIT_S)
+            if not _rest_done.is_set():
+                _truncated.set()
+                log.warning("intake: streamed reply still arriving after "
+                            "%ss; archiving the %d sentence(s) it has",
+                            _STREAM_ARCHIVE_WAIT_S, len(sentences))
             return
         if _rest_thread is not None:
             _rest_thread.join(timeout=120)
@@ -4314,6 +4531,21 @@ def _submit_event(event: Event,
                   "clip_durations_s": durations,
                   "clip_paragraph_idx": clip_para,
                   **(event.metadata or {})}
+        if arriving:
+            # Spoken while it was still being written (submit_stream).
+            extras["streaming"] = True
+            if _truncated.is_set():
+                # The source never finished (see _settle_rest_now), and the
+                # thread resolving it may still append: the row takes one
+                # consistent copy of what is here, and says it is partial.
+                with _clip_lock:
+                    extras.update({
+                        "clip_uris": [str(p) for _, p in clip_data],
+                        "clip_sentences": list(_clip_sentences),
+                        "clip_durations_s": list(durations),
+                        "clip_paragraph_idx": list(clip_para)})
+                extras["truncated"] = True
+            _write_sidecar()    # as much of it as there is
         # Where each sentence actually began, when the reply played far enough
         # to measure it. Summed durations count from submit and leave out the
         # gaps between clips, so a reader handed only those bolds ahead of the
@@ -4352,7 +4584,7 @@ def _submit_event(event: Event,
             ended_at=time.time(),
             target=target.name,
             source=event.source.value,
-            text=text,
+            text=_text(),
             extras=extras,
         )
         # The turn just ended, which is the only moment anything knows the
@@ -4590,7 +4822,7 @@ def _submit_event(event: Event,
             # Speech-started breadcrumb — the moment we commit to feeding the
             # broker. Its "end" twin is in the finally below, so every exit
             # (finished, superseded, yielded-then-done, error) closes the pair.
-            _speech_event("start", text=text[:400], session=source_session,
+            _speech_event("start", text=_text()[:400], session=source_session,
                           pane=source_pane, source=event.source.value,
                           target=target.name)
             mute_watcher = _MuteDuckWatcher(sink, target, coordinator)
@@ -4652,11 +4884,28 @@ def _submit_event(event: Event,
             # Shared per-clip marker — drives the popup (status bar, current
             # sentence, skip map). Identical for both playback paths below.
             def _mark(idx: int, live: Optional[dict] = None) -> None:
+                # One consistent view of the clip lists: a streaming reply
+                # appends to them from another thread, and a row whose
+                # sentences, clips and durations disagree in length is one a
+                # reader cannot line up. They only ever grow, so cutting each
+                # to the shortest is that view — without `_clip_lock`, which
+                # the tail holds across an append to the phone, a round trip
+                # this follow-along must not wait on.
                 sentence_i, clip_i = clip_data[idx]
-                extras = {"text": text, "source": event.source.value,
+                m = min(len(clip_data), len(clip_para), len(durations),
+                        len(_clip_sentences))
+                clip_uris = [str(p) for _, p in clip_data[:m]]
+                clip_sents = _clip_sentences[:m]
+                clip_paras = clip_para[:m]
+                clip_durs = durations[:m]
+                total_s = sum(clip_durs)
+                offset_s = offsets[idx]
+                extras = {"text": _text(), "source": event.source.value,
                           "engine": engine, "voice": voice,
-                          "clip_offset_s": offsets[idx],
-                          "total_duration_s": total_duration_s,
+                          "clip_offset_s": offset_s,
+                          # Grows as a streamed reply's clips land: its whole
+                          # length is not known until the model is done.
+                          "total_duration_s": total_s,
                           "source_pane": source_pane,
                           "source_session": source_session,
                           "source_tmux_session": source_tmux_session,
@@ -4664,16 +4913,20 @@ def _submit_event(event: Event,
                           "source_title": reply_title,
                           "current_sentence": sentence_i,
                           "current_sentence_idx": idx,
-                          "clip_paragraph_idx": clip_para,
-                          "clip_sentences": _clip_sentences,
-                          # The whole turn's clips, known up front on this
-                          # lane. History records them only when the turn
-                          # ends, so this is what lets the turn you are
-                          # hearing be replayed (popup `r` / `<`) instead of
-                          # the one before it.
-                          "clip_uris": [str(p) for _, p in clip_data],
-                          "clip_durations_s": list(durations),
+                          "clip_paragraph_idx": clip_paras,
+                          "clip_sentences": clip_sents,
+                          # The turn's clips — the whole of them on a finished
+                          # reply, the ones rendered so far on a streamed one.
+                          # History records them only when the turn ends, so
+                          # this is what lets the turn you are hearing be
+                          # replayed (popup `r` / `<`) instead of the one
+                          # before it; mid-stream, replaying what has been
+                          # spoken is still the right answer to "again".
+                          "clip_uris": clip_uris,
+                          "clip_durations_s": clip_durs,
                           "writer_pid": os.getpid()}
+                if arriving:
+                    extras["streaming"] = True
                 # Figure-bearing message ([[visual:]]/[[reveal:]]): surfaces as
                 # the ▣ indicator in the status bar / popup / canvas badge.
                 if event.metadata.get("visual"):
@@ -4689,8 +4942,8 @@ def _submit_event(event: Event,
                     # bridge round-trip to the phone. Timeline position = the start
                     # of this clip plus how far mpv is into it.
                     tp = live.get("time-pos")
-                    extras["live_pos_s"] = (offsets[idx] + tp
-                                            if tp is not None else offsets[idx])
+                    extras["live_pos_s"] = (offset_s + tp
+                                            if tp is not None else offset_s)
                     # When it was read. A position without one is only true at
                     # the instant it was taken, and this lane takes one per
                     # sentence — on the gapless playlist, where the player
@@ -4713,9 +4966,9 @@ def _submit_event(event: Event,
                     if isinstance(d, (int, float)) and d > 0 and at == idx:
                         mark_clock["audio"][idx] = float(d) / max(
                             0.1, float(live.get("speed") or 1.0))
-                heard = durations
+                heard = clip_durs
                 if mark_clock["audio"]:
-                    heard = heard_durations(durations, mark_clock["audio"],
+                    heard = heard_durations(clip_durs, mark_clock["audio"],
                                             mark_clock["starts"])
                     extras["clip_durations_s"] = heard
                 wall_position(idx, live, extras, heard)
@@ -5230,9 +5483,35 @@ def _submit_event(event: Event,
                                         mark_i + 1)
                             left_paused_at = mark_i
             else:
+                # Per-sentence playback. A streaming reply resolves the
+                # sentences behind its lead beside this loop, and the loop
+                # waits at `_clip_ready` for each clip that has not landed yet
+                # — a render still running, or (submit_stream) a sentence the
+                # model has not written. A finished, unstreamed reply has every
+                # clip already, and never waits there.
+                if stream and not _rest_done.is_set():
+                    _rest_thread = threading.Thread(
+                        target=_settle_rest, name="speech-stream", daemon=True)
+                    _rest_thread.start()
+                def _stopping() -> bool:
+                    # The two checks at the head of the loop, asked while it
+                    # waits for a clip the model has not written yet.
+                    return (playback_lock.should_abort()
+                            or _speech_cut(source_session, started_at,
+                                           playing=True, ask=source_ask))
+
                 i = 0
                 nav_jump = False  # True when this clip was reached via a popup skip
-                while 0 <= i < n:
+                while i >= 0:
+                    # Given up on only for a cut or a supersede, which the
+                    # checks below then act on; otherwise there is no clip i
+                    # and never will be, and the reply is over.
+                    # (Asked only while sentences are still arriving: a reply
+                    # that has simply played its last clip ends here, as it
+                    # always did, whatever is cut after it.)
+                    if not _clip_ready(i, give_up=_stopping) and (
+                            _rest_done.is_set() or not _stopping()):
+                        break
                     # Superseded by a later URGENT in this session — drop the
                     # remaining sentences instead of yielding-and-resuming.
                     # Or stopped from the app (`all` cut): the same drop.
@@ -5252,6 +5531,8 @@ def _submit_event(event: Event,
                     # (e.g. a notification) is waiting; resume it once that's done.
                     if playback_lock.should_yield():
                         playback_lock.yield_to_higher()
+                    if i >= len(clip_data):
+                        break   # gave up waiting, and the checks let it be
                     sentence, clip_path = clip_data[i]
                     _mark(i)
                     try:
@@ -5276,10 +5557,20 @@ def _submit_event(event: Event,
                         nav_jump = False
                     else:
                         # Popup sentence/paragraph jump; past the last clip = end.
-                        if nav >= n:
+                        # Read once the rest are in: `n` was taken before them.
+                        rest_was_done = _rest_done.is_set()
+                        n = len(clip_data)
+                        if nav >= n and rest_was_done:
                             highlighter.cancel_pending()
                             ended_by_cut = True
                             break
+                        if nav >= n:
+                            # Past the end of a reply that is still arriving:
+                            # there is no end to skip to yet, so go on with
+                            # whatever lands next.
+                            i = n
+                            nav_jump = False
+                            continue
                         i = max(0, nav)
                         nav_jump = True
             if ended_by_cut:
@@ -5294,7 +5585,7 @@ def _submit_event(event: Event,
             # restore that ran first would leave the music paused for good.
             _before_thread.join()
             coordinator.after_speech()
-            _speech_event("end", text=text[:160], session=source_session,
+            _speech_event("end", text=_text()[:160], session=source_session,
                           pane=source_pane, source=event.source.value,
                           target=target.name, played=bool(played_any))
             state.clear_now_playing("speech")
@@ -5317,6 +5608,8 @@ def _submit_event(event: Event,
     return _archive()
 
 
+
+
 def submit_stream(sentences,
                   event: Event,
                   *,
@@ -5327,482 +5620,24 @@ def submit_stream(sentences,
 
     `sentences` is an iterable yielding cleaned sentence strings as a producer
     (e.g. a model's token stream) completes them. Each sentence is rendered the
-    instant it arrives and played in order through the same long-running
-    sink-speech broker, so audio for sentence 1 starts while the model is still
-    generating the rest — the key win over `submit_event`, which needs the
-    whole reply first.
+    instant it arrives and played in order, so audio for sentence 1 starts
+    while the model is still generating the rest — the key win over
+    `submit_event`, which needs the whole reply first. `event.text` is not
+    read; the reply's text is the sentences.
 
-    Remote players are paused/resumed once (not per sentence). Best-effort
-    karaoke highlight + back/forward nav over already-spoken sentences; the
-    response-wide progress bar grows as sentences arrive (total length isn't
-    known up front). One history row is written at the end.
+    It is the same reply as `submit_event`'s, through the same clip loop — the
+    card, the speech hold and flush, cuts, supersede and yield, nav jumps, the
+    follow-along clock, mute and the one history row. What differs is only
+    what has to: the gate is asked without the words first, the reply always
+    starts on its first clip rather than on a lead, the progress bar grows as
+    sentences land (the total is unknown up front), and the row is marked
+    `streaming`. See `_submit_event`.
 
     Blocks until the producer is exhausted and all clips finish. Callers that
     need fire-and-forget should run this in a thread.
     """
-    from ..types import Source as _Source
-
-    state = state or StateStore()
-    coordinator = coordinator or Coordinator(state=state)
-    sink = sink or SinkSpeech()
-    # The listener's pick (`media speech-target`) when there is one, else the
-    # env default. Resolved once, here: the reply keeps it to the end.
-    target = event.target or Target(name=audio_targets.speech_default())
-
-    # The speech gate, as in `_submit_event`. Asked first without the words
-    # (nothing to wait for when it says speak); on a hold the reply is gathered
-    # and handed over, and asked again — it may have changed its mind.
-    if not (event.metadata or {}).get("held") and _gate_hold(target):
-        sentences = list(sentences)
-        if _gate_hold(target, _gate_text(state, event, " ".join(sentences))):
-            return _record_silenced(state, event, target,
-                                    " ".join(sentences), None, "gate")
-
-    # The device asked for quiet, and this is an alert nobody asked for. Held
-    # before the render, not after: unlike a muted pane there is nothing to
-    # replay a clip *for* once the moment has gone, and the words survive in
-    # history either way. See `_ringer_silenced`.
-    held = _ringer_hold(target, event)
-    if held:
-        # `sentences` is consumed only on this branch — the streaming path's
-        # whole point is not to wait for the producer, and an alert being held
-        # is the one case where we need every word before deciding anything.
-        return _record_silenced(state, event, target,
-                                " ".join(sentences), held)
-
-    # Busy, as in `_submit_event`. Only consulted when busy is possible at
-    # all; then the reply is gathered first: a held reply is never played,
-    # so there is nothing to stream, and Jev needs its words.
-    try:
-        from .. import free as _free
-        _maybe_busy = not _free.answer()["free"]
-    except Exception:  # noqa: BLE001
-        _maybe_busy = False
-    if _maybe_busy:
-        sentences = list(sentences)
-        busy = _busy_hold(target, event, " ".join(sentences)[:300])
-        if busy:
-            if (event.metadata or {}).get("alert"):
-                return _record_silenced(state, event, target,
-                                        " ".join(sentences), busy, "busy")
-            _hold_for_busy(event)
-
-    # Remote-say bridge: on a headless feeder host (e.g. red5) whose rooms now
-    # listen to a remote low-latency Snapcast hub, render the
-    # reply *there* instead of locally — the hub renders the text to its own
-    # Snapcast fifo. The coordinator still ducks from here (it drives the rooms
-    # snapserver over the tailnet via MEDIA_SNAP_JSONRPC_HOST), so music dips
-    # under speech as before. Env-gated per target (see _remote_say_cmd): no
-    # lane for this target ⇒ the local render+play path below is unchanged.
-    remote_say = _remote_say_cmd(target)
-    if remote_say:
-        return _submit_remote_say(" ".join(sentences), remote_say, coordinator, state, event)
-
-    engine, voice = _engine_and_voice(event, target)
-    ext = _ext_for(engine)
-    renderer = render_text
-    if device_voice.renders_on_device(target.name):
-        # The device says it in its own voice: each clip is its sentence.
-        engine, ext, renderer = "device", device_voice.SUFFIX[1:], device_voice.write_clip
-
-    audio_dir = _audio_dir()
-    # Per-submission unique: second-resolution time is NOT enough — two
-    # concurrent sessions (both source "claude-code") finishing a reply in the
-    # same second would render to identical clip paths and clobber each other's
-    # audio, so one session could end up playing another's clips. pid + a short
-    # random token guarantees uniqueness across processes and within one.
-    stamp = (time.strftime("%Y%m%dT%H%M%S")
-             + f"-{os.getpid()}-{uuid.uuid4().hex[:6]}")
-    started_at = time.time()
-
-    source_pane = (event.metadata or {}).get("pane") or os.environ.get("TMUX_PANE", "")
-    source_session = _source_session(event.metadata)
-    source_ask = bool((event.metadata or {}).get("ask"))
-    order_session = _order_session(source_pane, source_session)
-    source_tmux_session, source_window = _source_place(event.metadata, source_pane)
-    reply_title = _reply_title(event.metadata, source_window)
-    # Durable per-pane / per-session mute: render the stream into clips for
-    # popup replay/history, but never play it or duck music. See submit_event.
-    muted = state.resolve_mute(source_pane, source_tmux_session)
-    # Held for the desk toast (intake/toast.py): rendered and archived like a
-    # muted reply, played only when the listener asks for it.
-    muted = muted or bool((event.metadata or {}).get("held"))
-    muted = _unmuted_by_priority(muted, event, source_session)
-    do_highlight = event.source not in (_Source.CLI,)
-    if do_highlight:
-        ensure_follow_view(pane=source_pane)   # self-gates on the flag
-    # Snapcast buffers audio after mpv starts writing, so the sound reaches the
-    # listener a beat later than play() returns. Hold the highlight that long so
-    # it lands with the speech rather than ahead of it.
-    _highlight_delay_s = float(
-        os.environ.get("MEDIA_SNAPCAST_LATENCY_MS", "500")) / 1000.0
-
-    fallback_info: dict = {}
-    _fallback_lock = threading.Lock()
-
-    def _on_fallback(failed_engine: str, err: str) -> None:
-        short = err.strip().splitlines()[0] if err else "no detail"
-        fb = os.environ.get("MEDIA_RENDER_FALLBACK_ENGINE") or "edge"
-        kind = "render-fallback"
-        if "insufficient_quota" in err:
-            kind = "render-quota"
-        log.warning("intake-stream: %s engine failed (%s); falling back to %s",
-                    failed_engine, short, fb)
-        state.log_error("intake",
-                        f"render {failed_engine} failed, fell back to {fb}",
-                        extras={"kind": kind, "engine": failed_engine,
-                                "fallback_engine": fb, "detail": short[:300],
-                                "source": event.source.value})
-        with _fallback_lock:
-            fallback_info.update({"from_engine": failed_engine,
-                                  "fallback_engine": fb, "kind": kind,
-                                  "detail": short[:300]})
-        if kind == "render-quota":
-            title = f"agent-media: {failed_engine} quota exhausted"
-            body = f"Falling back to {fb} for now."
-        else:
-            title = f"agent-media: {failed_engine} render failed"
-            body = f"Falling back to {fb}. {short[:120]}"
-        notify(key=f"render-fallback-{failed_engine}", title=title, content=body)
-
-    # Shared, lock-guarded clip table: the producer thread appends sentences and
-    # kicks off their renders the instant they arrive; the play loop consumes in
-    # order. Renders run a few ahead of playback via a bounded pool.
-    workers = max(1, int(os.environ.get("MEDIA_STREAM_RENDER_WORKERS", "3") or 3))
-    pool = concurrent.futures.ThreadPoolExecutor(max_workers=workers)
-    cond = threading.Condition()
-    sents: list[str] = []
-    futures: list = []
-    paths: list[Path] = []
-    producer_done = threading.Event()
-
-    def _produce() -> None:
-        try:
-            for s in sentences:
-                if not s or not s.strip():
-                    continue
-                outfile = audio_dir / f"{stamp}--{event.source.value}--{len(sents):03d}.{ext}"
-                fut = pool.submit(renderer, s, outfile,
-                                  engine=engine, voice=voice, on_fallback=_on_fallback)
-                with cond:
-                    sents.append(s)
-                    futures.append(fut)
-                    paths.append(outfile)
-                    cond.notify_all()
-        except Exception as exc:  # noqa: BLE001
-            log.warning("intake-stream: producer raised: %s", exc)
-        finally:
-            producer_done.set()
-            with cond:
-                cond.notify_all()
-
-    def _get(i: int):
-        """(sentence, future, path) for clip i, waiting until it's enqueued.
-        Returns None when no clip i will ever exist (producer finished)."""
-        with cond:
-            while i >= len(sents) and not producer_done.is_set():
-                cond.wait(timeout=0.5)
-            if i >= len(sents):
-                return None
-            return sents[i], futures[i], paths[i]
-
-    # Skipped when muted — nothing plays, so there's nothing to pause for.
-    if not muted:
-        coordinator.pre_pause_remote()
-    _nav_flag_path(target).unlink(missing_ok=True)
-    producer = threading.Thread(target=_produce, daemon=True)
-    producer.start()
-
-    durations: dict[int, float] = {}   # measured clip durations, by index
-    played_any = False
-    first_clip: Optional[Path] = None
-
-    if muted:
-        # Drain the producer into clips so the response is in history and the
-        # popup can replay it — but never play it or touch the coordinator.
-        i = 0
-        try:
-            while True:
-                item = _get(i)
-                if item is None:
-                    break
-                sentence, fut, clip_path = item
-                try:
-                    ok, err = fut.result()
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("intake-stream: render future raised: %s", exc)
-                    i += 1
-                    continue
-                if not ok:
-                    log.warning("intake-stream: render failed (%s): %s", engine, err)
-                    state.log_error("intake", f"render failed ({engine})",
-                                    extras={"err": err, "source": event.source.value})
-                    i += 1
-                    continue
-                with _fallback_lock:
-                    has_fallback = bool(fallback_info)
-                if has_fallback and clip_path.suffix == ".wav":
-                    renamed = clip_path.with_suffix(".mp3")
-                    try:
-                        clip_path.rename(renamed)
-                        clip_path = renamed
-                        paths[i] = renamed
-                    except OSError:
-                        pass
-                durations[i] = _clip_duration(clip_path)
-                if first_clip is None:
-                    first_clip = clip_path
-                played_any = True
-                i += 1
-        finally:
-            producer_done.wait(timeout=2.0)
-            pool.shutdown(wait=False)
-        # Sidecar with the full text so the popup shows the whole response.
-        if first_clip is not None:
-            with cond:
-                known = list(sents)
-            try:
-                first_clip.with_suffix(".txt").write_text(" ".join(known))
-            except OSError:
-                pass
-    else:
-        before_called = False
-        mute_watcher = _MuteDuckWatcher(sink, target, coordinator)
-        highlighter = _HighlightScheduler(_highlight_delay_s, do_highlight,
-                                          source_pane)
-        # Serialize playback across sessions (rendering keeps streaming in
-        # parallel via the producer thread while we wait our turn for the broker).
-        playback_lock = _SpeechPlaybackLock(speaker=source_session)
-        waited_from = time.time()
-        ask_over_live = source_ask and _other_speaking(state, source_session,
-                                                       source_pane)
-        playback_lock.acquire(
-            event.priority, session=order_session,
-            supersede=bool((event.metadata or {}).get("supersede")),
-            seq=started_at)
-        # As submit_event: the `interrupt` earcon before a barge-in's first
-        # clip, the `cut` one after a per-session cut that ended it early.
-        barged_in = _take_displaced(waited_from) or ask_over_live
-        ended_by_cut = False
-        i = 0
-        nav_jump = False
-        # When each sentence was sent to the player, on the reply's own clock
-        # (`play_started_at`, which a pause pushes forward). A reader follows
-        # the voice with these rather than with `started_at` plus summed clip
-        # lengths: `started_at` is stamped at submit, before the first clip is
-        # even rendered or has waited its turn, and the sum leaves out the gap
-        # between one clip ending and the next being sent. Both put Sasonica's
-        # bold ahead of the voice (2026-09-19).
-        play_origin: Optional[float] = None
-        clip_starts: list[float] = []
-        try:
-            while True:
-                # Superseded by a later URGENT in this session — drop the rest
-                # (whether or not we've started) instead of resuming. Or cut
-                # by `/session/stop`: before the first clip either mode, after
-                # it only `all`.
-                if playback_lock.should_abort():
-                    if played_any:
-                        note_displaced()        # the superseder barged in
-                    break
-                if _speech_cut(source_session, started_at, playing=i > 0,
-                               ask=source_ask):
-                    ended_by_cut = played_any
-                    if played_any:
-                        _note_read_stop(source_session, started_at, i)
-                    break
-                # Step aside between sentences for a higher-priority speaker;
-                # resume this clip once it's done. Only after the first clip has
-                # played, so before_speech ran and there's something to resume.
-                if before_called and playback_lock.should_yield():
-                    playback_lock.yield_to_higher()
-                item = _get(i)
-                if item is None:
-                    break
-                sentence, fut, clip_path = item
-                try:
-                    ok, err = fut.result()
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("intake-stream: render future raised: %s", exc)
-                    i += 1
-                    nav_jump = False
-                    continue
-                if not ok:
-                    log.warning("intake-stream: render failed (%s): %s", engine, err)
-                    state.log_error("intake", f"render failed ({engine})",
-                                    extras={"err": err, "source": event.source.value})
-                    i += 1
-                    nav_jump = False
-                    continue
-                with _fallback_lock:
-                    has_fallback = bool(fallback_info)
-                if has_fallback and clip_path.suffix == ".wav":
-                    renamed = clip_path.with_suffix(".mp3")
-                    try:
-                        clip_path.rename(renamed)
-                        clip_path = renamed
-                        paths[i] = renamed
-                    except OSError:
-                        pass
-
-                if not before_called:
-                    # The sentence about to play: this lane has no whole reply
-                    # to show — it is still arriving.
-                    coordinator.before_speech(title=reply_title,
-                                  priority=event.priority.value, text=sentence)
-                    before_called = True
-                else:
-                    # The card follows the reply, as the clip loop's does.
-                    coordinator.speaking_line(sentence)
-
-                durations[i] = _clip_duration(clip_path)
-                with cond:
-                    known = list(sents)
-                if first_clip is None:
-                    first_clip = clip_path
-                # Keep the first clip's text sidecar updated with everything spoken
-                # so far, so the popup can show the running response.
-                try:
-                    first_clip.with_suffix(".txt").write_text(" ".join(known))
-                except OSError:
-                    pass
-
-                offset = sum(durations.get(k, 0.0) for k in range(i))
-                total = sum(durations.values())  # grows as more clips render
-                prior = (state.get_now_playing("speech") or {}).get("extras") or {}
-                if prior.get("writer_pid") != os.getpid():
-                    # Another reply's row (the one before, or one that took
-                    # the voice while this one yielded): its origin and pause
-                    # stamp are not this reply's.
-                    prior = {}
-                now = time.time()
-                if play_origin is None:
-                    play_origin = now
-                else:
-                    # A pause since the last clip moved the origin on the row;
-                    # that moved origin is the one that is true now.
-                    play_origin = float(prior.get("play_started_at") or play_origin)
-                heard_at = elapsed_from_row(prior, play_origin) if clip_starts else 0.0
-                # Sentence i starts now. A jump back forgets the starts after
-                # it; a jump forward gives the skipped ones this same start, so
-                # the list stays in sentence order and never runs backwards.
-                del clip_starts[i:]
-                clip_starts.extend([heard_at] * (i + 1 - len(clip_starts)))
-                stream_extras = {"play_started_at": play_origin,
-                                 "clip_starts_s": list(clip_starts)}
-                carry_pause_stamp(prior, stream_extras, False)
-                state.set_now_playing(
-                    "speech", uri=str(clip_path), started_at=started_at,
-                    target=target.name,
-                    extras={"text": " ".join(known), "source": event.source.value,
-                            "engine": engine, "voice": voice,
-                            "clip_offset_s": offset,
-                            "total_duration_s": total,
-                            "source_pane": source_pane,
-                            "source_session": source_session,
-                            "source_tmux_session": source_tmux_session,
-                            "source_window": source_window,
-                            "source_title": reply_title,
-                            "current_sentence": sentence,
-                            "current_sentence_idx": i,
-                            "clip_sentences": known,
-                            # The clips rendered so far. History only learns
-                            # them when the turn ends, so without this the
-                            # turn you are *hearing* can't be replayed — the
-                            # popup's `r` and `<` would restart the previous
-                            # turn instead. Mid-stream that list is partial by
-                            # nature; replaying what has been spoken is still
-                            # the right answer to "again".
-                            "clip_uris": [str(p) for p in paths],
-                            "clip_durations_s": [durations.get(k, 0.0)
-                                                 for k in range(len(paths))],
-                            "streaming": True,
-                            **stream_extras,
-                            "writer_pid": os.getpid()})
-                if barged_in and not played_any:
-                    from .. import earcons
-                    earcons.play("interrupt", target, sink, wait=True)
-                    barged_in = False
-                try:
-                    sink.play(str(clip_path), target, reset_state=(i == 0))
-                    played_any = True
-                except Exception as e:  # noqa: BLE001
-                    log.warning("intake-stream: sink-speech.play failed: %s", e)
-                    state.log_error("intake", "sink-speech play failed",
-                                    extras={"detail": str(e),
-                                            "source": event.source.value})
-                    i += 1
-                    nav_jump = False
-                    continue
-                # Deferred so the highlight lands with the Snapcast-buffered audio.
-                highlighter.show(sentence, first=(i == 0), force=nav_jump)
-
-                nav = _wait_for_clip(sink, target, on_poll=mute_watcher.poll)
-                if nav is None:
-                    i += 1
-                    nav_jump = False
-                else:
-                    with cond:
-                        count = len(sents)
-                        done = producer_done.is_set()
-                    if nav >= count:
-                        # "Skip to the end": stop if the producer's finished,
-                        # otherwise fall through to whatever arrives next.
-                        if done:
-                            highlighter.cancel_pending()
-                            ended_by_cut = played_any
-                            break
-                        i = count
-                        nav_jump = False
-                    else:
-                        i = max(0, nav)
-                        nav_jump = True
-            if ended_by_cut:
-                from .. import earcons
-                earcons.play("cut", target, sink, wait=True)
-        finally:
-            highlighter.drain()
-            coordinator.after_speech()
-            state.clear_now_playing("speech")
-            playback_lock.release()
-            producer_done.wait(timeout=2.0)
-            pool.shutdown(wait=False)
-
-    if not played_any:
-        return None
-
-    with cond:
-        all_sents = list(sents)
-        all_paths = list(paths)
-    full_text = " ".join(all_sents)
-    extras = {"engine": engine, "voice": voice,
-              "priority": event.priority.value,
-              "source_pane": source_pane,
-              "source_session": source_session,
-              "source_tmux_session": source_tmux_session,
-              "source_window": source_window,
-              "source_title": reply_title,
-              "clip_uris": [str(p) for p in all_paths],
-              "clip_sentences": all_sents,
-              "clip_durations_s": [durations.get(k, 0.0) for k in range(len(all_paths))],
-              "streaming": True,
-              **(event.metadata or {})}
-    if fallback_info:
-        extras["fallback"] = fallback_info
-    if muted:
-        extras["muted"] = True   # rendered but never played (popup can replay)
-    from ..sinks.speech import stopped_here
-    stop_at = stopped_here(started_at)
-    if stop_at is not None:
-        # Stopped part-way by the listener: where, for the message's ▶.
-        extras["stopped_at"] = {"sentence": stop_at, "at": time.time()}
-    return state.add_history(
-        sink="speech",
-        uri=str(first_clip),
-        started_at=started_at,
-        ended_at=time.time(),
-        target=target.name,
-        source=event.source.value,
-        text=full_text,
-        extras=extras,
-    )
+    # Connection reuse for as long as the reply lasts, as submit_event.
+    from ..sinks import _mpv_ipc
+    with _mpv_ipc.reuse_connections():
+        return _submit_event(event, state=state, coordinator=coordinator,
+                             sink=sink, source=sentences)
