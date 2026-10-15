@@ -175,6 +175,49 @@ def test_a_cut_stops_it_and_the_row_still_holds_every_sentence(monkeypatch):
     assert _row(state)["extras"]["clip_sentences"] == SENTS
 
 
+def test_a_source_that_hangs_after_a_cut_is_archived_as_far_as_it_got(
+        monkeypatch):
+    """The history write waits for the model no longer than a finished reply
+    waits for its renders; then it keeps what arrived, marked truncated."""
+    monkeypatch.setattr(S, "_STREAM_ARCHIVE_WAIT_S", 0.3)
+    cut = {"on": False}
+    monkeypatch.setattr(S, "_speech_cut", lambda *a, **k: cut["on"])
+    monkeypatch.setattr(S, "_note_read_stop", lambda *a, **k: None)
+    from agent_media_core import earcons
+    monkeypatch.setattr(earcons, "play", lambda *a, **k: None)
+    release = threading.Event()
+
+    def source():
+        yield SENTS[0]
+        release.wait(timeout=30)    # the model hangs after the listener cut
+        yield SENTS[1]
+
+    def on_play(n):
+        cut["on"] = True
+
+    state, sink = StateStore(), _LocalSink(on_play=on_play)
+    done = threading.Event()
+    rid = []
+
+    def run():
+        rid.append(S.submit_stream(source(), _event(), state=state, sink=sink,
+                                   coordinator=_Coord()))
+        done.set()
+
+    threading.Thread(target=run, daemon=True).start()
+    try:
+        assert done.wait(timeout=10), "the history write waited on the model"
+    finally:
+        release.set()
+
+    assert rid and rid[0] is not None
+    assert len(sink.plays) == 1
+    row = _row(state)
+    assert row["extras"]["truncated"] is True
+    assert row["extras"]["clip_sentences"] == [SENTS[0]]
+    assert row["text"] == SENTS[0]
+
+
 def test_a_supersede_drops_the_rest(monkeypatch):
     aborted = {"on": False}
     monkeypatch.setattr(S._SpeechPlaybackLock, "should_abort",

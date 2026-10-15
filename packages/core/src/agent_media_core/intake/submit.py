@@ -3063,6 +3063,12 @@ class _MuteDuckWatcher:
             self._coord.reapply_music_duck()
 
 
+# How long the history write waits for a streamed reply's source to finish
+# once playback is over (a cut, a supersede, a flush): the same bound a
+# finished reply's renders get. Past it the reply is archived as far as it got.
+_STREAM_ARCHIVE_WAIT_S = 120.0
+
+
 def _render_workers(n_sentences: int) -> int:
     """How many sentence renders may be in flight at once.
 
@@ -4257,11 +4263,21 @@ def _submit_event(event: Event,
         with _clip_cond:
             _clip_cond.notify_all()
 
-    def _clip_ready(i: int) -> bool:
+    # Set when a streamed reply is archived before its source finished (see
+    # _settle_rest_now): the row holds what had arrived, and says so.
+    _truncated = threading.Event()
+
+    def _clip_ready(i: int, give_up=None) -> bool:
         """Whether clip `i` is in the reply — waiting for it while sentences
-        are still being resolved. Immediate once they all are."""
+        are still being resolved. Immediate once they all are.
+
+        `give_up`, asked every half second of waiting, ends the wait early
+        (False): a cut or a supersede should not have to wait for the model's
+        next sentence to be noticed."""
         with _clip_cond:
             while i >= len(clip_data) and not _rest_done.is_set():
+                if give_up is not None and give_up():
+                    break
                 _clip_cond.wait(timeout=0.5)
             return i < len(clip_data)
 
@@ -4453,12 +4469,29 @@ def _submit_event(event: Event,
         recorded — a reply whose audio ended early is still archived whole.
 
         For a streamed reply that means waiting for the model to finish
-        writing, however long it takes: what bounds it is the source ending
-        (the hook's stdin closing), as it always bounded that lane's loop."""
+        writing — but no longer than a finished reply waits for its renders
+        (_STREAM_ARCHIVE_WAIT_S). A model that hangs after the listener cut
+        it off must not hold the hook open for ever: past the limit the reply
+        is archived as far as it got, marked `truncated`, and the threads
+        still waiting on the source are daemons, so they do not keep the
+        process alive behind it."""
         if _rest_done.is_set():
             return
+        if arriving:
+            t = _rest_thread
+            if t is None:
+                t = threading.Thread(target=_settle_rest,
+                                     name="speech-stream", daemon=True)
+                t.start()
+            t.join(timeout=_STREAM_ARCHIVE_WAIT_S)
+            if not _rest_done.is_set():
+                _truncated.set()
+                log.warning("intake: streamed reply still arriving after "
+                            "%ss; archiving the %d sentence(s) it has",
+                            _STREAM_ARCHIVE_WAIT_S, len(sentences))
+            return
         if _rest_thread is not None:
-            _rest_thread.join(timeout=None if arriving else 120)
+            _rest_thread.join(timeout=120)
         else:
             _settle_rest()
 
@@ -4501,7 +4534,18 @@ def _submit_event(event: Event,
         if arriving:
             # Spoken while it was still being written (submit_stream).
             extras["streaming"] = True
-            _write_sidecar()    # the whole of it, now that it is whole
+            if _truncated.is_set():
+                # The source never finished (see _settle_rest_now), and the
+                # thread resolving it may still append: the row takes one
+                # consistent copy of what is here, and says it is partial.
+                with _clip_lock:
+                    extras.update({
+                        "clip_uris": [str(p) for _, p in clip_data],
+                        "clip_sentences": list(_clip_sentences),
+                        "clip_durations_s": list(durations),
+                        "clip_paragraph_idx": list(clip_para)})
+                extras["truncated"] = True
+            _write_sidecar()    # as much of it as there is
         # Where each sentence actually began, when the reply played far enough
         # to measure it. Summed durations count from submit and leave out the
         # gaps between clips, so a reader handed only those bolds ahead of the
@@ -5449,9 +5493,25 @@ def _submit_event(event: Event,
                     _rest_thread = threading.Thread(
                         target=_settle_rest, name="speech-stream", daemon=True)
                     _rest_thread.start()
+                def _stopping() -> bool:
+                    # The two checks at the head of the loop, asked while it
+                    # waits for a clip the model has not written yet.
+                    return (playback_lock.should_abort()
+                            or _speech_cut(source_session, started_at,
+                                           playing=True, ask=source_ask))
+
                 i = 0
                 nav_jump = False  # True when this clip was reached via a popup skip
-                while i >= 0 and _clip_ready(i):
+                while i >= 0:
+                    # Given up on only for a cut or a supersede, which the
+                    # checks below then act on; otherwise there is no clip i
+                    # and never will be, and the reply is over.
+                    # (Asked only while sentences are still arriving: a reply
+                    # that has simply played its last clip ends here, as it
+                    # always did, whatever is cut after it.)
+                    if not _clip_ready(i, give_up=_stopping) and (
+                            _rest_done.is_set() or not _stopping()):
+                        break
                     # Superseded by a later URGENT in this session — drop the
                     # remaining sentences instead of yielding-and-resuming.
                     # Or stopped from the app (`all` cut): the same drop.
@@ -5471,6 +5531,8 @@ def _submit_event(event: Event,
                     # (e.g. a notification) is waiting; resume it once that's done.
                     if playback_lock.should_yield():
                         playback_lock.yield_to_higher()
+                    if i >= len(clip_data):
+                        break   # gave up waiting, and the checks let it be
                     sentence, clip_path = clip_data[i]
                     _mark(i)
                     try:
