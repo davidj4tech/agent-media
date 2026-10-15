@@ -2252,6 +2252,12 @@ like `/org/say` → `{"ok", "state", "path", "at", "title", "line"}`.
 
 `POST /org/listen/ctl {"action": "pause" | "resume" | "toggle" | "stop" |
 "prev" | "next"}` — `auth.may_control_speech` → the `GET` answer, after it.
+A press is one batch of commands to the player, decided from the last
+reading (its position run on by the clock, if no older than 6 s), and its
+answer is what that made of the player, not a fresh read. The next `GET`
+answers the same until the player is read again. On the phone a read is
+about 1 s and a batch about 0.65 s. `GET` reads every property in one call,
+and a failed read keeps the last good one for 15 s.
 `prev` and `next` move a paragraph back or on: the app's mini player keys.
 The sheet's keys (15 Oct 2026): `seek` takes `to` (seconds), `skip` takes
 `by` (± seconds; 400 without it); `speed+`/`speed-` step 0.1 between 0.5 and

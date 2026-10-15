@@ -82,6 +82,24 @@ def book(tree, monkeypatch, tmp_path):
                         else (False, {"error": "no", "status": 403}))
     b = Book()
     monkeypatch.setattr(org_listen, "_book", lambda: b)
+
+    # The player itself: one read, one batch of commands (org_listen._read,
+    # _send), recorded as the calls the tests name.
+    def send(cmds):
+        for c in cmds:
+            if c[0] == "seek":
+                b.calls.append(("seek", float(c[1])))
+                b.np["position_ms"] = int(float(c[1]) * 1000)
+            elif c[1] == "pause":
+                b.calls.append(("pause",) if c[2] else ("resume",))
+                b.np["paused"] = c[2]
+            elif c[1] == "speed":
+                b.calls.append(("speed", c[2]))
+                b.np["speed"] = c[2]
+            else:
+                b.np["muted" if c[1] == "mute" else c[1]] = c[2]
+    monkeypatch.setattr(org_listen, "_read", lambda: dict(b.np))
+    monkeypatch.setattr(org_listen, "_send", send)
     monkeypatch.setattr(org_listen, "_CACHE_TTL_S", 0.0)
     rendered = []
 
@@ -142,7 +160,7 @@ def test_listen_renders_then_plays_and_follows(book, server):
 
     # Cached now: a tap on a paragraph is a seek, not a render or a reload.
     status, got = _call(server, "POST", "/org/listen", {"path": "walk.org", "line": 7})
-    assert got["state"] == "playing" and book.calls[-1] == ("seek", 4.0)
+    assert got["state"] == "playing" and book.calls[-2:] == [("seek", 4.0), ("resume",)]
     assert len(book.rendered) == 1
 
     _, got = _call(server, "POST", "/org/listen/ctl", {"action": "toggle"})
@@ -250,13 +268,9 @@ def test_heard_to_the_end_is_ended_and_resume_starts_again(book, server):
 
 
 def test_the_sheets_knobs(book, server, monkeypatch):
-    mixer = {"volume": 100, "muted": False}
-    monkeypatch.setattr(org_listen, "_mixer", lambda: dict(mixer))
-    monkeypatch.setattr(org_listen, "_set", lambda name, v: mixer.__setitem__(
-        "muted" if name == "mute" else name, v))
     _call(server, "POST", "/org/listen", {"path": "walk.org"})
     assert _until(lambda: book.calls)
-    book.np["speed"] = 1.0
+    book.np.update({"speed": 1.0, "volume": 100, "muted": False})
     _, got = _call(server, "GET", "/org/listen")
     assert got["volume"] == 100 and got["muted"] is False and got["speed"] == 1.0
     _, got = _call(server, "POST", "/org/listen/ctl", {"action": "speed+"})
@@ -269,6 +283,27 @@ def test_the_sheets_knobs(book, server, monkeypatch):
     assert got["muted"] is True
     _call(server, "POST", "/org/listen/ctl", {"action": "seek", "to": 3})
     assert book.calls[-1] == ("seek", 3.0)
+    book.np["position_ms"] = 3500
+    org_listen._forget_cache()
     _call(server, "POST", "/org/listen/ctl", {"action": "skip", "by": -15})
-    assert book.calls[-1] == ("skip", -15.0)
+    assert book.calls[-1] == ("seek", 0.0)              # 3.5 s back by 15: the start
     assert _call(server, "POST", "/org/listen/ctl", {"action": "seek"})[0] == 400
+
+
+def test_a_press_is_one_batch_on_the_last_reading(book, server, monkeypatch):
+    """A press reads nothing first when the last reading is fresh: on the
+    phone a read is ~0.9 s, and a press used to cost four or five."""
+    _call(server, "POST", "/org/listen", {"path": "walk.org"})
+    assert _until(lambda: book.calls)
+    monkeypatch.setattr(org_listen, "_CACHE_TTL_S", 1.0)
+    reads, sends = [], []
+    monkeypatch.setattr(org_listen, "_read", lambda: reads.append(1) or dict(book.np))
+    monkeypatch.setattr(org_listen, "_send", lambda cmds: sends.append(cmds))
+    org_listen._forget_cache()
+    _call(server, "GET", "/org/listen")
+    assert len(reads) == 1
+    _, got = _call(server, "POST", "/org/listen/ctl", {"action": "pause"})
+    _, got2 = _call(server, "POST", "/org/listen/ctl", {"action": "speed+"})
+    assert len(reads) == 1 and len(sends) == 2
+    assert sends[0] == [["set_property", "pause", True]]
+    assert got["state"] == "paused" and got2["speed"] == 1.1

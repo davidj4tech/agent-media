@@ -98,22 +98,15 @@ def _line_at(timings: dict, pos_s: float) -> int | None:
     return found
 
 
-def _playing() -> dict:
-    """The book channel's state, kept a moment: the reader polls it, and on
-    the phone each read is a round trip over the tailnet."""
-    with _LOCK:
-        at, got = _CACHE
-        if got is not None and time.monotonic() - at < _CACHE_TTL_S:
-            return got
-    try:
-        got = _book().book_now_playing(target=_target())
-    except Exception:
-        got = {"idle": True}
-    if not got.get("idle"):
-        got = {**got, **_mixer()}
-    with _LOCK:
-        _CACHE[:] = [time.monotonic(), got]
-    return got
+#: What a read asks the player, in one round trip.
+_PROPS = ["idle-active", "path", "time-pos", "duration", "pause", "speed",
+          "volume", "mute"]
+#: A press acts on a reading this fresh (its position run on by the clock)
+#: rather than reading again first: on the phone each read is ~0.9 s.
+_PRESS_AGE_S = 6.0
+#: A failed read keeps the last good one this long: one dropped packet on a
+#: mobile link must not blank the mini player.
+_KEEP_S = 15.0
 
 
 def _socket():
@@ -121,24 +114,58 @@ def _socket():
     return _socket_for(_book()._book_target(_target()))
 
 
-def _mixer() -> dict:
-    """The book player's volume and mute, for the sheet's knobs."""
-    try:
-        from agent_media_core.sinks import _mpv_ipc as ipc
-        props = ipc.display_properties(_socket(), ["volume", "mute"], timeout=1.2)
-    except Exception:
-        return {}
-    out = {}
-    if props.get("volume") is not None:
-        out["volume"] = int(round(float(props["volume"])))
-    if props.get("mute") is not None:
-        out["muted"] = bool(props["mute"])
-    return out
-
-
-def _set(name: str, value) -> None:
+def _read() -> dict | None:
+    """The book player, every property at once; None when it did not answer."""
     from agent_media_core.sinks import _mpv_ipc as ipc
-    ipc.set_property(_socket(), name, value)
+    try:
+        p = ipc.display_properties(_socket(), _PROPS, timeout=2.0)
+    except Exception:
+        return None
+    if not p:
+        return None
+    if p.get("idle-active") or not p.get("path"):
+        return {"idle": True}
+    num = lambda k: float(p[k]) if p.get(k) is not None else None  # noqa: E731
+    return {"idle": False, "uri": p["path"],
+            "position_ms": int((num("time-pos") or 0) * 1000),
+            "duration_ms": int(num("duration") * 1000) if num("duration") is not None else None,
+            "paused": bool(p.get("pause")), "speed": num("speed") or 1.0,
+            "volume": int(round(num("volume"))) if num("volume") is not None else None,
+            "muted": bool(p.get("mute"))}
+
+
+def _send(cmds: list) -> None:
+    """Commands to the book player, over one connection."""
+    from agent_media_core.sinks import _mpv_ipc as ipc
+    ipc.command_batch(_socket(), cmds, timeout=3.0, critical=True)
+
+
+def _playing(max_age: float | None = None) -> dict:
+    """The book player's state, kept a moment: the app polls it, and on the
+    phone each read is a round trip over the tailnet. Older than `max_age`
+    it is read again; the position of one kept is run on by the clock."""
+    max_age = _CACHE_TTL_S if max_age is None else max_age
+    with _LOCK:
+        at, got = _CACHE
+    age = time.monotonic() - at
+    if got is None or age >= max_age:
+        fresh = _read()
+        if fresh is None and got is not None and age < _KEEP_S:
+            fresh = got
+        got, at, age = fresh or {"idle": True}, time.monotonic(), 0.0
+        with _LOCK:
+            _CACHE[:] = [at, got]
+    if got.get("idle") or got.get("paused") or age <= 0:
+        return got
+    pos = (got.get("position_ms") or 0) + int(age * 1000 * float(got.get("speed") or 1.0))
+    dur = got.get("duration_ms")
+    return {**got, "position_ms": min(pos, dur) if dur else pos}
+
+
+def _predict(np: dict) -> None:
+    """What a press made of the player, kept as if read: the next poll reads it."""
+    with _LOCK:
+        _CACHE[:] = [time.monotonic(), np]
 
 
 def _forget_cache() -> None:
@@ -160,13 +187,12 @@ def _play(clip: Path, meta: dict, line: int | None) -> str:
     """Put `clip` on the book channel; the state it is then in."""
     srv = _book()
     timings = docs.read_timings(clip)
-    now = _playing()
+    now = _playing(_PRESS_AGE_S)
     if line is not None and not now.get("idle") and _clip_of(now.get("uri") or "") == clip:
         # Already this note: a tap on a paragraph is a seek, not a reload.
-        srv.book_seek(_start_ms(timings, line) / 1000.0, target=_target())
-        if now.get("paused"):
-            srv.book_resume(target=_target())
-        _forget_cache()
+        to = _start_ms(timings, line) / 1000.0
+        _send([["seek", to, "absolute"], ["set_property", "pause", False]])
+        _predict({**now, "position_ms": int(to * 1000), "paused": False})
         return "playing"
     if line is not None:
         start = _start_ms(timings, line)
@@ -270,86 +296,109 @@ def now(bearer: str) -> tuple[bool, dict]:
     user, err = auth.gate(bearer)
     if not user:
         return False, err
-    np = _playing()
+    return True, _answer(_playing())
+
+
+def _answer(np: dict) -> dict:
     clip = None if np.get("idle") else _clip_of(np.get("uri") or "")
     if clip:
         t = docs.read_timings(clip) or {}
         pos = np.get("position_ms") or 0
         state = "ended" if _ended(np) else "paused" if np.get("paused") else "playing"
-        return True, {"state": state,
-                      **_who({**t, "title": t.get("title") or np.get("title")}),
-                      "speed": np.get("speed"), "volume": np.get("volume"),
-                      "muted": np.get("muted"), "chapters": t.get("chapters") or [],
-                      "line": _line_at(t, pos / 1000.0), "pos_ms": pos,
-                      "dur_ms": np.get("duration_ms") or int((t.get("duration") or 0) * 1000)}
+        return {"state": state,
+                **_who({**t, "title": t.get("title") or np.get("title")}),
+                "speed": np.get("speed"), "volume": np.get("volume"),
+                "muted": np.get("muted"), "chapters": t.get("chapters") or [],
+                "line": _line_at(t, pos / 1000.0), "pos_ms": pos,
+                "dur_ms": np.get("duration_ms") or int((t.get("duration") or 0) * 1000)}
     with _LOCK:
         job = next(iter(_JOBS.values()), None)
     if job:
-        return True, {"state": "rendering", **_who(job)}
+        return {"state": "rendering", **_who(job)}
     staged = _staging()
     if staged and (staged.get("path") or staged.get("doc")):
-        return True, {"state": "copying", **_who(staged)}
-    return True, {"state": "idle"}
+        return {"state": "copying", **_who(staged)}
+    return {"state": "idle"}
 
 
 def control(action: str, bearer: str, value: float | None = None) -> tuple[bool, dict]:
-    """Pause, resume or stop the book channel: the reader's own keys."""
+    """The reader's and the mini player's keys. Each is one batch of commands
+    to the player, decided from the last reading (run on by the clock), and
+    answered with what it made of the player rather than a fresh read: on the
+    phone a read is ~0.9 s, and a press used to cost four or five of them
+    (David, 15 Oct 2026: "The player controls are quite slow to respond")."""
     ok, detail = auth.may_control_speech(bearer)
     if not ok:
         return False, detail
     if action not in _ACTIONS:
         return False, {"error": f"unknown action {action!r}", "status": 400}
+    if action in ("seek", "skip") and value is None:
+        return False, {"error": f"{action} needs {'to' if action == 'seek' else 'by'}", "status": 400}
     srv = _book()
-    if action in ("seek", "skip"):
-        if value is None:
-            return False, {"error": f"{action} needs {'to' if action == 'seek' else 'by'}", "status": 400}
-        if action == "seek":
-            srv.book_seek(max(0.0, value), target=_target())
-        else:
-            srv.book_skip(value, target=_target())
-        _forget_cache()
-        return now(bearer)
-    if action.startswith(("speed", "vol")) or action == "mute":
-        np = _playing()
-        if np.get("idle"):
-            return False, {"error": "nothing is being listened to", "status": 409}
-        try:
-            if action.startswith("speed"):
-                cur = float(np.get("speed") or 1.0)
-                rate = 1.0 if action == "speed0" else cur + (_SPEED_STEP if action == "speed+" else -_SPEED_STEP)
-                srv.book_speed(round(max(_SPEED_MIN, min(_SPEED_MAX, rate)), 2), target=_target())
-            elif action == "mute":
-                _set("mute", not np.get("muted"))
-            else:
-                cur = int(np.get("volume") if np.get("volume") is not None else 100)
-                _set("volume", max(0, min(_VOL_MAX, cur + (_VOL_STEP if action == "vol+" else -_VOL_STEP))))
-        except Exception as e:
-            return False, {"error": f"the player did not take it ({e})", "status": 502}
-        _forget_cache()
-        return now(bearer)
-    if action in ("prev", "next"):
-        # The mini player's keys: a paragraph back or on, as a sentence is
-        # for a reply. "prev" restarts the paragraph when past its start.
-        np = _playing()
-        clip = None if np.get("idle") else _clip_of(np.get("uri") or "")
+    if action == "stop":
+        srv.book_stop(target=_target())            # saves the place, clears now-playing
+        _predict({"idle": True})
+        return True, _answer({"idle": True})
+    np = _playing(_PRESS_AGE_S)
+    if np.get("idle"):
+        if action in ("resume", "toggle"):
+            srv.book_resume(target=_target())      # reopens the last one
+            _forget_cache()
+            return now(bearer)
+        return False, {"error": "nothing is being listened to", "status": 409}
+    if action == "toggle":
+        action = "resume" if np.get("paused") else "pause"
+    pos = (np.get("position_ms") or 0) / 1000.0
+    dur = (np.get("duration_ms") or 0) / 1000.0
+    cmds: list = []
+    new = dict(np)
+
+    def seek(to: float):
+        to = max(0.0, min(to, dur - 0.5) if dur else to)
+        cmds.append(["seek", to, "absolute"])
+        new["position_ms"] = int(to * 1000)
+
+    if action == "pause":
+        cmds.append(["set_property", "pause", True])
+        new["paused"] = True
+    elif action == "resume":
+        if _ended(np):
+            seek(0.0)                              # heard to the end: again from the top
+        cmds.append(["set_property", "pause", False])
+        new["paused"] = False
+    elif action == "seek":
+        seek(value)
+    elif action == "skip":
+        seek(pos + value)
+    elif action in ("prev", "next"):
+        # A paragraph back or on, as a sentence is for a reply. "prev"
+        # restarts the paragraph when past its start.
+        clip = _clip_of(np.get("uri") or "")
         rows = ((docs.read_timings(clip) or {}).get("timings") or []) if clip else []
         if not rows:
             return False, {"error": "nothing is being listened to", "status": 409}
-        pos = (np.get("position_ms") or 0) / 1000.0
         cur = max([i for i, r in enumerate(rows) if r["start"] <= pos + 0.05] or [0])
         if action == "next":
-            to = rows[min(cur + 1, len(rows) - 1)]["start"]
+            seek(rows[min(cur + 1, len(rows) - 1)]["start"])
         else:
-            to = rows[cur]["start"] if pos - rows[cur]["start"] > _RESTART_S else rows[max(cur - 1, 0)]["start"]
-        srv.book_seek(to, target=_target())
+            seek(rows[cur]["start"] if pos - rows[cur]["start"] > _RESTART_S
+                 else rows[max(cur - 1, 0)]["start"])
+    elif action.startswith("speed"):
+        rate = 1.0 if action == "speed0" else float(np.get("speed") or 1.0) + (
+            _SPEED_STEP if action == "speed+" else -_SPEED_STEP)
+        new["speed"] = round(max(_SPEED_MIN, min(_SPEED_MAX, rate)), 2)
+        cmds.append(["set_property", "speed", new["speed"]])
+    elif action == "mute":
+        new["muted"] = not np.get("muted")
+        cmds.append(["set_property", "mute", new["muted"]])
+    else:
+        cur_vol = int(np.get("volume") if np.get("volume") is not None else 100)
+        new["volume"] = max(0, min(_VOL_MAX, cur_vol + (_VOL_STEP if action == "vol+" else -_VOL_STEP)))
+        cmds.append(["set_property", "volume", new["volume"]])
+    try:
+        _send(cmds)
+    except Exception as e:
         _forget_cache()
-        return now(bearer)
-    if action == "toggle":
-        np = _playing()
-        action = "resume" if np.get("idle") or np.get("paused") else "pause"
-    if action == "resume" and _ended(_playing()):
-        srv.book_seek(0.0, target=_target())       # heard to the end: again from the top
-    {"pause": srv.book_pause, "resume": srv.book_resume, "stop": srv.book_stop}[action](
-        target=_target())
-    _forget_cache()
-    return now(bearer)
+        return False, {"error": f"the player did not take it ({e})", "status": 502}
+    _predict(new)
+    return True, _answer(new)
