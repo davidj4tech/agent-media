@@ -1128,8 +1128,6 @@ Request:
 | `agents_md` | with `new_project`: `true` writes a starter `AGENTS.md` and `CLAUDE.md` → it; `"draft"` has the first chat write it (§6.24) |
 | `preset` | a preset's name (§6.24): its AGENTS.md text for `agents_md`. The app sends the preset's agent, profile, model and plan itself |
 | `worktree` | `{"from": <a /targets place>, "branch"}`: open the fresh session in a new git worktree of that project (§6.24) — implies `target: "new"` |
-| `persona` | a persona id from `/presets`' `personas` (16 Oct 2026, §6.24): the fresh session starts as its public render. Unknown → 400; ignored when the words land in an existing thread |
-| `role` | a role id from `/presets`' `roles` (§6.24): with or without `persona`. Unknown → 400 |
 | `model` | Claude (26 Sep 2026): `opus` \| `sonnet` \| `haiku` \| `fable` for a fresh session — `--model` in a pane, sessiond's `start` headless. opencode: a `provider/model` id from its sheet, sent with each prompt when headless. Anything else is dropped, not refused; ignored when the words land in an existing thread |
 | `plan` | Claude only: `true` starts the fresh session in plan mode (`--permission-mode plan`; a pane's `--dangerously-skip-permissions` becomes `--allow-dangerously-skip-permissions`, which would otherwise win) |
 | `level` | a fresh session's speech level (§6.4: `interrupt` \| `auto` \| `pocket` \| `normal` \| `quiet`; 14 Oct 2026), set as soon as its id is known so the first reply already speaks at it; answered as `level` (null when the id never surfaced — set it with `/session/priority` then). Anything else → 400; ignored when the words land in an existing thread |
@@ -1158,8 +1156,7 @@ Responses (`mode` tells them apart):
 // sent to a fresh session
 {"ok": true, "mode": "new", "how": "…", "session": "…" | null, "pane": "%51",
  "opened": true, "fresh": true, "tmux": "amux-scratch", "agent": "claude",
- "submitted": true, "title": "", "text": "…",
- "persona"?: "zara", "role"?: "", "persona_via"?: "system_prompt" | "prepend"}  // with persona/role
+ "submitted": true, "title": "", "text": "…"}
 
 // sent to an existing session
 {"ok": true, "mode": "continued", "how": "…", "session": "…", "pane": "%42",
@@ -3497,46 +3494,20 @@ the AGENTS.md a new project gets, and the words the box starts with. Kept
 in `<state_dir>/presets.json`. "Profile" stays the harness login (§6.6).
 
 ```
-GET  /presets → {"presets": [Preset…], "agents_md_default": "<the template a new project gets without a preset>",
-                 "personas": ["zara", …], "roles": ["reviewer", …]}
+GET  /presets → {"presets": [Preset…], "agents_md_default": "<the template a new project gets without a preset>"}
 POST /presets Preset → {"ok": true, "preset": Preset}       // added, or replaced by name
 POST /presets/remove {"name"} → {"ok": true} | 404
 
 Preset = {"name": "Web app",            // 1–40 characters, the key
           "agent": "claude" | "",       // "" = the host's default agent
           "profile": "", "model": "", "plan": false,
-          "persona": "", "role": "",    // ids from personas/roles; "" = none
           "agents_md": "",              // "" = agents_md_default
           "prompt": ""}                 // put in the box, not sent
 ```
 
-A preset naming an agent `/ask` does not know, or a persona or role not in
-the lists → 400. The app applies a preset by filling the new-chat sheet
-with it (persona and role included, sent on `/ask`); the server reads one
-only for `agents_md`.
-
-**Personas** (16 Oct 2026; step 1 of
-docs/proposals/2026-10-15-personas-in-presets.md) — `personas` and `roles`
-are what `persona-render --list` names in `MEDIA_PERSONAS_DIR` (default
-`~/agent-personas`); both `[]` on a host without it, so the app shows no
-persona chips. `/ask`'s `persona` and `role` (either, or both) start a
-fresh session as `persona-render <persona or role> --adapter <agent>
-[--role <role>] --mode public` — always public, never `sops`. Unknown id →
-400; a render that fails or takes over 20 s → 502 with its last line, before
-a folder is made or a window opened. Delivered by the harness's own means:
-
-| Agent | `persona_via` | How |
-| --- | --- | --- |
-| claude | `system_prompt` | `--append-system-prompt-file <file>` — in a pane, and headless at every sessiond spawn (start and each resume) while the file is there |
-| pi | `system_prompt` | `--append-system-prompt <file>` (pi reads a path as its contents) |
-| codex, opencode, hermes | `prepend` | the first message is `# Persona`, the render, `---`, then the words |
-
-A headless Claude whose sessiond predates this (its `ping` lacks
-`"system_prompt": true`) gets `prepend` instead. The file is 0600 under
-`$XDG_RUNTIME_DIR/agent-media/personas/` (else the state dir), named
-`<random>.md` with a second name `<session>.md` once the id is known, and
-kept: a resume may be handed it again. The answer carries `persona`, `role`
-and `persona_via`.
+A preset naming an agent `/ask` does not know → 400. The app applies a
+preset by filling the new-chat sheet with it; the server reads one only for
+`agents_md`.
 
 ## 7. `/events` (v0) — canvas-wide, not the app's stream
 
