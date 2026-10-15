@@ -1108,6 +1108,30 @@ ahead.
       the source line it came from, and skipped blocks are passed over.
       Tapping a paragraph seeks there.
 
+24. **Edit a document from the reader** (David, 16 Oct 2026: "a chat box at
+   the bottom of the new document reader ... a reply takes into account the
+   current position as possible context as a way of editing the document",
+   then "maybe a little pop-up context menu for the action to be
+   performed").
+   - **Chat box** at the foot of the `/doc` page, as the Organiser's
+     (`POST /org/ask`, `org_chat.py`): a `POST /doc/ask {"path", "at"?,
+     "quote"?, "text"}` opens a session in the document's project (its git
+     root), first message `About <title> (<path>), under "<heading>", this
+     paragraph: "<quote>": <text>`. The paragraph sent is the one tapped,
+     else the one at the top of the screen, else the one being listened to.
+     It is quoted whole, because a line number moves once the file changes.
+     Recorded against the document like a note's `chats`.
+   - **Context menu**: long-press a paragraph (tapping it already seeks the
+     listening) → a small pop-up: Ask, Shorten, Expand, Plainer, Rewrite…,
+     Delete. Each one fills the chat box with that action on that paragraph.
+     Ask and Rewrite… wait for your words; the others send at once.
+   - **After the edit**: the reader reloads when the file changes and marks
+     the changed paragraphs. Each edit is its own commit, so Undo is a
+     revert. The cached Listen render is invalidated as any edit would.
+   - Later: "cut that" / "say that more plainly" by voice while listening,
+     aimed at the sentence follow-along is on; margin notes gathered while
+     reading and applied in one pass.
+
 ## Loose ends
 
 - **A reply with a figure had no follow-along at all** (David, 23 Sep 2026)
