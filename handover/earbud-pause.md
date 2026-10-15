@@ -20,5 +20,6 @@ Live and confirmed by David (15 Oct 2026):
 - sasonica-app 8eb16cc: VOICE_COMMAND + VOICE_SEARCH_HANDS_FREE open the assistant chat.
 - Build 1225 installed on p8a; Downloads copies removed.
 
-Open: David to confirm the skips and the earbud assistant button. Unrelated: submit.py
+Confirmed by David the same day: the car's skips (forward, back, start, finish) and
+the earbud assistant button. Done. Unrelated: submit.py
 has a pre-existing F821 (`text` undefined near the clip loop's before_speech).
