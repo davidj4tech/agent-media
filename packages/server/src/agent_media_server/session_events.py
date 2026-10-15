@@ -257,7 +257,8 @@ def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
           free_frame: bool = False, speech_device: str | None = None,
           speech_after: int | None = None, music_device: str | None = None,
           music_after: int | None = None, handoff_device: str | None = None,
-          handoff_after: int | None = None, want_notes: bool = False) -> bool:
+          handoff_after: int | None = None, book_device: str | None = None,
+          book_after: int | None = None, want_notes: bool = False) -> bool:
     """Hold the connection and stream the session list until it goes. Auth
     is the caller's (app.py), done before this. `mic_for` is None when the
     client did not ask for `mic` frames, else the connecting device's id
@@ -273,7 +274,9 @@ def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
     seq it applied, for one that reconnects mid-reply. `music_device` and
     `music_after`: the same for its music player (`music` frames), and
     `handoff_device`/`handoff_after` for the radio's hand-off player
-    (`handoff` frames: the listener's own music app).
+    (`handoff` frames: the listener's own music app), and
+    `book_device`/`book_after` for the book player (`book` frames: a note
+    or document heard with Listen).
     `want_notes`: `notes` frames (notes.py) — the notifications agents on
     this host used to put up over `ssh termux-notification`.
     Always True: the request was answered, however the stream ended."""
@@ -293,7 +296,8 @@ def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
     players: dict[str, list] = {}
     for ch, dev, after in (("speech", speech_device, speech_after),
                            ("music", music_device, music_after),
-                           ("handoff", handoff_device, handoff_after)):
+                           ("handoff", handoff_device, handoff_after),
+                           ("book", book_device, book_after)):
         if dev is None:
             continue
         cur = speech_frames.seq(ch)

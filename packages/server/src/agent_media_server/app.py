@@ -237,7 +237,7 @@ CORS_PATHS = frozenset({
     "/mic/ask", "/mic/cancel",
     "/phone/ask", "/phone/answer", "/phone/cancel",
     "/notes", "/notes/clear",
-    "/speech/state", "/music/state", "/handoff/state",
+    "/speech/state", "/music/state", "/handoff/state", "/book/state",
     "/follow/trace",
 })
 
@@ -858,6 +858,10 @@ def _session_events(h: BaseHTTPRequestHandler, query: str) -> None:
     # (the listener's own music app; roadmap item 15, #7).
     handoff_dev = (auth.device_id(bearer) or None) if (
         qs.get("handoff") or [""])[0] == "frames" else None
+    # `?book=frames`: this device runs the book player (a note or document
+    # heard with Listen, org_listen.py), with its own lock-screen session.
+    book_dev = (auth.device_id(bearer) or None) if (
+        qs.get("book") or [""])[0] == "frames" else None
     # `?notes=1`: notifications agents here put in the phone's shade (§6.23).
     wants_notes = (qs.get("notes") or [""])[0] in ("1", "true")
 
@@ -879,6 +883,7 @@ def _session_events(h: BaseHTTPRequestHandler, query: str) -> None:
                          music_device=music_dev, music_after=_after("music_after"),
                          handoff_device=handoff_dev,
                          handoff_after=_after("handoff_after"),
+                         book_device=book_dev, book_after=_after("book_after"),
                          want_notes=wants_notes)
 
 
@@ -1408,7 +1413,7 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
 
         ok, detail = phone_jobs.result(auth.device_id(_bearer(h)), _read_json(h))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
-    elif path in ("/speech/state", "/music/state", "/handoff/state"):
+    elif path in ("/speech/state", "/music/state", "/handoff/state", "/book/state"):
         # The phone's players, reported back while they play from frames
         # (speech_frames.py, roadmap item 15): on every change and every
         # couple of seconds while playing. Only a paired device.

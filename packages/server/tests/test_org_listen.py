@@ -73,6 +73,9 @@ class Book:
     def get_resume_pos(self, uri):
         return self.resume_pos.get(uri)
 
+    def set_resume_pos(self, uri, pos_ms):
+        self.resume_pos[uri] = pos_ms
+
 
 @pytest.fixture()
 def book(tree, monkeypatch, tmp_path):
@@ -307,6 +310,70 @@ def test_a_press_is_one_batch_on_the_last_reading(book, server, monkeypatch):
     assert len(reads) == 1 and len(sends) == 2
     assert sends[0] == [["set_property", "pause", True]]
     assert got["state"] == "paused" and got2["speed"] == 1.1
+
+
+def test_a_note_plays_in_the_apps_book_player(book, server, monkeypatch, tmp_path):
+    """MEDIA_LISTEN_ENDPOINT: the app's book player (a media session, so a
+    headset's pause reaches it), streamed from the clip server; the place is
+    kept here, and stop then resume reopens it there."""
+    monkeypatch.setenv("MEDIA_LISTEN_ENDPOINT", "tcp://127.0.0.1:16627")
+    monkeypatch.setenv("MEDIA_BOOK_HTTP_ROOT", str(tmp_path / "cache" / "agent-media"))
+    monkeypatch.setenv("MEDIA_BOOK_BASEURL_PHONE", "http://red5:8780")
+    sent: list = []
+
+    def send(cmds):
+        sent.append(cmds)
+        for c in cmds:
+            if c[0] == "loadfile":
+                book.np = {"idle": False, "uri": c[1], "position_ms": 0,
+                           "duration_ms": 5000, "paused": False}
+            elif c[0] == "seek":
+                book.np["position_ms"] = int(float(c[1]) * 1000)
+            elif c[0] == "stop":
+                book.np = {"idle": True}
+            elif c[1] == "pause":
+                book.np["paused"] = c[2]
+    monkeypatch.setattr(org_listen, "_send", send)
+    _call(server, "POST", "/org/listen", {"path": "walk.org"})
+    assert _until(lambda: sent)
+    load = sent[0]
+    url = load[0][1]
+    assert load[0][0] == "loadfile" and load[0][2] == "replace"
+    assert url.startswith("http://red5:8780/docs/") and url.endswith(".mp3")
+    assert load[1] == ["set_property", "force-media-title", "Walk"]
+    assert book.calls == []                       # not the book channel
+    book.np["position_ms"] = 2500
+    _, got = _call(server, "GET", "/org/listen")
+    assert got["state"] == "playing" and got["line"] == 5
+
+    _call(server, "POST", "/org/listen/ctl", {"action": "pause"})
+    clip = str(org_listen._clip_of(url))
+    assert abs(book.resume_pos[clip] - 2500) < 200   # run on by the clock
+    book.np["position_ms"] = 1500
+    org_listen._forget_cache()
+    _, got = _call(server, "POST", "/org/listen/ctl", {"action": "stop"})
+    assert sent[-1] == [["stop"]] and got["state"] == "idle"
+    assert book.resume_pos[clip] == 1500
+    _, got = _call(server, "POST", "/org/listen/ctl", {"action": "toggle"})
+    assert sent[-1][0] == ["loadfile", url, "replace"] and sent[-1][-1] == ["seek", 1.5, "absolute"]
+    _, got = _call(server, "POST", "/org/listen/ctl", {"action": "vol+"})
+    assert got["volume"] == 100                   # the app's player has no boost
+
+
+def test_the_apps_player_idle_at_the_end_reads_as_ended(monkeypatch):
+    """The app's player goes idle at the end of a file (Termux's mpv stays
+    paused on its last frame): read as paused at the end, so "ended"."""
+    from agent_media_core.sinks import _mpv_ipc
+
+    monkeypatch.setattr(org_listen, "_socket", lambda: "tcp://x:1")
+    monkeypatch.setattr(_mpv_ipc, "display_properties", lambda *a, **k: {
+        "idle-active": True, "eof-reached": True, "path": "http://h/docs/a.mp3",
+        "time-pos": None, "duration": 9.0, "pause": False})
+    got = org_listen._read()
+    assert got["paused"] is True and got["position_ms"] == 9000 and org_listen._ended(got)
+    monkeypatch.setattr(_mpv_ipc, "display_properties", lambda *a, **k: {
+        "idle-active": True, "eof-reached": False, "path": None})
+    assert org_listen._read() == {"idle": True}
 
 
 def test_a_projects_documents_and_finding_one(tree, server, tmp_path, monkeypatch):

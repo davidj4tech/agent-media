@@ -2228,6 +2228,17 @@ like `/org/say` → `{"ok", "state", "path", "at", "title", "line"}`.
   phone first), else on the book channel's default. The default comes after,
   because it follows speech, and where speech goes to the app (`sasonica`)
   the app's speech player can't open a file on the server.
+- With `MEDIA_LISTEN_ENDPOINT` set (the server's `book` frames channel,
+  `MEDIA_BOOK_FRAMES_LISTEN`) it plays in **the app's book player** instead:
+  a stream from the clip server (`MEDIA_BOOK_BASEURL_PHONE`, nothing
+  copied), with the title and the headings as chapters
+  (`user-data/agent-media/chapters`) on its own media session and
+  lock-screen card, so a headset's pause reaches it; Termux's mpv has no
+  session (David, 15 Oct 2026). The app subscribes with `?book=frames` and
+  reports to `POST /book/state`, as for `music`. The place is kept on pause
+  and stop here, and `resume` with nothing loaded reopens the last note.
+  Its volume tops out at 100. At the end the app's player goes idle where
+  mpv stays paused; `eof-reached` is read so the state is still `"ended"`.
 - `state` is `"rendering"` while synthesis runs (it then plays by itself),
   `"copying"` while the file goes to the phone (the book channel plays it
   when it lands), or `"playing"`.

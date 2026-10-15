@@ -44,6 +44,14 @@ is answered "no device …" at once, not passed anywhere.
 
     MEDIA_HANDOFF_FRAMES_LISTEN=127.0.0.1:16626
     MEDIA_RADIO_HANDOFF_ENDPOINT=tcp://127.0.0.1:16626  (the switch)
+
+A fourth, `book` (15 Oct 2026), is the app's book player: a note or document
+heard with Listen (org_listen.py), on the app's own media session so a
+headset's pause reaches it — Termux's mpv has none (David, 15 Oct 2026:
+"Pausing with my earbuds doesn't seem to work"). No upstream either.
+
+    MEDIA_BOOK_FRAMES_LISTEN=127.0.0.1:16627
+    MEDIA_LISTEN_ENDPOINT=tcp://127.0.0.1:16627  (the switch)
 """
 
 from __future__ import annotations
@@ -267,9 +275,10 @@ def trace(event: str, hub: "_Hub", **kw) -> None:
         pass
 
 
-#: One per player on the phone: speech (6614's), music (6615's) and the
-#: radio's hand-off player (the listener's own music app; once 6617's).
-CHANNELS = ("speech", "music", "handoff")
+#: One per player on the phone: speech (6614's), music (6615's), the
+#: radio's hand-off player (the listener's own music app; once 6617's) and
+#: the book player (Listen's notes and documents; frames only).
+CHANNELS = ("speech", "music", "handoff", "book")
 _HUBS: dict[str, _Hub] = {c: _Hub(c) for c in CHANNELS}
 
 
@@ -785,7 +794,8 @@ def _publish_rtt(port: int, upstream: tuple[str, int] | None, frames: bool) -> N
 def start(listen: str | None = None, upstream: str | None = None,
           channel: str = "speech") -> socket.socket | None:
     """Listen for `channel`'s callers (`MEDIA_SPEECH_FRAMES_LISTEN`,
-    `MEDIA_MUSIC_FRAMES_LISTEN`, `MEDIA_HANDOFF_FRAMES_LISTEN`); None when unset."""
+    `MEDIA_MUSIC_FRAMES_LISTEN`, `MEDIA_HANDOFF_FRAMES_LISTEN`,
+    `MEDIA_BOOK_FRAMES_LISTEN`); None when unset."""
     hub = _HUBS[channel]
     key = f"MEDIA_{channel.upper()}_FRAMES"
     listen = listen or os.environ.get(f"{key}_LISTEN", "")

@@ -20,10 +20,19 @@ same `path` and `at`: the reader draws that text, so it can find the line.
 A `line` in the POST starts there (the paragraph at or after it); without
 one a note picks up where it was left, or from the top once it was heard
 to the end. server-contract.md §6.10.
+
+With MEDIA_LISTEN_ENDPOINT set (the server's `book` frames channel,
+speech_frames.py) a note plays in the app's own book player instead of the
+book channel's mpv: streamed from the clip server, with its headings as the
+lock screen's chapters, and a headset's pause reaching it — Termux's mpv has
+no media session (David, 15 Oct 2026: "Pausing with my earbuds doesn't seem
+to work"). The place it was left is kept here, as the book channel's
+observer keeps it for mpv.
 """
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from pathlib import Path
@@ -31,6 +40,8 @@ from pathlib import Path
 from agent_media_core import docs
 
 from . import auth, doc_read, org
+
+log = logging.getLogger("agent-media.server.org_listen")
 
 #: A render in progress, by its stem: {"path", "at", "title", "line"}.
 _JOBS: dict[str, dict] = {}
@@ -52,6 +63,44 @@ _VOL_MAX = 150
 _END_S = 1.5
 #: Further into a paragraph than this, "prev" goes back to its start.
 _RESTART_S = 2.0
+#: The app's player tops out at 100 (no boost).
+_APP_VOL_MAX = 100
+#: The app's player: the last note handed to it, for resume once it is idle.
+_LAST: dict = {}
+
+
+def _endpoint() -> str:
+    """The app's book player (MEDIA_LISTEN_ENDPOINT), or "" for the book channel."""
+    import os
+    return os.environ.get("MEDIA_LISTEN_ENDPOINT", "").strip()
+
+
+def _vol_max() -> int:
+    return _APP_VOL_MAX if _endpoint() else _VOL_MAX
+
+
+def _served_url(clip: Path) -> str | None:
+    """`clip` on the clip server the phone reads (MEDIA_BOOK_BASEURL_PHONE,
+    rooted at MEDIA_BOOK_HTTP_ROOT); None when it is not under that root."""
+    import os
+    import urllib.parse
+    root = os.environ.get("MEDIA_BOOK_HTTP_ROOT", "")
+    base = (os.environ.get("MEDIA_LISTEN_BASEURL")
+            or os.environ.get("MEDIA_BOOK_BASEURL_PHONE") or "").rstrip("/")
+    if not root or not base:
+        return None
+    try:
+        rel = clip.resolve().relative_to(Path(root).expanduser().resolve())
+    except ValueError:
+        return None
+    return f"{base}/{urllib.parse.quote(rel.as_posix())}"
+
+
+def _keep_place(np: dict) -> None:
+    """Where the app's player is in a note, for the next Listen without a line."""
+    clip = None if np.get("idle") else _clip_of(np.get("uri") or "")
+    if clip:
+        _book()._state().set_resume_pos(str(clip), int(np.get("position_ms") or 0))
 
 
 def _target() -> str:
@@ -100,7 +149,7 @@ def _line_at(timings: dict, pos_s: float) -> int | None:
 
 #: What a read asks the player, in one round trip.
 _PROPS = ["idle-active", "path", "time-pos", "duration", "pause", "speed",
-          "volume", "mute"]
+          "volume", "mute", "eof-reached"]
 #: A press acts on a reading this fresh (its position run on by the clock)
 #: rather than reading again first: on the phone each read is ~0.9 s.
 _PRESS_AGE_S = 6.0
@@ -110,6 +159,8 @@ _KEEP_S = 15.0
 
 
 def _socket():
+    if _endpoint():
+        return _endpoint()
     from agent_media_core.sinks.book import _socket_for
     return _socket_for(_book()._book_target(_target()))
 
@@ -123,13 +174,16 @@ def _read() -> dict | None:
         return None
     if not p:
         return None
-    if p.get("idle-active") or not p.get("path"):
-        return {"idle": True}
     num = lambda k: float(p[k]) if p.get(k) is not None else None  # noqa: E731
+    # The app's player goes idle at the end where the phone's mpv stays
+    # paused on the last frame: read as that, so the note reads "ended".
+    end = bool(p.get("eof-reached")) and bool(p.get("path")) and num("duration") is not None
+    if (p.get("idle-active") and not end) or not p.get("path"):
+        return {"idle": True}
     return {"idle": False, "uri": p["path"],
-            "position_ms": int((num("time-pos") or 0) * 1000),
+            "position_ms": int((num("duration") if end else num("time-pos") or 0) * 1000),
             "duration_ms": int(num("duration") * 1000) if num("duration") is not None else None,
-            "paused": bool(p.get("pause")), "speed": num("speed") or 1.0,
+            "paused": end or bool(p.get("pause")), "speed": num("speed") or 1.0,
             "volume": int(round(num("volume"))) if num("volume") is not None else None,
             "muted": bool(p.get("mute"))}
 
@@ -178,13 +232,15 @@ def _clip_of(uri: str) -> Path | None:
     the file is a copy with the same name, so the name is what is matched."""
     if not uri:
         return None
-    name = Path(uri.split("?", 1)[0]).name
+    import urllib.parse
+    name = urllib.parse.unquote(Path(uri.split("?", 1)[0]).name)
     clip = docs.doc_cache_dir() / name
     return clip if name.endswith(".mp3") and docs.timings_path(clip).exists() else None
 
 
 def _play(clip: Path, meta: dict, line: int | None) -> str:
-    """Put `clip` on the book channel; the state it is then in."""
+    """Put `clip` on the book channel (or the app's book player); the state
+    it is then in."""
     srv = _book()
     timings = docs.read_timings(clip)
     now = _playing(_PRESS_AGE_S)
@@ -201,12 +257,45 @@ def _play(clip: Path, meta: dict, line: int | None) -> str:
         dur = (timings or {}).get("duration") or 0
         if dur and start >= (dur - _HEARD_S) * 1000:
             start = 0
+    if _endpoint():
+        return _play_app(clip, meta, timings, start, now)
     r = srv.book_play(str(clip), resume=False, start_ms=start, title=meta["title"],
                       target=_target())
     _forget_cache()
     if r.get("ok"):
         return "playing"
     return "copying" if r.get("fetching") else "error"
+
+
+def _play_app(clip: Path, meta: dict, timings: dict | None, start: int,
+              now: dict) -> str:
+    """Load `clip` in the app's book player, from `start` ms: its title, and
+    its headings as the chapters its lock-screen next and previous move by."""
+    url = _served_url(clip)
+    if not url:
+        return "error"
+    if not now.get("idle"):
+        _keep_place(now)                           # the note it replaces
+    chapters = [[c["start"], c["title"]] for c in (timings or {}).get("chapters") or []
+                if c.get("title") is not None and c.get("start") is not None]
+    cmds: list = [["loadfile", url, "replace"],
+                  ["set_property", "force-media-title", meta.get("title") or clip.stem]]
+    if chapters:
+        cmds.append(["set_property", "user-data/agent-media/chapters", chapters])
+    if start > 0:
+        cmds.append(["seek", start / 1000.0, "absolute"])
+    try:
+        _send(cmds)
+    except Exception as e:
+        log.info("org-listen: the app's book player did not take %s: %s", clip.name, e)
+        return "error"
+    _LAST.clear()
+    _LAST.update({"clip": clip, "meta": meta})
+    _predict({"idle": False, "uri": url, "position_ms": start,
+              "duration_ms": int(((timings or {}).get("duration") or 0) * 1000) or None,
+              "paused": False, "speed": now.get("speed") or 1.0,
+              "volume": now.get("volume"), "muted": bool(now.get("muted"))})
+    return "playing"
 
 
 def _render_then_play(stem: str, sections: list, meta: dict) -> None:
@@ -335,14 +424,27 @@ def control(action: str, bearer: str, value: float | None = None) -> tuple[bool,
     if action in ("seek", "skip") and value is None:
         return False, {"error": f"{action} needs {'to' if action == 'seek' else 'by'}", "status": 400}
     srv = _book()
+    app = bool(_endpoint())
     if action == "stop":
-        srv.book_stop(target=_target())            # saves the place, clears now-playing
+        if app:
+            _keep_place(_playing(_PRESS_AGE_S))
+            try:
+                _send([["stop"]])
+            except Exception as e:
+                return False, {"error": f"the player did not take it ({e})", "status": 502}
+        else:
+            srv.book_stop(target=_target())        # saves the place, clears now-playing
         _predict({"idle": True})
         return True, _answer({"idle": True})
     np = _playing(_PRESS_AGE_S)
     if np.get("idle"):
         if action in ("resume", "toggle"):
-            srv.book_resume(target=_target())      # reopens the last one
+            if app:
+                if not _LAST:
+                    return False, {"error": "nothing is being listened to", "status": 409}
+                _play(_LAST["clip"], _LAST["meta"], None)
+            else:
+                srv.book_resume(target=_target())  # reopens the last one
             _forget_cache()
             return now(bearer)
         return False, {"error": "nothing is being listened to", "status": 409}
@@ -361,6 +463,8 @@ def control(action: str, bearer: str, value: float | None = None) -> tuple[bool,
     if action == "pause":
         cmds.append(["set_property", "pause", True])
         new["paused"] = True
+        if app:
+            _keep_place(np)
     elif action == "resume":
         if _ended(np):
             seek(0.0)                              # heard to the end: again from the top
@@ -393,7 +497,7 @@ def control(action: str, bearer: str, value: float | None = None) -> tuple[bool,
         cmds.append(["set_property", "mute", new["muted"]])
     else:
         cur_vol = int(np.get("volume") if np.get("volume") is not None else 100)
-        new["volume"] = max(0, min(_VOL_MAX, cur_vol + (_VOL_STEP if action == "vol+" else -_VOL_STEP)))
+        new["volume"] = max(0, min(_vol_max(), cur_vol + (_VOL_STEP if action == "vol+" else -_VOL_STEP)))
         cmds.append(["set_property", "volume", new["volume"]])
     try:
         _send(cmds)
