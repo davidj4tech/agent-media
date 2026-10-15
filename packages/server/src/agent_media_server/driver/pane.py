@@ -26,10 +26,15 @@ class PaneDriver:
     caps = Caps(interrupt=True)
 
     def start(self, *, agent, cwd, text, host="", flags=(), quote="", model="", mode="",
-              profile=""):
+              profile="", system_prompt_file=""):
         from .. import send
 
         flags = list(flags)
+        if system_prompt_file:
+            # A persona's render (personas.py): Claude's and pi's own flag.
+            from .. import personas
+
+            flags += [personas.SYSTEM_PROMPT_FLAG[agent], system_prompt_file]
         if agent == "claude":
             # Flags, so a new window starts that way before its first word.
             if model:

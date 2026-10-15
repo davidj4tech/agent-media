@@ -1,7 +1,7 @@
 """Presets: saved ways to start a chat (server-contract §6.24).
 
 A preset is the new-chat sheet filled in ahead of time — agent, login, model,
-plan — plus the AGENTS.md a new project started from it gets and the words
+plan, persona and role (personas.py; "" for none) — plus the AGENTS.md a new project started from it gets and the words
 the box starts with. The app applies one itself; the server reads a preset
 only for its AGENTS.md (`agents_md_of`, from `/ask`'s `preset`).
 
@@ -18,7 +18,7 @@ from pathlib import Path
 
 from . import auth
 
-FIELDS = ("name", "agent", "profile", "model", "plan", "agents_md", "prompt")
+FIELDS = ("name", "agent", "profile", "model", "plan", "persona", "role", "agents_md", "prompt")
 
 
 def store_path() -> Path:
@@ -42,6 +42,8 @@ def _clean(r: dict) -> dict:
             "profile": str(r.get("profile") or "").strip(),
             "model": str(r.get("model") or "").strip(),
             "plan": r.get("plan") is True,
+            "persona": str(r.get("persona") or "").strip(),
+            "role": str(r.get("role") or "").strip(),
             "agents_md": str(r.get("agents_md") or ""),
             "prompt": str(r.get("prompt") or "")}
 
@@ -70,9 +72,10 @@ def listing(bearer: str) -> tuple[bool, dict]:
     user, err = auth.gate(bearer)
     if not user:
         return False, err
-    from . import new_project
+    from . import new_project, personas
 
-    return True, {"presets": load(), "agents_md_default": new_project.default_agents_md()}
+    return True, {"presets": load(), "agents_md_default": new_project.default_agents_md(),
+                  **personas.listing()}
 
 
 def put(body: dict, bearer: str) -> tuple[bool, dict]:
@@ -87,6 +90,12 @@ def put(body: dict, bearer: str) -> tuple[bool, dict]:
 
     if p["agent"] and p["agent"] not in panes.AGENT_COMMANDS:
         return False, {"error": f"unknown agent {p['agent']!r}", "status": 400}
+    if p["persona"] or p["role"]:
+        from . import personas
+
+        why = personas.check(p["persona"], p["role"])
+        if why:
+            return False, {"error": why, "status": 400}
     rows = load()
     at = next((i for i, r in enumerate(rows) if r["name"] == p["name"]), None)
     if at is None:

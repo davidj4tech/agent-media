@@ -3,7 +3,8 @@
 David, 15 Oct 2026: presets (contract §6.24) should be able to start a chat
 as one of the personas in `~/agent-personas`; that should fit the
 AGENTS.md draft; and private personas need a safe way in, perhaps through
-seal. Status: **proposal**, nothing built.
+seal. Status: **step 1 built 16 Oct 2026** (personas.py, contract §6.24);
+steps 2–4 proposal.
 
 ## What there is
 
@@ -138,3 +139,20 @@ files in the project, its own memory tools — is outside the mark.
 - Whether `--system-prompt-snapshot` is on for this host's Claude Code
   ("no effect where system-prompt recording is not yet enabled").
 - Where a pane-started Claude writes debug logs that could hold the prompt.
+
+## Open after step 1
+
+- **The render files are never deleted.** Each fresh chat with a persona
+  leaves a 0600 file in `$XDG_RUNTIME_DIR/agent-media/personas/`
+  (`<random>.md`, linked as `<session>.md`): Claude may be handed it again
+  on resume (sessiond passes it at every spawn while it exists), so step 1
+  keeps it. tmpfs clears it at reboot; a public render is harmless, but a
+  private one (step 4) needs a lifetime — delete after the first request
+  with the snapshot on, or on seal.
+- **Pane resumes do not re-pass it.** A resumed pane Claude relies on the
+  recorded system prompt (snapshot on); a pi resumed in a pane gets no
+  persona. A per-session lookup by `<session>.md` would fix both.
+- **`prepend` shows in the thread**: codex, opencode and Hermes get the
+  render as the first message, and it is recorded as the listener's turn.
+- The thread header's persona chip (§1) is not built: nothing records a
+  session's persona yet, beyond the `<session>.md` file and `/ask`'s answer.

@@ -661,7 +661,8 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
         agent: str = "", cwd: str = "", cwd_trusted: bool = False,
         model: str = "", mode: str = "", profile: str = "",
         new_project: str = "", repo: str = "", agents_md: bool | str = False,
-        preset: str = "", worktree: dict | None = None) -> tuple[bool, dict]:
+        preset: str = "", worktree: dict | None = None,
+        persona: str = "", role: str = "") -> tuple[bool, dict]:
     """Start a fresh session with `text` as its first message.
 
     What the phone's assistant button does. Nothing to resume and no item yet:
@@ -686,6 +687,10 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
     itself: its first message is new_project.DRAFT_PROMPT, then `text`
     (which may then be empty). `worktree` (`{"from": <a place>, "branch"}`) cuts a
     new worktree of a place and opens the chat there (contract §6.24).
+    `persona` and `role` (ids from personas.listing) start it as their public
+    render: an appended system prompt for Claude and pi, ahead of the first
+    message for the rest (personas.py). Unknown → 400; a render that fails →
+    502, before any folder is made or window opened.
     """
     text = " ".join((text or "").split())
     drafting = bool(new_project) and agents_md == "draft"
@@ -711,6 +716,17 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
         # visible error and a conversation that looks stuck.
         return False, {"error": why, "status": 409, "agent": agent,
                        "fix": "harnesses"}
+    persona, role = (persona or "").strip(), (role or "").strip()
+    rendered = ""
+    if persona or role:
+        from . import personas
+
+        why = personas.check(persona, role)
+        if why:
+            return False, {"error": why, "status": 400}
+        made_it, rendered = personas.render(persona, role, agent)
+        if not made_it:
+            return False, {"error": f"could not render the persona: {rendered}", "status": 502}
     where = (cwd or "").strip()
     made_detail: dict = {}
     if new_project or worktree:
@@ -773,11 +789,29 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
     from . import session_settings
 
     model, mode = session_settings.clean_new(agent, model, mode)
+    prompt_file = None
+    delivered = ""
+    if rendered:
+        from . import personas
+
+        delivered = personas.via(agent)
+        if (delivered == "system_prompt" and chosen.kind == driver.HEADLESS
+                and not chosen.takes_system_prompt()):
+            delivered = "prepend"       # a sessiond older than this canvas
+        if delivered == "system_prompt":
+            prompt_file = personas.write(rendered)
+        else:
+            text = personas.prepend(rendered, text)
     ok, detail = chosen.start(agent=agent, cwd=cwd, text=text, host=host,
                               flags=flags, quote=quote, model=model, mode=mode,
-                              **({"profile": profile} if profile else {}))
+                              **({"profile": profile} if profile else {}),
+                              **({"system_prompt_file": str(prompt_file)} if prompt_file else {}))
     if ok and made_detail:
         detail.update(made_detail)
+    if ok and rendered:
+        if prompt_file:
+            personas.name_for(prompt_file, str(detail.get("session") or ""))
+        detail.update({"persona": persona, "role": role, "persona_via": delivered})
     return ok, detail
 
 

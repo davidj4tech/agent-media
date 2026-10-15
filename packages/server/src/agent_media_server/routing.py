@@ -120,6 +120,7 @@ def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "
                plan: bool = False, profile: str = "",
                level: str = "", new_project: str = "", repo: str = "",
                agents_md: bool | str = False, preset: str = "",
+               persona: str = "", role: str = "",
                worktree: dict | None = None) -> tuple[bool, dict]:
     """The assistant button's words, sent where they belong.
 
@@ -137,7 +138,8 @@ def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "
     for it by `new_project` or `worktree`, either of which forces a fresh
     session — see `send.ask`), and runs `agent`
     (claude, codex, pi, hermes) when one is named or spoken (see `ask`),
-    on `model` and in plan mode when `plan`, and speaks at `level` (a speech
+    on `model` and in plan mode when `plan`, as `persona` and/or `role`
+    (personas.py), and speaks at `level` (a speech
     level, `agent_media_core.speak_priority`) — a fresh session's only; words
     that land in an existing one leave its settings alone.
     """
@@ -203,6 +205,8 @@ def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "
         ok, detail = send.ask(text, bearer, project=project, agent=agent, cwd=cwd,
                               model=model, mode="plan" if plan else "",
                               **({"profile": profile} if profile else {}),
+                              **({"persona": persona} if persona else {}),
+                              **({"role": role} if role else {}),
                               **({"new_project": new_project, "repo": repo,
                                   "agents_md": agents_md, "preset": preset}
                                  if new_project else {}),

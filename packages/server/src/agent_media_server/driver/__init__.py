@@ -47,9 +47,12 @@ class Driver(Protocol):
 
     def start(self, *, agent: str, cwd: str, text: str, host: str = "",
               flags: list[str] | tuple[str, ...] = (), quote: str = "",
-              model: str = "", mode: str = "") -> tuple[bool, dict]:
+              model: str = "", mode: str = "",
+              system_prompt_file: str = "") -> tuple[bool, dict]:
         """A fresh session with `text` as its first message, on `model` (an
-        alias, "" for the default) and in plan mode when `mode` is "plan"."""
+        alias, "" for the default) and in plan mode when `mode` is "plan".
+        `system_prompt_file`: a persona's render, for a harness that takes
+        one as a system prompt (personas.SYSTEM_PROMPT_FLAG)."""
 
     def configure(self, session: str, *, model: str | None = None,
                   mode: str | None = None) -> tuple[bool, dict]:

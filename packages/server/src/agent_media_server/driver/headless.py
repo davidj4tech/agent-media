@@ -261,15 +261,24 @@ class HeadlessDriver:
 
     # -- acting --
 
-    def start(self, *, agent, cwd, text, host="", flags=(), quote="", model="", mode=""):
+    def takes_system_prompt(self) -> bool:
+        """Whether the running sessiond passes `system_prompt_file` on (one
+        older than this canvas drops it silently, so it is asked first)."""
+        return call("ping", timeout=3.0).get("system_prompt") is True
+
+    def start(self, *, agent, cwd, text, host="", flags=(), quote="", model="", mode="",
+              system_prompt_file=""):
         """A fresh headless session. `host` (the tmux session a pane would
         have opened in) becomes its workspace — what speech is filed and
         voiced under. `flags` are amux's pane flags and are not used: the
-        permission profile is sessiond's (permissions.py)."""
+        permission profile is sessiond's (permissions.py). `system_prompt_file`
+        is a persona's render (personas.py), appended to Claude's system
+        prompt at this start and every resume."""
         from .. import send
 
         r = call("start", cwd=cwd, text=compose(text, quote), agent=agent, workspace=host,
-                 model=model, mode=mode, timeout=30.0)
+                 model=model, mode=mode, timeout=30.0,
+                 **({"system_prompt_file": system_prompt_file} if system_prompt_file else {}))
         if not r.get("ok") and r.get("code") == "unsupported" and agent != "claude":
             # A sessiond older than this canvas (it restarts only when its own
             # code changes, and a restart ends its chats): the chat opens in a
@@ -277,7 +286,8 @@ class HeadlessDriver:
             from . import pane_driver
 
             return pane_driver().start(agent=agent, cwd=cwd, text=text, host=host,
-                                       flags=flags, quote=quote, model=model, mode=mode)
+                                       flags=flags, quote=quote, model=model, mode=mode,
+                                       system_prompt_file=system_prompt_file)
         if not r.get("ok"):
             return _failed(r, pane=None)
         session = str(r.get("session") or "")

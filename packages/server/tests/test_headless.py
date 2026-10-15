@@ -923,6 +923,26 @@ def test_a_parked_session_keeps_its_choice_for_the_resume(host, monkeypatch):
     assert argv[argv.index("--permission-mode") + 1] == "plan"
 
 
+def test_a_persona_file_is_appended_at_start_and_every_resume(host, monkeypatch, tmp_path):
+    """personas.py's render: `--append-system-prompt-file` while the file is
+    there, at the first spawn and at the resume after a park."""
+    render = tmp_path / "zara.md"
+    render.write_text("# Persona Render: zara\n")
+    assert driver.headless_driver().takes_system_prompt()
+    sid = start(host, "reply: a", system_prompt_file=str(render))
+    wait_for(lambda: state(host, sid) == "waiting")
+    argv = starts(host)[0]["argv"]
+    assert argv[argv.index("--append-system-prompt-file") + 1] == str(render)
+    assert host.sup.get(sid)["system_prompt_file"] == str(render)
+    monkeypatch.setenv("MEDIA_SESSIOND_IDLE", "0")
+    host.sup.park_idle(time.time() + 5)
+    wait_for(lambda: state(host, sid) == "parked")
+    driver.headless_driver().send(sid, "", "reply: b")
+    wait_for(lambda: last_text(host, sid) == "b")
+    argv = starts(host)[-1]["argv"]
+    assert "--resume" in argv and argv[argv.index("--append-system-prompt-file") + 1] == str(render)
+
+
 def test_leaving_plan_mode_by_itself_clears_the_choice(host):
     sid = start(host, "reply: a", mode="plan")
     wait_for(lambda: state(host, sid) == "waiting")

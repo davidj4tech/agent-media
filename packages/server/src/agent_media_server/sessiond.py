@@ -274,6 +274,10 @@ class Session:
         #: process starts from its flags, not from what it was told.
         self.model = model
         self.mode = mode
+        #: A persona's render (personas.py), appended to the system prompt at
+        #: every spawn while the file is there — a resume where Claude does
+        #: not replay a recorded system prompt still has it.
+        self.system_prompt_file = ""
         #: What the process last said it runs (`system/init`).
         self.init_model = ""
         self.init_mode = ""
@@ -324,6 +328,7 @@ class Session:
         return {"session": self.id, "agent": self.agent, "cwd": self.cwd,
                 "workspace": self.workspace, "permissions": self.permissions,
                 "model": self.model, "mode": self.mode,
+                "system_prompt_file": self.system_prompt_file,
                 "init_model": self.init_model, "init_mode": self.init_mode,
                 "driver": "headless", "state": self.state, "since": round(self.since, 3),
                 "created": round(self.created, 3),
@@ -343,6 +348,7 @@ class Session:
                 workspace=str(rec.get("workspace") or ""),
                 permissions=str(rec.get("permissions") or "strict"),
                 model=str(rec.get("model") or ""), mode=str(rec.get("mode") or ""))
+        s.system_prompt_file = str(rec.get("system_prompt_file") or "")
         s.init_model = str(rec.get("init_model") or "")
         s.init_mode = str(rec.get("init_mode") or "")
         s.state = str(rec.get("state") or "parked")
@@ -558,6 +564,8 @@ class Supervisor:
                 i = argv.index("--permission-mode")
                 del argv[i:i + 2]
             argv += ["--permission-mode", "plan"]
+        if s.system_prompt_file and os.path.isfile(s.system_prompt_file):
+            argv += ["--append-system-prompt-file", s.system_prompt_file]
         # More `claude` flags, for debugging and smoke runs — e.g.
         # `--setting-sources project,local` keeps the user's hooks (and
         # speech) out of a test session.
@@ -882,7 +890,7 @@ class Supervisor:
 
     def start(self, cwd: str, text: str, *, session: str = "", agent: str = "claude",
               workspace: str = "", permissions: str = "", model: str = "",
-              mode: str = "") -> dict:
+              mode: str = "", system_prompt_file: str = "") -> dict:
         from . import permissions as perms
 
         if agent not in ("claude", "opencode"):
@@ -900,6 +908,7 @@ class Supervisor:
             s = Session(session, cwd, agent=agent, workspace=workspace,
                         permissions=perms.mode(permissions), model=model,
                         mode="plan" if mode == "plan" else "")
+            s.system_prompt_file = system_prompt_file
             s.first_text = " ".join(text.split())[:200]
             self._spawn(s, resume=False)
             self.sessions[session] = s
@@ -1442,7 +1451,8 @@ class Supervisor:
         sid = str(req.get("session") or "")
         try:
             if op == "ping":
-                return {"ok": True, "pid": os.getpid()}
+                # `system_prompt`: `start` takes a `system_prompt_file`.
+                return {"ok": True, "pid": os.getpid(), "system_prompt": True}
             if op == "list":
                 return {"ok": True, "sessions": self.list()}
             if op == "get":
@@ -1453,7 +1463,8 @@ class Supervisor:
                     agent=str(req.get("agent") or "claude"),
                     workspace=str(req.get("workspace") or ""),
                     permissions=str(req.get("permissions") or ""),
-                    model=str(req.get("model") or ""), mode=str(req.get("mode") or ""))}
+                    model=str(req.get("model") or ""), mode=str(req.get("mode") or ""),
+                    system_prompt_file=str(req.get("system_prompt_file") or ""))}
             if op == "configure":
                 return {"ok": True, **self.configure(
                     sid, model=req.get("model") if isinstance(req.get("model"), str) else None,

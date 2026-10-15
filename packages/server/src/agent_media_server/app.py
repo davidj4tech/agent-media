@@ -50,7 +50,10 @@ device gets its token):
                   ambiguous. `new_project` (a name, with `repo`,
                   `agents_md`, `preset`) or `worktree` ({"from", "branch"})
                   makes the folder first (new_project.py, contract §6.24).
-  GET  /presets   → saved ways to start a chat; POST /presets {Preset} adds
+                  `persona`/`role` start the fresh one as an agent-personas
+                  render (personas.py).
+  GET  /presets   → saved ways to start a chat, and the `personas`/`roles`
+                  a chat can start as; POST /presets {Preset} adds
                   or replaces one, POST /presets/remove {"name"} (presets.py)
   GET  /conversations   → live sessions and recent conversations, by title
                   (the picker)
@@ -1361,6 +1364,8 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
             agents_md=(body.get("agents_md") if body.get("agents_md") in (True, "draft")
                        else False),
             preset=str(body.get("preset") or ""),
+            persona=str(body.get("persona") or ""),
+            role=str(body.get("role") or ""),
             worktree=body.get("worktree") if isinstance(body.get("worktree"), dict) else None)
         status = detail.pop("status", 400)
         if not ok:
