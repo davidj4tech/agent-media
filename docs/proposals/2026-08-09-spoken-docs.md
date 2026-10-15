@@ -1,7 +1,14 @@
 # Proposal: a place for documents, and a way to hear them
 
-Status: **proposed** — nothing moved or built yet
+Status: **built**; the open questions were decided on 15 Oct 2026 (below)
 Date: 2026-08-09
+
+Built since: the `docs/` layout below, with the moves done; `media doc list`,
+`media doc play` and the popup's chooser; headings as chapters; the
+speakable projection; and the render cache. In Sasonica (15 Oct 2026), a
+note or a project's document has Listen with follow-along and a mini player
+(server-contract §6.10 `/org/listen`, `/doc/read`). A render is now one clip
+per paragraph, with a sidecar of each paragraph's time and source line.
 
 Two asks from the same conversation, which turn out to be one design:
 
@@ -115,10 +122,18 @@ everything downstream of it already exists.
 Worth doing in that order, since the first half is useful even if the second
 is never built.
 
-## Open questions
+## Decided (David, 15 Oct 2026)
 
-- Should `handover/` accumulate one file per session, or one rolling file with
-  history? Accumulating is honest but noisy.
-- Does the chooser list `reference/` too, or only the dated kinds? Reference
-  docs are the ones most worth hearing and the least worth browsing.
-- Does a doc get re-rendered on edit automatically, or on demand?
+These were the open questions.
+
+- **`handover/` accumulates: one tracked file per session or topic**
+  (`YYYY-MM-DD-slug.md`). That is what the practice had become, 21 files by
+  then. Old ones stay as history; nothing rolls over.
+- **The chooser lists `reference/` too.** `media doc list` already listed
+  everything: dated documents first, newest on top, and the undated ones
+  (reference) after them.
+- **A doc is rendered on demand, when it is played**, not ahead on edit. The
+  cache key changes with the file (its mtime for `media doc`, its text for
+  Listen), so the first play after an edit renders again. That takes a few
+  seconds (about 9 s for a 4-minute note, synthesised in parallel). Nothing
+  runs in the background, and no TTS is spent on documents nobody plays.
