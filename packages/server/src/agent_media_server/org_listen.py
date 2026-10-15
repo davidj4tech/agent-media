@@ -39,7 +39,13 @@ _CACHE_TTL_S = 1.0
 _CACHE: list = [0.0, None]
 #: Within this much of the end, a note counts as heard: it starts again.
 _HEARD_S = 3.0
-_ACTIONS = ("pause", "resume", "toggle", "stop", "prev", "next")
+_ACTIONS = ("pause", "resume", "toggle", "stop", "prev", "next", "seek", "skip",
+            "speed+", "speed-", "speed0", "vol+", "vol-", "mute")
+#: The sheet's knobs: speed in tenths (as the voice's), volume in tens.
+_SPEED_STEP, _SPEED_MIN, _SPEED_MAX = 0.1, 0.5, 3.0
+_VOL_STEP = 10
+#: mpv's volume runs past 100 (a boost); the phone's book player sits at 150.
+_VOL_MAX = 150
 #: Paused within this much of the end: heard to the end. The phone's mpv
 #: keeps a finished file open, paused at its last frame, so "paused" alone
 #: would leave Play resuming at the end, which plays nothing.
@@ -103,9 +109,36 @@ def _playing() -> dict:
         got = _book().book_now_playing(target=_target())
     except Exception:
         got = {"idle": True}
+    if not got.get("idle"):
+        got = {**got, **_mixer()}
     with _LOCK:
         _CACHE[:] = [time.monotonic(), got]
     return got
+
+
+def _socket():
+    from agent_media_core.sinks.book import _socket_for
+    return _socket_for(_book()._book_target(_target()))
+
+
+def _mixer() -> dict:
+    """The book player's volume and mute, for the sheet's knobs."""
+    try:
+        from agent_media_core.sinks import _mpv_ipc as ipc
+        props = ipc.display_properties(_socket(), ["volume", "mute"], timeout=1.2)
+    except Exception:
+        return {}
+    out = {}
+    if props.get("volume") is not None:
+        out["volume"] = int(round(float(props["volume"])))
+    if props.get("mute") is not None:
+        out["muted"] = bool(props["mute"])
+    return out
+
+
+def _set(name: str, value) -> None:
+    from agent_media_core.sinks import _mpv_ipc as ipc
+    ipc.set_property(_socket(), name, value)
 
 
 def _forget_cache() -> None:
@@ -245,6 +278,8 @@ def now(bearer: str) -> tuple[bool, dict]:
         state = "ended" if _ended(np) else "paused" if np.get("paused") else "playing"
         return True, {"state": state,
                       **_who({**t, "title": t.get("title") or np.get("title")}),
+                      "speed": np.get("speed"), "volume": np.get("volume"),
+                      "muted": np.get("muted"), "chapters": t.get("chapters") or [],
                       "line": _line_at(t, pos / 1000.0), "pos_ms": pos,
                       "dur_ms": np.get("duration_ms") or int((t.get("duration") or 0) * 1000)}
     with _LOCK:
@@ -257,7 +292,7 @@ def now(bearer: str) -> tuple[bool, dict]:
     return True, {"state": "idle"}
 
 
-def control(action: str, bearer: str) -> tuple[bool, dict]:
+def control(action: str, bearer: str, value: float | None = None) -> tuple[bool, dict]:
     """Pause, resume or stop the book channel: the reader's own keys."""
     ok, detail = auth.may_control_speech(bearer)
     if not ok:
@@ -265,6 +300,33 @@ def control(action: str, bearer: str) -> tuple[bool, dict]:
     if action not in _ACTIONS:
         return False, {"error": f"unknown action {action!r}", "status": 400}
     srv = _book()
+    if action in ("seek", "skip"):
+        if value is None:
+            return False, {"error": f"{action} needs {'to' if action == 'seek' else 'by'}", "status": 400}
+        if action == "seek":
+            srv.book_seek(max(0.0, value), target=_target())
+        else:
+            srv.book_skip(value, target=_target())
+        _forget_cache()
+        return now(bearer)
+    if action.startswith(("speed", "vol")) or action == "mute":
+        np = _playing()
+        if np.get("idle"):
+            return False, {"error": "nothing is being listened to", "status": 409}
+        try:
+            if action.startswith("speed"):
+                cur = float(np.get("speed") or 1.0)
+                rate = 1.0 if action == "speed0" else cur + (_SPEED_STEP if action == "speed+" else -_SPEED_STEP)
+                srv.book_speed(round(max(_SPEED_MIN, min(_SPEED_MAX, rate)), 2), target=_target())
+            elif action == "mute":
+                _set("mute", not np.get("muted"))
+            else:
+                cur = int(np.get("volume") if np.get("volume") is not None else 100)
+                _set("volume", max(0, min(_VOL_MAX, cur + (_VOL_STEP if action == "vol+" else -_VOL_STEP))))
+        except Exception as e:
+            return False, {"error": f"the player did not take it ({e})", "status": 502}
+        _forget_cache()
+        return now(bearer)
     if action in ("prev", "next"):
         # The mini player's keys: a paragraph back or on, as a sentence is
         # for a reply. "prev" restarts the paragraph when past its start.

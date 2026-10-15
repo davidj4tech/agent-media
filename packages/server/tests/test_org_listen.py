@@ -55,6 +55,18 @@ class Book:
     def book_now_playing(self, target=""):
         return dict(self.np)
 
+    def book_skip(self, seconds, target=""):
+        self.calls.append(("skip", seconds))
+        return {"ok": True}
+
+    def book_speed(self, rate, target=""):
+        self.calls.append(("speed", rate))
+        self.np["speed"] = rate
+        return {"ok": True}
+
+    def _book_target(self, name=""):
+        return name
+
     def _state(self):
         return self
 
@@ -235,3 +247,28 @@ def test_heard_to_the_end_is_ended_and_resume_starts_again(book, server):
     book.np.update({"position_ms": 4000, "paused": True})
     _, got = _call(server, "GET", "/org/listen")
     assert got["state"] == "paused"
+
+
+def test_the_sheets_knobs(book, server, monkeypatch):
+    mixer = {"volume": 100, "muted": False}
+    monkeypatch.setattr(org_listen, "_mixer", lambda: dict(mixer))
+    monkeypatch.setattr(org_listen, "_set", lambda name, v: mixer.__setitem__(
+        "muted" if name == "mute" else name, v))
+    _call(server, "POST", "/org/listen", {"path": "walk.org"})
+    assert _until(lambda: book.calls)
+    book.np["speed"] = 1.0
+    _, got = _call(server, "GET", "/org/listen")
+    assert got["volume"] == 100 and got["muted"] is False and got["speed"] == 1.0
+    _, got = _call(server, "POST", "/org/listen/ctl", {"action": "speed+"})
+    assert book.calls[-1] == ("speed", 1.1) and got["speed"] == 1.1
+    _call(server, "POST", "/org/listen/ctl", {"action": "speed0"})
+    assert book.calls[-1] == ("speed", 1.0)
+    _, got = _call(server, "POST", "/org/listen/ctl", {"action": "vol-"})
+    assert got["volume"] == 90
+    _, got = _call(server, "POST", "/org/listen/ctl", {"action": "mute"})
+    assert got["muted"] is True
+    _call(server, "POST", "/org/listen/ctl", {"action": "seek", "to": 3})
+    assert book.calls[-1] == ("seek", 3.0)
+    _call(server, "POST", "/org/listen/ctl", {"action": "skip", "by": -15})
+    assert book.calls[-1] == ("skip", -15.0)
+    assert _call(server, "POST", "/org/listen/ctl", {"action": "seek"})[0] == 400

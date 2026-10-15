@@ -2253,6 +2253,12 @@ like `/org/say` → `{"ok", "state", "path", "at", "title", "line"}`.
 `POST /org/listen/ctl {"action": "pause" | "resume" | "toggle" | "stop" |
 "prev" | "next"}` — `auth.may_control_speech` → the `GET` answer, after it.
 `prev` and `next` move a paragraph back or on: the app's mini player keys.
+The sheet's keys (15 Oct 2026): `seek` takes `to` (seconds), `skip` takes
+`by` (± seconds; 400 without it); `speed+`/`speed-` step 0.1 between 0.5 and
+3, and `speed0` is 1; `vol+`/`vol-` step 10 between 0 and 150 (mpv's boost
+past 100); `mute` toggles. The `GET` answer for something playing carries
+`speed`, `volume`, `muted` and `chapters` (`[{title, start}]`, its headings,
+from the sidecar).
 `prev` restarts the paragraph when it is more than 2 s in, and it is 409
 when nothing is being listened to. 400 for any other action.
 

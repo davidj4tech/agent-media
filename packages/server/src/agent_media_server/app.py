@@ -1943,7 +1943,12 @@ def _org(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
                                        doc=str(body.get("doc") or ""))
     elif method == "POST" and path == "/org/listen/ctl":
         body = _read_json(h) or {}
-        ok, detail = org_listen.control(str(body.get("action") or ""), bearer)
+        raw = body.get("to", body.get("by"))
+        try:
+            value = None if raw is None else float(raw)
+        except (TypeError, ValueError):
+            value = None
+        ok, detail = org_listen.control(str(body.get("action") or ""), bearer, value)
     elif method == "POST" and path == "/org/ask":
         # A chat about this item: a fresh session in the notes tree (org_chat.py).
         body = _read_json(h) or {}
