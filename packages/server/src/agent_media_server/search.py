@@ -1013,8 +1013,12 @@ def search(q: str, bearer: str, *, limit=None, before=None, tools: bool = False,
         return False, {"error": "before must be a time (a result's `at`)", "status": 400}
     from concurrent.futures import ThreadPoolExecutor
 
-    with ThreadPoolExecutor(max_workers=1) as pool:
+    from . import doc_read
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
         mem = pool.submit(_memory_section, " ".join(terms)) if memory and cursor is None else None
+        # A project's documents (doc_read.py): first page only.
+        found_docs = pool.submit(doc_read.search, terms) if cursor is None else None
         caught = refresh(budget_s=QUERY_BUDGET_S)
         conn = _connect()
         rows = _threads_rows(conn)
@@ -1031,6 +1035,11 @@ def search(q: str, bearer: str, *, limit=None, before=None, tools: bool = False,
                "messages": messages,
                "next": messages[-1]["at"] if len(messages) >= n else None,
                "indexing": not caught["done"]}
+        if found_docs is not None:
+            try:
+                out["docs"] = found_docs.result(timeout=6)
+            except Exception:  # noqa: BLE001
+                out["docs"] = []
         # Memory: first page only, and only when asked (`memory=0` skips it).
         if mem is not None:
             try:

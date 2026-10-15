@@ -2278,6 +2278,28 @@ first `# ` heading (an Org file's `#+title:`), else the file's name, and
 listens to it as to a note, and the `GET` answers about it carry `doc` (and
 `title`) instead of `path` and `at`.
 
+**A project's documents** (15 Oct 2026). `GET /docs?project=<label>` or
+`?path=<folder>` — gated → `{"ok", "project", "root", "docs": [{path, title,
+kind, status, date}]}`: the app's project page.
+- `project` is a thread's label (`p-agent-media`, or a bare `agent-media`):
+  `~/projects/<name>`. `path` is a folder a thread runs in: its git root, so
+  a worktree lists its own copy.
+- The README comes first, then the dated documents newest first (a
+  `Date:` line, else a `YYYY-MM-DD-` name), then the rest by title. `kind` is
+  the folder a document sits in (`proposals`, `notes`, `reference`…), and
+  `status` its `Status:` line. Empty files, hidden and vendor folders are
+  left out, and the list stops at 300.
+- 404 for a folder outside the reader's roots, a hidden one, or the projects
+  folder itself.
+
+`GET /search` answers a `docs` section too, on the first page only:
+`[{path, title, project, kind, snippet}]`, at most 8. These are documents
+under the projects folder holding every term (ripgrep, so `.gitignore` is
+honoured): title matches first, then file name, then text, the most
+recently changed first within each. A clone or worktree beside a project
+(`agent-media-audio`) counts its copy once. `snippet` is the first line
+holding the first term.
+
 #### `POST /org/ask` — gated (`auth.gate`), like `/ask`
 
 `{"path", "at"?, "text", "agent"?}` → `/ask`'s answer for a new session

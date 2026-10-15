@@ -257,7 +257,7 @@ ORG_PATHS = frozenset({"/org", "/org/view", "/org/read", "/org/search",
                          "/org/capture", "/org/setup", "/org/say",
                          "/org/state", "/org/refile", "/org/date",
                          "/org/priority", "/org/ask", "/org/zettel",
-                         "/org/listen", "/org/listen/ctl", "/doc/read"})
+                         "/org/listen", "/org/listen/ctl", "/doc/read", "/docs"})
 CORS_PATHS = CORS_PATHS | ORG_PATHS
 
 # What the watchers report (alerts.py, §6.17). The same arrangement.
@@ -1923,6 +1923,9 @@ def _org(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
         except (TypeError, ValueError):
             at = 0
         ok, detail = org.say(str(body.get("path") or ""), at, bearer)
+    elif method == "GET" and path == "/docs":
+        # A project's documents (doc_read.py): the project page's list.
+        ok, detail = doc_read.project_docs(arg("project"), arg("path"), bearer)
     elif method == "GET" and path == "/doc/read":
         # A project's document in the reader (doc_read.py).
         ok, detail = doc_read.read(arg("path"), bearer)

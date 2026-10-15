@@ -318,7 +318,7 @@ def test_route_shape_and_auth(server, signed_in, home):
     res, obj = call(server, "GET", "/search?q=kestrel", headers=AUTH)
     assert res.status == 200, obj
     assert set(obj) == {"ok", "q", "terms", "tools", "threads", "messages", "next",
-                        "indexing", "memory"}
+                        "indexing", "memory", "docs"}
     [m] = obj["messages"]
     assert set(m) == {"session", "message", "role", "at", "kind", "snippet", "thread"}
     assert set(m["thread"]) == {"title", "project", "harness", "live", "archived"}

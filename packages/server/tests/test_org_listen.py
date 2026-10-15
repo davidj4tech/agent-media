@@ -307,3 +307,36 @@ def test_a_press_is_one_batch_on_the_last_reading(book, server, monkeypatch):
     assert len(reads) == 1 and len(sends) == 2
     assert sends[0] == [["set_property", "pause", True]]
     assert got["state"] == "paused" and got2["speed"] == 1.1
+
+
+def test_a_projects_documents_and_finding_one(tree, server, tmp_path, monkeypatch):
+    proj = tmp_path / "projects"
+    app_dir = proj / "app"
+    (app_dir / "docs" / "proposals").mkdir(parents=True)
+    (app_dir / ".git").mkdir()
+    (app_dir / "README.md").write_text("# The app\n\nWhat it is.\n")
+    (app_dir / "docs" / "proposals" / "2026-08-01-old.md").write_text("# Old idea\n\nStatus: proposed\n\nA kettle.\n")
+    (app_dir / "docs" / "proposals" / "2026-09-01-new.md").write_text("# New idea\n\nStatus: built\n\nThe kettle sings.\n")
+    (app_dir / "docs" / "guide.md").write_text("# Guide\n\nNo kettles here.\n")
+    (app_dir / "docs" / "empty.md").write_text("")
+    clone = proj / "app-copy" / "docs" / "proposals"
+    clone.mkdir(parents=True)
+    (clone / "2026-09-01-new.md").write_text("# New idea\n\nThe kettle sings.\n")
+    monkeypatch.setenv("MEDIA_PROJECTS_DIR", str(proj))
+    monkeypatch.setenv("MEDIA_DOC_ROOTS", str(tmp_path / "nowhere"))
+
+    status, got = _call(server, "GET", "/docs?project=p-app")
+    assert status == 200 and got["root"] == str(app_dir)
+    assert [d["title"] for d in got["docs"]] == ["The app", "New idea", "Old idea", "Guide"]
+    assert got["docs"][1]["date"] == "2026-09-01" and got["docs"][1]["kind"] == "proposals"
+    _, by_path = _call(server, "GET", "/docs?path=" + str(app_dir / "docs"))
+    assert by_path["root"] == str(app_dir)
+    for bad in ("/docs?project=..", "/docs?project=nope", "/docs?path=" + str(proj), "/docs"):
+        assert _call(server, "GET", bad)[0] == 404, bad
+    assert _call(server, "GET", "/docs?project=app", bearer="bad")[0] == 401
+
+    from agent_media_server import doc_read
+    hits = doc_read.search(["kettle", "sings"])
+    assert [h["title"] for h in hits] == ["New idea"]          # one copy, not the clone's too
+    assert hits[0]["snippet"] == "The kettle sings." and hits[0]["project"] in ("app", "app-copy")
+    assert [h["title"] for h in doc_read.search(["guide"])] == ["Guide"]
