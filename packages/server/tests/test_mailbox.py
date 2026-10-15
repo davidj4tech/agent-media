@@ -86,3 +86,20 @@ def test_a_poll_reuses_the_last_count(mail, tmp_path, monkeypatch):
     monkeypatch.setattr(mailbox, "_read", lambda: reads.append(1) or {})
     assert mailbox.with_mail([{"path": str(tmp_path / "p")}])[0]["mail"] == 1
     assert reads == []
+
+
+def test_projects_with_mail_count_each_mailbox_once(mail, tmp_path):
+    repo = _repo(tmp_path / "agent-media")
+    (repo / "sub").mkdir()
+    (tmp_path / "org").mkdir()
+    mail("agent-media")
+    mail("agent-media")
+    rows = [("p-agent-media", str(repo)), ("p-agent-media", str(repo / "sub")),
+            ("org", str(tmp_path / "org")), (None, str(repo)), ("gone", str(tmp_path / "gone"))]
+    assert mailbox.by_project(rows) == {"p-agent-media": 2}
+
+
+def test_no_mailbox_no_project_mail(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENT_MAIL_DB", str(tmp_path / "absent.sqlite3"))
+    monkeypatch.setattr(mailbox, "_counts", (0.0, None))
+    assert mailbox.by_project([("p", str(tmp_path))]) is None

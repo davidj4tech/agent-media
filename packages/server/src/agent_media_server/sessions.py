@@ -838,8 +838,14 @@ def targets(bearer: str, history: str = "") -> tuple[bool, dict]:
     if not ok:
         return False, detail
     days = -1.0 if history == "all" else STORE_DAYS
-    return True, {"sessions": sessions_index(days=days),
-                  "places": mailbox.with_mail(places())}
+    rows, where = sessions_index(days=days), mailbox.with_mail(places())
+    out = {"sessions": rows, "places": where}
+    mail = mailbox.by_project(
+        [(r.get("project"), r.get("cwd")) for r in rows]
+        + [(project_of(p["path"]), p["path"]) for p in where])
+    if mail is not None:
+        out["project_mail"] = mail
+    return True, out
 
 
 def _manifest_of(session: str) -> dict:

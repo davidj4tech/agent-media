@@ -93,3 +93,24 @@ def with_mail(places: list[dict]) -> list[dict]:
         box = mailbox_of(p["path"])
         p["mail"] = 0 if box == SHARED else counts.get(box, 0)
     return places
+
+
+def by_project(rows: list[tuple[str | None, str | None]]) -> dict[str, int] | None:
+    """`{project: pending count}` for projects with mail waiting — the
+    Threads page's project strip, which names every project its rows do,
+    not only the few newest places. A project's mailboxes are those of the
+    folders its rows (`cwd`, `project`) and places ran in; each counts once.
+    None when the mailbox can't be read."""
+    counts = pending()
+    if counts is None:
+        return None
+    boxes: dict[str, set[str]] = {}
+    for project, cwd in rows:
+        if project and cwd and os.path.isdir(cwd):
+            boxes.setdefault(project, set()).add(mailbox_of(cwd))
+    out = {}
+    for project, names in boxes.items():
+        n = sum(counts.get(b, 0) for b in names if b != SHARED)
+        if n:
+            out[project] = n
+    return out

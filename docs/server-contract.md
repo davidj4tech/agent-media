@@ -321,6 +321,13 @@ Everything a message can be pointed at.
   (`mailbox.py`). **Absent** on every place when the mailbox can't be read,
   and from older servers: treat absent as 0. The app badges the place's
   chip when it is above 0. `/dashboard`'s `places` carry it too.
+- `project_mail` (16 Oct 2026): `{project: n}` for every project with
+  pending agent-mail, keyed like the rows' `project` — the Threads page's
+  project strip names every project its rows do, not only the six newest
+  places. A project's mailboxes are those of the folders its rows (`cwd`)
+  and places ran in, each counted once, by the same rule as `mail`.
+  Projects with none are left out; the key is **absent** when the mailbox
+  can't be read, and from older servers. About 50 ms cold, 10 ms warm.
 - **Headless rows** (`MEDIA_HEADLESS`, §17): the sessions `media-sessiond`
   holds are listed after the live pane sessions — the running ones, then up
   to 20 ended ones (parked or closed), newest first — with the same keys
