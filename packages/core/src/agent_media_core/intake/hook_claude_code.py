@@ -118,7 +118,7 @@ def _session_name() -> str:
     return _tmux(["display-message", "-p", "-t", pane, "#{session_name}"])
 
 
-def _source_place() -> dict:
+def _source_place(session: str = "") -> dict:
     """The pane this hook is running in, and the two tmux names for it.
 
     Resolved *here* rather than in the submitter, which is the only place that
@@ -139,7 +139,11 @@ def _source_place() -> dict:
         # A headless session: no pane to name, but the workspace it is filed
         # under (see `_headless_workspace`) rides as its tmux session.
         ws = _headless_workspace()
-        return {"tmux": ws} if ws else {}
+        out = {"tmux": ws} if ws else {}
+        title = _thread_title(session) if ws else ""
+        if title:
+            out["title"] = title
+        return out
     out = {"pane": pane}
     info = _tmux(["display-message", "-p", "-t", pane,
                   "#{session_name}\t#{window_name}"])
@@ -149,6 +153,30 @@ def _source_place() -> dict:
     if window.strip():
         out["window"] = window.strip()
     return out
+
+
+def _thread_title(session: str) -> str:
+    """A headless session's name as the phone's thread list shows it, or "".
+
+    A pane's reply is named by its tmux window, and the car display and the
+    speech card show that. A session started from the phone has no window, so
+    its replies went out unnamed and the card fell back to the app's own name
+    (David, 15 Oct 2026: "The title says sasonica instead of the thread
+    title"). The thread's name is the shelf's (a rename from the app), else
+    Claude's own — the order the server's thread list uses, so it is asked.
+    """
+    if not session:
+        return ""
+    try:
+        from agent_media_server.sessions import _headless_title
+        return _headless_title(session, {})
+    except Exception:  # noqa: BLE001 — a name is a nicety; no server, no name
+        pass
+    try:
+        from ..session_feed import _asked
+        return " ".join((_asked(session, []) or "").split())[:60]
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def voice_for_session(sess: str) -> Optional[str]:
@@ -682,7 +710,7 @@ def _emit_ask(ask: str, payload: dict, lead: str = "", structure: list | None = 
                   voice=voice_for_session(sess),
                   metadata={"kind": "notif", "ask": structure or True,
                             "session": session,
-                            **_source_place()})
+                            **_source_place(session)})
     if held:
         toast.remember(event, ask=True)
     submit_event(event, state=state)
@@ -812,7 +840,7 @@ def _handle_notification(payload: dict) -> int:
                        voice=voice_for_session(sess),
                        metadata={"kind": "notif",
                                  "session": payload.get("session_id") or "",
-                                 **_source_place()}))
+                                 **_source_place(payload.get("session_id") or "")}))
     return 0
 
 
@@ -1034,7 +1062,7 @@ def _handle_stop(payload: dict) -> int:
     # now_playing writes happen there on a fresh StateStore (see _play_now), so
     # the parent opens no DB connection to fork across.
     metadata = {"kind": "stop", "session": payload.get("session_id") or "",
-                **_source_place()}
+                **_source_place(payload.get("session_id") or "")}
     # Opt-in LLM spoken-summary: carry the raw reply so the detached child can
     # rewrite it for speech (only worth it past a length threshold).
     # Opt-in visual accompaniment: carry the raw reply so the detached child

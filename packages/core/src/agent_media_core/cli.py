@@ -3784,7 +3784,8 @@ def _push_replay(row: dict, ex: dict, clip_uris: list, clip_durations: list,
     # conversation to name leaves the last name standing rather than clearing
     # the title, because an empty `force-media-title` puts the clip's *filename*
     # on every display that reads `media-title`.
-    _speech_sink.set_media_title(str(ex.get("source_window") or ""),
+    _speech_sink.set_media_title(str(ex.get("source_window")
+                                     or ex.get("source_title") or ""),
                                  speech_target)
     _speech_sink.set_reply_text(replay_text, speech_target)
     clip_sentences: list[str] = ex.get("clip_sentences") or []

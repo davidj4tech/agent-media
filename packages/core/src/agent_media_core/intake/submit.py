@@ -2936,6 +2936,17 @@ def _source_place(metadata, pane: str) -> tuple[str, str]:
             window or _tmux_window_for_pane(pane))
 
 
+def _reply_title(metadata, window: str) -> str:
+    """What a display should call this reply: its window, else the thread's name.
+
+    A headless session has no window, so its hook sends the thread's name
+    (`hook_claude_code._thread_title`) beside the workspace. It names the reply
+    on the car and the speech card only; `source_window` stays what tmux says,
+    for everything that groups or matches by it.
+    """
+    return window or str((metadata or {}).get("title") or "").strip()
+
+
 def _nav_flag_path(target: Target) -> Path:
     """File the popup writes to request a sentence/paragraph jump (`media skip`).
 
@@ -3682,6 +3693,7 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
     # addressed by id.
     source_pane = (event.metadata or {}).get("pane") or os.environ.get("TMUX_PANE", "")
     source_tmux_session, source_window = _source_place(event.metadata, source_pane)
+    reply_title = _reply_title(event.metadata, source_window)
     # The same identity goes on the LIVE row, not just history: the status bar
     # and popup name the speaker through now_playing.extras.source_pane, and a
     # row without it resolves to *the caller's* pane instead — so whichever
@@ -3692,7 +3704,8 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
     source_extras = {"source_pane": source_pane,
                      "source_session": session,
                      "source_tmux_session": source_tmux_session,
-                     "source_window": source_window}
+                     "source_window": source_window,
+                     "source_title": reply_title}
     # Per-sentence state for a lane that renders and plays the whole reply on
     # another device. We split the text the same way the local path does; the
     # renderer tells us where each sentence lands (or, failing that, how long
@@ -3720,7 +3733,7 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
         # 2026-08-18 at ten seconds later. Ducking at hand-over is a hole in the
         # music that opens before anything fills it.
         coordinator.before_speech(
-            title=source_window, priority=event.priority.value,
+            title=reply_title, priority=event.priority.value,
             defer_music=True,
             # The first sentence, not the reply: the follower will move this on
             # as the far side speaks, and until it does the card should show
@@ -3976,6 +3989,7 @@ def _submit_event(event: Event,
     # speaker, without resolving a (possibly since-closed, renumbered, or
     # remote) pane id at browse time. See _source_place for who is asked.
     source_tmux_session, source_window = _source_place(event.metadata, source_pane)
+    reply_title = _reply_title(event.metadata, source_window)
 
     # Durable per-pane / per-session mute (popup `M` / `media mute-pane`): a
     # muted pane still renders its clips and records a replayable history row,
@@ -4294,6 +4308,7 @@ def _submit_event(event: Event,
                   "source_session": source_session,
                   "source_tmux_session": source_tmux_session,
                   "source_window": source_window,
+                  "source_title": reply_title,
                   "clip_uris": [str(p) for _, p in clip_data],
                   "clip_sentences": _clip_sentences,
                   "clip_durations_s": durations,
@@ -4550,7 +4565,7 @@ def _submit_event(event: Event,
         def _before() -> None:
             try:
                 coordinator.before_speech(
-                    title=source_window, priority=event.priority.value,
+                    title=reply_title, priority=event.priority.value,
                     # The first sentence; the clip loop moves it on from there.
                     text=_before_text)
             except Exception:  # noqa: BLE001
@@ -4646,6 +4661,7 @@ def _submit_event(event: Event,
                           "source_session": source_session,
                           "source_tmux_session": source_tmux_session,
                           "source_window": source_window,
+                          "source_title": reply_title,
                           "current_sentence": sentence_i,
                           "current_sentence_idx": idx,
                           "clip_paragraph_idx": clip_para,
@@ -5404,6 +5420,7 @@ def submit_stream(sentences,
     source_ask = bool((event.metadata or {}).get("ask"))
     order_session = _order_session(source_pane, source_session)
     source_tmux_session, source_window = _source_place(event.metadata, source_pane)
+    reply_title = _reply_title(event.metadata, source_window)
     # Durable per-pane / per-session mute: render the stream into clips for
     # popup replay/history, but never play it or duck music. See submit_event.
     muted = state.resolve_mute(source_pane, source_tmux_session)
@@ -5629,7 +5646,7 @@ def submit_stream(sentences,
                         pass
 
                 if not before_called:
-                    coordinator.before_speech(title=source_window,
+                    coordinator.before_speech(title=reply_title,
                                   priority=event.priority.value, text=text)
                     before_called = True
 
@@ -5680,6 +5697,7 @@ def submit_stream(sentences,
                             "source_session": source_session,
                             "source_tmux_session": source_tmux_session,
                             "source_window": source_window,
+                            "source_title": reply_title,
                             "current_sentence": sentence,
                             "current_sentence_idx": i,
                             "clip_sentences": known,
@@ -5758,6 +5776,7 @@ def submit_stream(sentences,
               "source_session": source_session,
               "source_tmux_session": source_tmux_session,
               "source_window": source_window,
+              "source_title": reply_title,
               "clip_uris": [str(p) for p in all_paths],
               "clip_sentences": all_sents,
               "clip_durations_s": [durations.get(k, 0.0) for k in range(len(all_paths))],
