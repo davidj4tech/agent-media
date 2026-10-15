@@ -15,7 +15,7 @@ than talk over it. The reader asks what is playing and marks that line.
 
 `state` is "rendering" (synthesis has not finished), "copying" (the file is
 on its way to the phone, which plays it when it lands), "playing",
-"paused" or "idle". `line` is 0-based in the `text` /org/read gave for the
+"paused", "ended" (heard to the end: resume starts it again) or "idle". `line` is 0-based in the `text` /org/read gave for the
 same `path` and `at`: the reader draws that text, so it can find the line.
 A `line` in the POST starts there (the paragraph at or after it); without
 one a note picks up where it was left, or from the top once it was heard
@@ -40,6 +40,10 @@ _CACHE: list = [0.0, None]
 #: Within this much of the end, a note counts as heard: it starts again.
 _HEARD_S = 3.0
 _ACTIONS = ("pause", "resume", "toggle", "stop", "prev", "next")
+#: Paused within this much of the end: heard to the end. The phone's mpv
+#: keeps a finished file open, paused at its last frame, so "paused" alone
+#: would leave Play resuming at the end, which plays nothing.
+_END_S = 1.5
 #: Further into a paragraph than this, "prev" goes back to its start.
 _RESTART_S = 2.0
 
@@ -223,6 +227,11 @@ def _staging() -> dict | None:
     return docs.read_timings(clip) if clip else None
 
 
+def _ended(np: dict) -> bool:
+    dur = np.get("duration_ms") or 0
+    return bool(np.get("paused")) and dur > 0 and (np.get("position_ms") or 0) >= dur - _END_S * 1000
+
+
 def now(bearer: str) -> tuple[bool, dict]:
     """What is being listened to, and which line of it."""
     user, err = auth.gate(bearer)
@@ -233,7 +242,8 @@ def now(bearer: str) -> tuple[bool, dict]:
     if clip:
         t = docs.read_timings(clip) or {}
         pos = np.get("position_ms") or 0
-        return True, {"state": "paused" if np.get("paused") else "playing",
+        state = "ended" if _ended(np) else "paused" if np.get("paused") else "playing"
+        return True, {"state": state,
                       **_who({**t, "title": t.get("title") or np.get("title")}),
                       "line": _line_at(t, pos / 1000.0), "pos_ms": pos,
                       "dur_ms": np.get("duration_ms") or int((t.get("duration") or 0) * 1000)}
@@ -275,6 +285,8 @@ def control(action: str, bearer: str) -> tuple[bool, dict]:
     if action == "toggle":
         np = _playing()
         action = "resume" if np.get("idle") or np.get("paused") else "pause"
+    if action == "resume" and _ended(_playing()):
+        srv.book_seek(0.0, target=_target())       # heard to the end: again from the top
     {"pause": srv.book_pause, "resume": srv.book_resume, "stop": srv.book_stop}[action](
         target=_target())
     _forget_cache()

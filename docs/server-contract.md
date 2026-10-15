@@ -2240,8 +2240,10 @@ like `/org/say` → `{"ok", "state", "path", "at", "title", "line"}`.
 
 `GET /org/listen` — gated → `{"ok", "state", "path", "at", "title", "line",
 "pos_ms", "dur_ms"}`.
-- `state` is `"playing"` or `"paused"` when the book channel's file is a
-  render with timings (matched by name, so the phone's copy counts),
+- `state` is `"playing"`, `"paused"` or `"ended"` when the book channel's
+  file is a render with timings. `"ended"` means paused within 1.5 s of its
+  end: the phone's mpv keeps a finished file open there, and `resume` (or
+  `toggle`) on `/org/listen/ctl` then starts it again from the top. The file is a render (matched by name, so the phone's copy counts),
   `"rendering"` or `"copying"` for one on its way, else `"idle"` with nothing
   else.
 - `line` is the paragraph being read, in the same numbering as `POST`'s.

@@ -222,3 +222,16 @@ def test_prev_and_next_move_by_paragraph(book, server):
     assert book.calls[-1] == ("seek", 0.0)
     _call(server, "POST", "/org/listen/ctl", {"action": "stop"})
     assert _call(server, "POST", "/org/listen/ctl", {"action": "next"})[0] == 409
+
+
+def test_heard_to_the_end_is_ended_and_resume_starts_again(book, server):
+    _call(server, "POST", "/org/listen", {"path": "walk.org"})
+    assert _until(lambda: book.calls)
+    book.np.update({"position_ms": 8900, "duration_ms": 9000, "paused": True})
+    _, got = _call(server, "GET", "/org/listen")
+    assert got["state"] == "ended"
+    _, got = _call(server, "POST", "/org/listen/ctl", {"action": "resume"})
+    assert book.calls[-2:] == [("seek", 0.0), ("resume",)] and got["state"] == "playing"
+    book.np.update({"position_ms": 4000, "paused": True})
+    _, got = _call(server, "GET", "/org/listen")
+    assert got["state"] == "paused"
