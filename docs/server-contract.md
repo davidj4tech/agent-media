@@ -2248,9 +2248,11 @@ like `/org/say` → `{"ok", "state", "path", "at", "title", "line"}`.
   The reader marks the block that starts on it.
 - The book channel is asked at most once a second.
 
-`POST /org/listen/ctl {"action": "pause" | "resume" | "toggle" | "stop"}` —
-`auth.may_control_speech` → the `GET` answer, after it. 400 for anything
-else.
+`POST /org/listen/ctl {"action": "pause" | "resume" | "toggle" | "stop" |
+"prev" | "next"}` — `auth.may_control_speech` → the `GET` answer, after it.
+`prev` and `next` move a paragraph back or on: the app's mini player keys.
+`prev` restarts the paragraph when it is more than 2 s in, and it is 409
+when nothing is being listened to. 400 for any other action.
 
 **A project's document** (15 Oct 2026). `GET /doc/read?path=<absolute
 path>` — gated → `{"ok", "path", "title", "text", "fmt"}` (`doc_read.py`):

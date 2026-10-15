@@ -39,7 +39,9 @@ _CACHE_TTL_S = 1.0
 _CACHE: list = [0.0, None]
 #: Within this much of the end, a note counts as heard: it starts again.
 _HEARD_S = 3.0
-_ACTIONS = ("pause", "resume", "toggle", "stop")
+_ACTIONS = ("pause", "resume", "toggle", "stop", "prev", "next")
+#: Further into a paragraph than this, "prev" goes back to its start.
+_RESTART_S = 2.0
 
 
 def _target() -> str:
@@ -253,6 +255,23 @@ def control(action: str, bearer: str) -> tuple[bool, dict]:
     if action not in _ACTIONS:
         return False, {"error": f"unknown action {action!r}", "status": 400}
     srv = _book()
+    if action in ("prev", "next"):
+        # The mini player's keys: a paragraph back or on, as a sentence is
+        # for a reply. "prev" restarts the paragraph when past its start.
+        np = _playing()
+        clip = None if np.get("idle") else _clip_of(np.get("uri") or "")
+        rows = ((docs.read_timings(clip) or {}).get("timings") or []) if clip else []
+        if not rows:
+            return False, {"error": "nothing is being listened to", "status": 409}
+        pos = (np.get("position_ms") or 0) / 1000.0
+        cur = max([i for i, r in enumerate(rows) if r["start"] <= pos + 0.05] or [0])
+        if action == "next":
+            to = rows[min(cur + 1, len(rows) - 1)]["start"]
+        else:
+            to = rows[cur]["start"] if pos - rows[cur]["start"] > _RESTART_S else rows[max(cur - 1, 0)]["start"]
+        srv.book_seek(to, target=_target())
+        _forget_cache()
+        return now(bearer)
     if action == "toggle":
         np = _playing()
         action = "resume" if np.get("idle") or np.get("paused") else "pause"

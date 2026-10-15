@@ -206,3 +206,19 @@ def test_a_note_plays_on_the_phones_own_book_player(monkeypatch):
     assert org_listen._target() == "phone"
     monkeypatch.setenv("MEDIA_LISTEN_TARGET", "rooms")
     assert org_listen._target() == "rooms"
+
+
+def test_prev_and_next_move_by_paragraph(book, server):
+    _call(server, "POST", "/org/listen", {"path": "walk.org"})
+    assert _until(lambda: book.calls)
+    book.np["position_ms"] = 1500           # in the second paragraph (1 s)
+    _, got = _call(server, "POST", "/org/listen/ctl", {"action": "next"})
+    assert book.calls[-1] == ("seek", 2.0) and got["line"] == 5
+    book.np["position_ms"] = 2500           # half a second in: back one
+    _call(server, "POST", "/org/listen/ctl", {"action": "prev"})
+    assert book.calls[-1] == ("seek", 1.0)
+    book.np["position_ms"] = 0
+    _call(server, "POST", "/org/listen/ctl", {"action": "prev"})
+    assert book.calls[-1] == ("seek", 0.0)
+    _call(server, "POST", "/org/listen/ctl", {"action": "stop"})
+    assert _call(server, "POST", "/org/listen/ctl", {"action": "next"})[0] == 409
