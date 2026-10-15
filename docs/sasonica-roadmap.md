@@ -1108,7 +1108,13 @@ ahead.
       the source line it came from, and skipped blocks are passed over.
       Tapping a paragraph seeks there.
 
-24. **Edit a document from the reader** (David, 16 Oct 2026: "a chat box at
+24. **Edit a document from the reader** — **DONE 16 Oct 2026** (contract
+   §6.10 `POST /doc/ask`; red5's canvas restarted). As built, the box is about
+   the paragraph tapped, else the one being read, else the whole document
+   (not the one at the top of the screen: a general question would have
+   quoted the title). The page stays put after sending, with a link to the
+   chat. Not built: an Undo key (ask the chat), voice edits, margin notes.
+   (David, 16 Oct 2026: "a chat box at
    the bottom of the new document reader ... a reply takes into account the
    current position as possible context as a way of editing the document",
    then "maybe a little pop-up context menu for the action to be

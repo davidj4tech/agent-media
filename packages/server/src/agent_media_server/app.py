@@ -202,7 +202,7 @@ from urllib.parse import parse_qs
 
 from . import (abs_item, archive, auth, devices, drafts, harnesses, pins, routing, send,
                sessions, share, speech, threads)
-from . import alerts, audio, doc_read, music, org, org_chat, org_edit, org_listen, org_setup, org_zettel, refs, uploads
+from . import alerts, audio, doc_chat, doc_read, music, org, org_chat, org_edit, org_listen, org_setup, org_zettel, refs, uploads
 from . import web_app
 
 # The endpoints a browser on another origin may reach. Everything here
@@ -257,7 +257,7 @@ ORG_PATHS = frozenset({"/org", "/org/view", "/org/read", "/org/search",
                          "/org/capture", "/org/setup", "/org/say",
                          "/org/state", "/org/refile", "/org/date",
                          "/org/priority", "/org/ask", "/org/zettel",
-                         "/org/listen", "/org/listen/ctl", "/doc/read", "/docs"})
+                         "/org/listen", "/org/listen/ctl", "/doc/read", "/doc/ask", "/docs"})
 CORS_PATHS = CORS_PATHS | ORG_PATHS
 
 # What the watchers report (alerts.py, §6.17). The same arrangement.
@@ -1933,7 +1933,13 @@ def _org(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
         ok, detail = doc_read.project_docs(arg("project"), arg("path"), bearer)
     elif method == "GET" and path == "/doc/read":
         # A project's document in the reader (doc_read.py).
-        ok, detail = doc_read.read(arg("path"), bearer)
+        try:
+            since = float(arg("since")) if arg("since") else None
+        except ValueError:
+            since = None
+        ok, detail = doc_read.read(arg("path"), bearer, since)
+        if ok and not detail.get("unchanged"):
+            detail["chats"] = doc_chat.chats(detail["path"])
     elif method == "GET" and path == "/org/listen":
         ok, detail = org_listen.now(bearer)
     elif method == "POST" and path == "/org/listen":
@@ -1957,6 +1963,16 @@ def _org(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
         except (TypeError, ValueError):
             value = None
         ok, detail = org_listen.control(str(body.get("action") or ""), bearer, value)
+    elif method == "POST" and path == "/doc/ask":
+        # Editing a document from the reader: a fresh session in its project (doc_chat.py).
+        body = _read_json(h) or {}
+        try:
+            line = None if body.get("line") is None else max(0, int(body["line"]))
+        except (TypeError, ValueError):
+            line = None
+        ok, detail = doc_chat.ask(str(body.get("path") or ""), line,
+                                    str(body.get("action") or ""), str(body.get("text") or ""),
+                                    bearer, agent=str(body.get("agent") or ""))
     elif method == "POST" and path == "/org/ask":
         # A chat about this item: a fresh session in the notes tree (org_chat.py).
         body = _read_json(h) or {}

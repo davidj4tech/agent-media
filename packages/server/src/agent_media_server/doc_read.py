@@ -3,7 +3,8 @@
 A doc path an agent mentions in a thread (`docs/proposals/….md`) opens in
 the same reader as a note, with the same Listen (org_listen.py, `{"doc"}`).
 
-  GET /doc/read?path=<absolute path> → {"path", "title", "text", "fmt"}
+  GET /doc/read?path=<absolute path> → {"path", "title", "text", "fmt", "mtime", "chats"}
+  GET /doc/read?path=…&since=<mtime> → {"path", "mtime", "unchanged": true} when it has not changed
 
 Only `.md`, `.org` and `.txt` files under the projects folder
 (MEDIA_PROJECTS_DIR, else ~/projects) or a doc root (`docs.doc_roots()`,
@@ -74,15 +75,27 @@ def load(raw: str) -> tuple[bool, dict]:
         return False, {"error": "no such document", "status": 404}
     try:
         text = p.read_text(errors="replace")[:MAX_READ]
+        mtime = p.stat().st_mtime
     except OSError as e:
         return False, {"error": f"could not read it ({e})", "status": 500}
-    return True, {"path": str(p), "title": title_of(p, text), "text": text, "fmt": fmt_of(p)}
+    return True, {"path": str(p), "title": title_of(p, text), "text": text, "fmt": fmt_of(p),
+                  "mtime": mtime}
 
 
-def read(raw: str, bearer: str) -> tuple[bool, dict]:
+def read(raw: str, bearer: str, since: float | None = None) -> tuple[bool, dict]:
+    """The document; with `since` (the `mtime` last read), only whether it
+    has changed: the reader looks again every few seconds while open."""
     user, err = auth.gate(bearer)
     if not user:
         return False, err
+    if since is not None:
+        p = safe_path(raw)
+        try:
+            mtime = p.stat().st_mtime if p else None
+        except OSError:
+            mtime = None
+        if mtime is not None and mtime == since:
+            return True, {"path": str(p), "mtime": mtime, "unchanged": True}
     return load(raw)
 
 

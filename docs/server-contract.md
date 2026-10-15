@@ -2294,6 +2294,11 @@ first `# ` heading (an Org file's `#+title:`), else the file's name, and
 `fmt` is `"org"` or `"md"`. `POST /org/listen {"doc": <that path>, "line"?}`
 listens to it as to a note, and the `GET` answers about it carry `doc` (and
 `title`) instead of `path` and `at`.
+The answer also carries `mtime` (the file's, in seconds) and `chats` (the
+sessions `POST /doc/ask` started about it, newest first, as a note's). With
+`&since=<mtime>` and the file unchanged since, the answer is only `{"ok",
+"path", "mtime", "unchanged": true}`: the reader asks every few seconds
+while open, to show an edit as it lands (16 Oct 2026).
 
 **A project's documents** (15 Oct 2026). `GET /docs?project=<label>` or
 `?path=<folder>` — gated → `{"ok", "project", "root", "docs": [{path, title,
@@ -2331,6 +2336,29 @@ holding the first term.
   which moves), for `/org/read`'s `chats`. A refile to another file starts
   that list afresh.
 - 400 when the text is empty; 404 and 409 as for `/org/read`.
+
+#### `POST /doc/ask` — gated (`auth.gate`), like `/ask`
+
+`{"path", "line"?, "action"?, "text"?, "agent"?}` → `/ask`'s answer for a
+new session (§6.3) plus `path` and `line` (`doc_chat.py`; David, 16 Oct
+2026: a chat box in the document reader, aware of where you are in it).
+- The document reader's box and its paragraph menu. `path` is a document
+  `GET /doc/read` would read (404 otherwise). The session opens in its
+  project: the git root above it, else its folder.
+- `line` is the block's `data-line` (0-based). The first message quotes that
+  paragraph whole, as the file has it now, with the heading above it:
+  `About my document "<title>" (<path>), under "<heading>", the paragraph at
+  line <n>: "<paragraph>": <what> <commit note>`. Without `line` it is about
+  the whole document. The quote, not the line, is what the agent goes by:
+  a line moves once the file is edited.
+- `action`: `ask` (the default) or `rewrite` need `text` (400 without it);
+  `shorten`, `expand`, `plainer` and `delete` need none, and any `text` is
+  added after. Anything else is a 400.
+- The message ends by asking the agent, if this is a change, to edit only
+  that file and commit just it on its own (`git commit -- <file>`), so one
+  edit is one commit and can be reverted.
+- Recorded against the document for `/doc/read`'s `chats`, titled by the
+  words, else the action ("Shorten").
 
 #### `POST /org/state` · `POST /org/refile` · `POST /org/date` · `POST /org/priority` — gated (`auth.gate`)
 
