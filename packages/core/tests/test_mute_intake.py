@@ -145,3 +145,36 @@ def test_unmuted_pane_still_plays(state_env, monkeypatch):
     assert sink.plays >= 1
     assert coord.before == 1
     assert "muted" not in (state.recent_history(sink="speech", limit=1)[0]["extras"])
+
+
+def test_unmuted_stream_plays_and_the_card_follows(state_env, monkeypatch):
+    """The streaming lane opens with its first sentence and moves the card on.
+
+    It passed `text=text` to before_speech, a name this lane never had, so an
+    unmuted streamed reply raised NameError before its first word.
+    """
+    monkeypatch.setattr(S, "render_text", _fake_render)
+    state = StateStore()
+    lines = []
+
+    class _Coord(_RecordingCoord):
+        def before_speech(self, title="", priority="", defer_music=False, text=""):
+            super().before_speech()
+            lines.append(text)
+
+        def speaking_line(self, text=""):
+            lines.append(text)
+
+    class _PlaySink(_LoudSink):
+        def idle(self, target):
+            self.calls = getattr(self, "calls", 0) + 1
+            return self.calls > 1
+
+    coord, sink = _Coord(), _PlaySink()
+    rid = S.submit_stream(iter(["First sentence here.", "Second one here."]),
+                          _muted_event(), state=state, sink=sink, coordinator=coord)
+
+    assert rid is not None
+    assert sink.plays >= 1
+    assert coord.before == 1
+    assert lines[:2] == ["First sentence here.", "Second one here."]

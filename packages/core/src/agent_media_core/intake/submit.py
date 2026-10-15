@@ -5646,9 +5646,14 @@ def submit_stream(sentences,
                         pass
 
                 if not before_called:
+                    # The sentence about to play: this lane has no whole reply
+                    # to show — it is still arriving.
                     coordinator.before_speech(title=reply_title,
-                                  priority=event.priority.value, text=text)
+                                  priority=event.priority.value, text=sentence)
                     before_called = True
+                else:
+                    # The card follows the reply, as the clip loop's does.
+                    coordinator.speaking_line(sentence)
 
                 durations[i] = _clip_duration(clip_path)
                 with cond:
