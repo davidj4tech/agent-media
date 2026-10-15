@@ -109,7 +109,7 @@ def test_nothing_is_blocked_unless_someone_asked(monkeypatch, raw, expected):
 
 def test_the_interval_has_a_floor(monkeypatch):
     monkeypatch.setenv("MEDIA_MIC_BLOCK_INTERVAL_S", "1")
-    assert mic_block.interval_s() >= 30.0
+    assert mic_block.interval_s() >= 10.0
     monkeypatch.setenv("MEDIA_MIC_BLOCK_INTERVAL_S", "not a number")
     assert mic_block.interval_s() == mic_block.DEFAULT_INTERVAL_S
 

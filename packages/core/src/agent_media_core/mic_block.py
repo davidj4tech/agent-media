@@ -64,12 +64,14 @@ log = logging.getLogger(__name__)
 
 #: How often to look.
 #:
-#: Not a race — the revert has never been observed inside two hours — so this
-#: is purely how long a reverted block goes unnoticed, and that window is not
-#: quiet time: at the recogniser's rate it is roughly one interrupted sentence
-#: every half minute until the next tick. Five minutes of that was still worth
-#: complaining about, and the check costs one loopback command.
-DEFAULT_INTERVAL_S = 120.0
+#: How long a reverted block goes unnoticed, and that window is not quiet
+#: time: at the recogniser's rate it is roughly one interrupted sentence every
+#: half minute until the next tick. It is also a race after all: on 15 Oct
+#: 2026 the block was found reverted at tick after tick, 121 s apart, for half
+#: an hour at a time (09:27–09:47 and 23:45–00:07, mic-block.json `reverts`),
+#: so Android put it back within two minutes of every repair. The check is one
+#: loopback command; 15 s is cheap (David, 16 Oct 2026: "let's do both fixes").
+DEFAULT_INTERVAL_S = 15.0
 
 #: The mode we want. `ignore` makes Android open the recording and feed it
 #: zeros, which is what marks it `silenced` for everyone watching.
@@ -94,7 +96,7 @@ def packages() -> list[str]:
 
 def interval_s() -> float:
     try:
-        return max(30.0, float(os.environ.get("MEDIA_MIC_BLOCK_INTERVAL_S",
+        return max(10.0, float(os.environ.get("MEDIA_MIC_BLOCK_INTERVAL_S",
                                               DEFAULT_INTERVAL_S)))
     except ValueError:
         return DEFAULT_INTERVAL_S
