@@ -1113,7 +1113,13 @@ ahead.
    the paragraph tapped, else the one being read, else the whole document
    (not the one at the top of the screen: a general question would have
    quoted the title). The page stays put after sending, with a link to the
-   chat. Not built: an Undo key (ask the chat), voice edits, margin notes.
+   chat. **Then, the same day** ("let's do that too"): an Undo key (POST
+   /doc/undo, the last edit when committed on its own and under 2 h old), Edit
+   by voice while listening (the mic key pauses the reading, dictates, sends
+   about the paragraph being read, resumes; the phone's dictation only), and
+   margin notes (the menu's Note…, kept on the device with a ✎ in the margin,
+   Apply sends them as one message, `action: "notes"`). The voice edit aims
+   at the paragraph, not the sentence: the timings are per paragraph.
    (David, 16 Oct 2026: "a chat box at
    the bottom of the new document reader ... a reply takes into account the
    current position as possible context as a way of editing the document",

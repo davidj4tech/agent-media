@@ -42,6 +42,10 @@ def proj(tmp_path, monkeypatch):
     monkeypatch.setenv("MEDIA_PROJECTS_DIR", str(root))
     monkeypatch.setenv("MEDIA_DOC_ROOTS", "")
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    for k in ("GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"):
+        monkeypatch.setenv(k, "t")
+    for k in ("GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"):
+        monkeypatch.setenv(k, "t@t")
     monkeypatch.setattr(auth, "gate", lambda b: ({"username": "david"}, {}) if b == "good"
                         else (None, {"error": "no", "status": 401}))
     asked = []
@@ -116,3 +120,57 @@ def test_read_since_says_only_whether_it_changed(proj):
     assert ok and again == {"path": got["path"], "mtime": got["mtime"], "unchanged": True}
     ok, older = doc_read.read(str(doc), "good", got["mtime"] - 5)
     assert ok and older["text"] == DOC
+
+
+def test_notes_quote_each_paragraph_with_its_note(proj):
+    _, doc, asked = proj
+    ok, got = doc_chat.ask(str(doc), None, "notes", "", "good",
+                           notes=[{"line": 9, "text": "drop this"}, {"line": 2, "text": "too vague"}])
+    assert ok
+    text = asked[0][0]
+    assert text.startswith(f'My notes on my document "The plan" ({doc}), made while reading it; act on each one: '
+                           '(1) under "The plan", line 3: "Intro paragraph over two lines." — too vague '
+                           '(2) under "Steps", line 10: "- second item" — drop this ')
+    assert "git commit -- plan.md" in text
+    assert doc_chat.chats(str(doc.resolve()))[0]["title"] == "2 notes"
+    assert doc_chat.ask(str(doc), None, "notes", "", "good", notes=[])[1]["status"] == 400
+    assert doc_chat.ask(str(doc), None, "notes", "", "good", notes=[{"line": 2, "text": " "}])[1]["status"] == 400
+
+
+def _git(repo, *args):
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=repo, check=True,
+                   capture_output=True)
+
+
+def test_undo_takes_back_an_edit_committed_on_its_own(proj):
+    repo, doc, _ = proj
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "start")
+    assert doc_chat.last_edit(str(doc)) is None          # the first commit: nothing before it
+    doc.write_text(DOC.replace("Intro paragraph", "Short intro"))
+    assert doc_chat.last_edit(str(doc)) is None          # written, not yet committed
+    _git(repo, "commit", "-qm", "Shorten the intro", "--", "docs/plan.md")
+    got = doc_chat.last_edit(str(doc))
+    assert got["subject"] == "Shorten the intro"
+    assert doc_chat.undo(str(doc), "abc", "good")[1]["status"] == 409
+    ok, res = doc_chat.undo(str(doc), got["sha"], "good")
+    assert ok, res
+    assert doc.read_text() == DOC and res["undone"] == "Shorten the intro"
+    # The undo is an edit of its own: Undo again puts the edit back.
+    assert doc_chat.last_edit(str(doc))["subject"] == 'Undo "Shorten the intro"'
+
+
+def test_no_undo_for_a_commit_that_touched_more_or_a_file_changed_since(proj):
+    repo, doc, _ = proj
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "start")
+    doc.write_text(DOC + "more\n")
+    (repo / "other.txt").write_text("x")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "both")
+    assert doc_chat.last_edit(str(doc)) is None
+    doc.write_text(DOC)
+    _git(repo, "commit", "-qm", "alone", "--", "docs/plan.md")
+    assert doc_chat.last_edit(str(doc))["subject"] == "alone"
+    doc.write_text(DOC + "dirty\n")
+    assert doc_chat.last_edit(str(doc)) is None

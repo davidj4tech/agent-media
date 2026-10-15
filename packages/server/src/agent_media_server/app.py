@@ -260,7 +260,7 @@ ORG_PATHS = frozenset({"/org", "/org/view", "/org/read", "/org/search",
                          "/org/capture", "/org/setup", "/org/say",
                          "/org/state", "/org/refile", "/org/date",
                          "/org/priority", "/org/ask", "/org/zettel",
-                         "/org/listen", "/org/listen/ctl", "/doc/read", "/doc/ask", "/docs"})
+                         "/org/listen", "/org/listen/ctl", "/doc/read", "/doc/ask", "/doc/undo", "/docs"})
 CORS_PATHS = CORS_PATHS | ORG_PATHS
 
 # What the watchers report (alerts.py, §6.17). The same arrangement.
@@ -1943,8 +1943,12 @@ def _org(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
         except ValueError:
             since = None
         ok, detail = doc_read.read(arg("path"), bearer, since)
-        if ok and not detail.get("unchanged"):
-            detail["chats"] = doc_chat.chats(detail["path"])
+        if ok:
+            # The commit comes after the write: an unchanged file can have
+            # become undoable since, so `last_edit` is in every answer.
+            detail["last_edit"] = doc_chat.last_edit(detail["path"])
+            if not detail.get("unchanged"):
+                detail["chats"] = doc_chat.chats(detail["path"])
     elif method == "GET" and path == "/org/listen":
         ok, detail = org_listen.now(bearer)
     elif method == "POST" and path == "/org/listen":
@@ -1977,7 +1981,12 @@ def _org(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
             line = None
         ok, detail = doc_chat.ask(str(body.get("path") or ""), line,
                                     str(body.get("action") or ""), str(body.get("text") or ""),
-                                    bearer, agent=str(body.get("agent") or ""))
+                                    bearer, agent=str(body.get("agent") or ""),
+                                    notes=body.get("notes"))
+    elif method == "POST" and path == "/doc/undo":
+        # The reader's Undo: the last edit to a document reverted (doc_chat.py).
+        body = _read_json(h) or {}
+        ok, detail = doc_chat.undo(str(body.get("path") or ""), str(body.get("sha") or ""), bearer)
     elif method == "POST" and path == "/org/ask":
         # A chat about this item: a fresh session in the notes tree (org_chat.py).
         body = _read_json(h) or {}

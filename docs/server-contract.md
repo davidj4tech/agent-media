@@ -2369,6 +2369,22 @@ new session (§6.3) plus `path` and `line` (`doc_chat.py`; David, 16 Oct
   edit is one commit and can be reverted.
 - Recorded against the document for `/doc/read`'s `chats`, titled by the
   words, else the action ("Shorten").
+- `action: "notes"` takes `notes: [{line, text}]` (1 to 30, each with
+  words; 400 otherwise): margin notes made while reading, sent as one
+  message quoting each paragraph and its note, in line order, then the same
+  commit request. Its chat is titled "2 notes".
+
+`POST /doc/undo {"path", "sha"}` → `{"ok", "path", "undone", "sha"}`: the
+reader's Undo (16 Oct 2026). It reverts the document's last commit, the
+`last_edit` that `GET /doc/read` answers, which is `{sha, subject, at}` or
+null. `last_edit` is given only when that commit touched no other file, is
+not the file's first, and the file has no change since. Every `/doc/read`
+answer carries it, `unchanged` ones too, because the commit comes after the
+write. The revert is a commit of its own, `Undo "<subject>"` (only that
+file, as `git checkout <sha>^ -- <file>` then `git commit -- <file>`), so
+Undo again puts the edit back. 409 when there is nothing to undo, or when
+`sha` is no longer the last edit (the answer then carries the current
+`last_edit`).
 
 #### `POST /org/state` · `POST /org/refile` · `POST /org/date` · `POST /org/priority` — gated (`auth.gate`)
 
