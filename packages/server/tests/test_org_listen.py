@@ -195,3 +195,14 @@ def test_a_project_document_reads_and_listens(book, server, tmp_path, monkeypatc
     _, got = _call(server, "GET", "/org/listen")
     assert got["doc"] == str(doc) and "path" not in got and got["line"] == 6
     assert _call(server, "POST", "/org/listen", {"doc": str(tmp_path / "x.md")})[0] == 404
+
+
+def test_a_note_plays_on_the_phones_own_book_player(monkeypatch):
+    # Not where speech goes: the app's speech player cannot open a host path.
+    monkeypatch.delenv("MEDIA_LISTEN_TARGET", raising=False)
+    monkeypatch.delenv("MEDIA_BOOK_SOCKET_PHONE", raising=False)
+    assert org_listen._target() == ""
+    monkeypatch.setenv("MEDIA_BOOK_SOCKET_PHONE", "tcp://p8a:6603")
+    assert org_listen._target() == "phone"
+    monkeypatch.setenv("MEDIA_LISTEN_TARGET", "rooms")
+    assert org_listen._target() == "rooms"

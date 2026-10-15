@@ -42,6 +42,18 @@ _HEARD_S = 3.0
 _ACTIONS = ("pause", "resume", "toggle", "stop")
 
 
+def _target() -> str:
+    """Where a note plays: MEDIA_LISTEN_TARGET, else the phone's own book
+    player when there is one (MEDIA_BOOK_SOCKET_PHONE), else the book
+    channel's default. Not the default first: on a server whose speech goes
+    to the app (`sasonica`), the book default follows it there, and the app's
+    speech player can open neither a path on this host nor a long file
+    without the replies talking over it."""
+    import os
+    return (os.environ.get("MEDIA_LISTEN_TARGET")
+            or ("phone" if os.environ.get("MEDIA_BOOK_SOCKET_PHONE") else "")).strip()
+
+
 def _book():
     """The book channel's controls, run in-process as the CLI runs them."""
     from agent_media_core import mcp_server
@@ -82,7 +94,7 @@ def _playing() -> dict:
         if got is not None and time.monotonic() - at < _CACHE_TTL_S:
             return got
     try:
-        got = _book().book_now_playing()
+        got = _book().book_now_playing(target=_target())
     except Exception:
         got = {"idle": True}
     with _LOCK:
@@ -112,9 +124,9 @@ def _play(clip: Path, meta: dict, line: int | None) -> str:
     now = _playing()
     if line is not None and not now.get("idle") and _clip_of(now.get("uri") or "") == clip:
         # Already this note: a tap on a paragraph is a seek, not a reload.
-        srv.book_seek(_start_ms(timings, line) / 1000.0)
+        srv.book_seek(_start_ms(timings, line) / 1000.0, target=_target())
         if now.get("paused"):
-            srv.book_resume()
+            srv.book_resume(target=_target())
         _forget_cache()
         return "playing"
     if line is not None:
@@ -124,7 +136,8 @@ def _play(clip: Path, meta: dict, line: int | None) -> str:
         dur = (timings or {}).get("duration") or 0
         if dur and start >= (dur - _HEARD_S) * 1000:
             start = 0
-    r = srv.book_play(str(clip), resume=False, start_ms=start, title=meta["title"])
+    r = srv.book_play(str(clip), resume=False, start_ms=start, title=meta["title"],
+                      target=_target())
     _forget_cache()
     if r.get("ok"):
         return "playing"
@@ -243,6 +256,7 @@ def control(action: str, bearer: str) -> tuple[bool, dict]:
     if action == "toggle":
         np = _playing()
         action = "resume" if np.get("idle") or np.get("paused") else "pause"
-    {"pause": srv.book_pause, "resume": srv.book_resume, "stop": srv.book_stop}[action]()
+    {"pause": srv.book_pause, "resume": srv.book_resume, "stop": srv.book_stop}[action](
+        target=_target())
     _forget_cache()
     return now(bearer)

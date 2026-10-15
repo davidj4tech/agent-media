@@ -2223,6 +2223,11 @@ like `/org/say` → `{"ok", "state", "path", "at", "title", "line"}`.
   the audio (`<cache>/docs/note-<hash>.json`) keeps each paragraph's
   `{start, end, line}`. The render is cached on the text, so an edited note
   is rendered again, and a heading on its own is a render of its own.
+- It plays on `MEDIA_LISTEN_TARGET`, else on the phone's own book player
+  when there is one (`MEDIA_BOOK_SOCKET_PHONE`: the file is copied to the
+  phone first), else on the book channel's default. The default comes after,
+  because it follows speech, and where speech goes to the app (`sasonica`)
+  the app's speech player can't open a file on the server.
 - `state` is `"rendering"` while synthesis runs (it then plays by itself),
   `"copying"` while the file goes to the phone (the book channel plays it
   when it lands), or `"playing"`.
