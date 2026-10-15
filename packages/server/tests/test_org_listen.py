@@ -81,6 +81,7 @@ class Book:
 def book(tree, monkeypatch, tmp_path):
     (tree / "walk.org").write_text(NOTE)
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))   # listen-prefs.json
     monkeypatch.setattr(auth, "may_control_speech", lambda b: (True, {}) if b == "good"
                         else (False, {"error": "no", "status": 403}))
     b = Book()
@@ -104,6 +105,9 @@ def book(tree, monkeypatch, tmp_path):
     monkeypatch.setattr(org_listen, "_read", lambda: dict(b.np))
     monkeypatch.setattr(org_listen, "_send", send)
     monkeypatch.setattr(org_listen, "_CACHE_TTL_S", 0.0)
+    # A press acts on a reading up to 6 s old: not the last test's player.
+    org_listen._forget_cache()
+    org_listen._LAST.clear()
     rendered = []
 
     def fake_render(sections, stem, force=False, extra=None, **kw):
@@ -170,7 +174,7 @@ def test_listen_renders_then_plays_and_follows(book, server):
     assert got["state"] == "paused" and book.calls[-1] == ("pause",)
     assert _call(server, "POST", "/org/listen/ctl", {"action": "dance"})[0] == 400
     _, got = _call(server, "POST", "/org/listen/ctl", {"action": "stop"})
-    assert got == {"ok": True, "state": "idle"}
+    assert got == {"ok": True, "state": "idle", "speed": 1.0, "volume": 100}
 
 
 def test_a_heading_is_its_own_render_with_lines_of_its_own(book, server):
@@ -195,7 +199,8 @@ def test_a_note_heard_to_the_end_starts_again(book, server):
 
 
 def test_nothing_playing_is_idle_and_bad_notes_refused(book, server):
-    assert _call(server, "GET", "/org/listen") == (200, {"ok": True, "state": "idle"})
+    assert _call(server, "GET", "/org/listen") == (
+        200, {"ok": True, "state": "idle", "speed": 1.0, "volume": 100})
     assert _call(server, "GET", "/org/listen", bearer="bad")[0] == 401
     assert _call(server, "POST", "/org/listen", {"path": "nope.org"})[0] == 404
     assert book.calls == []
@@ -293,6 +298,32 @@ def test_the_sheets_knobs(book, server, monkeypatch):
     assert _call(server, "POST", "/org/listen/ctl", {"action": "seek"})[0] == 400
 
 
+def test_speed_and_volume_are_kept_for_the_next_note(book, server, tmp_path):
+    """The knobs turn with nothing playing, and every note loads with them
+    (David, 15 Oct 2026: "change speed and volume ... even when something's
+    not playing")."""
+    _, got = _call(server, "POST", "/org/listen/ctl", {"action": "speed+"})
+    assert got["state"] == "idle" and got["speed"] == 1.1
+    _call(server, "POST", "/org/listen/ctl", {"action": "speed+"})
+    _, got = _call(server, "POST", "/org/listen/ctl", {"action": "vol-"})
+    assert (got["speed"], got["volume"]) == (1.2, 90)
+    assert book.calls == []                            # nothing to send it to
+    assert _call(server, "POST", "/org/listen/ctl", {"action": "mute"})[0] == 409
+    assert json.loads((tmp_path / "state" / "agent-media" / "listen-prefs.json").read_text()) \
+        == {"speed": 1.2, "volume": 90}
+    _call(server, "POST", "/org/listen", {"path": "walk.org"})
+    assert _until(lambda: ("speed", 1.2) in book.calls)
+    assert book.np["volume"] == 90
+    # Turned while a note plays: kept for the next one too.
+    org_listen._forget_cache()
+    _call(server, "POST", "/org/listen/ctl", {"action": "speed0"})
+    _call(server, "POST", "/org/listen/ctl", {"action": "stop"})
+    book.np = {"idle": True}
+    org_listen._forget_cache()
+    _, got = _call(server, "GET", "/org/listen")
+    assert (got["state"], got["speed"], got["volume"]) == ("idle", 1.0, 90)
+
+
 def test_a_press_is_one_batch_on_the_last_reading(book, server, monkeypatch):
     """A press reads nothing first when the last reading is fresh: on the
     phone a read is ~0.9 s, and a press used to cost four or five."""
@@ -358,6 +389,10 @@ def test_a_note_plays_in_the_apps_book_player(book, server, monkeypatch, tmp_pat
     assert sent[-1][0] == ["loadfile", url, "replace"] and sent[-1][-1] == ["seek", 1.5, "absolute"]
     _, got = _call(server, "POST", "/org/listen/ctl", {"action": "vol+"})
     assert got["volume"] == 100                   # the app's player has no boost
+    _call(server, "POST", "/org/listen/ctl", {"action": "speed+"})
+    _call(server, "POST", "/org/listen/ctl", {"action": "stop"})
+    _call(server, "POST", "/org/listen/ctl", {"action": "toggle"})
+    assert sent[-1][-2:] == [["set_property", "speed", 1.1], ["set_property", "volume", 100]]
 
 
 def test_the_apps_player_idle_at_the_end_reads_as_ended(monkeypatch):

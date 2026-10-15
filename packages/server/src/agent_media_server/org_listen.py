@@ -28,16 +28,24 @@ lock screen's chapters, and a headset's pause reaching it — Termux's mpv has
 no media session (David, 15 Oct 2026: "Pausing with my earbuds doesn't seem
 to work"). The place it was left is kept here, as the book channel's
 observer keeps it for mpv.
+
+Speed and volume are the listener's, not the note's: kept in
+listen-prefs.json, written by every press of those knobs (playing or not),
+and set on each note as it loads, so they can be set with nothing playing
+and a new note does not start at 1× (David, 15 Oct 2026: "change speed and
+volume ... even when something's not playing").
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
 from pathlib import Path
 
 from agent_media_core import docs
+from agent_media_core._paths import state_dir
 
 from . import auth, doc_read, org
 
@@ -67,6 +75,60 @@ _RESTART_S = 2.0
 _APP_VOL_MAX = 100
 #: The app's player: the last note handed to it, for resume once it is idle.
 _LAST: dict = {}
+#: The knobs a press may turn with nothing playing.
+_KNOBS = ("speed+", "speed-", "speed0", "vol+", "vol-")
+
+
+def _prefs_path() -> Path:
+    return state_dir() / "listen-prefs.json"
+
+
+def _prefs() -> dict:
+    """The speed and volume notes play at: {"speed", "volume"}, each only
+    once it has been set."""
+    try:
+        got = json.loads(_prefs_path().read_text())
+    except (OSError, ValueError):
+        return {}
+    out: dict = {}
+    if isinstance(got.get("speed"), (int, float)):
+        out["speed"] = round(max(_SPEED_MIN, min(_SPEED_MAX, float(got["speed"]))), 2)
+    if isinstance(got.get("volume"), (int, float)):
+        out["volume"] = max(0, min(_vol_max(), int(got["volume"])))
+    return out
+
+
+def _keep_prefs(speed: float | None, volume: int | None) -> None:
+    prefs = {**_prefs(), **({"speed": speed} if speed is not None else {}),
+             **({"volume": volume} if volume is not None else {})}
+    try:
+        path = _prefs_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(prefs))
+        tmp.replace(path)
+    except OSError as e:
+        log.info("org-listen: could not keep the speed and volume: %s", e)
+
+
+def _turn(action: str, speed: float | None, volume: int | None) -> tuple[float, int]:
+    """A knob's press: the speed and volume it makes of these."""
+    speed = float(speed or 1.0)
+    volume = int(volume if volume is not None else 100)
+    if action.startswith("speed"):
+        rate = 1.0 if action == "speed0" else speed + (
+            _SPEED_STEP if action == "speed+" else -_SPEED_STEP)
+        speed = round(max(_SPEED_MIN, min(_SPEED_MAX, rate)), 2)
+    else:
+        volume = max(0, min(_vol_max(), volume + (_VOL_STEP if action == "vol+" else -_VOL_STEP)))
+    return speed, volume
+
+
+def _pref_cmds() -> list:
+    """The kept speed and volume, as commands for a note being loaded."""
+    p = _prefs()
+    return ([["set_property", "speed", p["speed"]]] if "speed" in p else []) + (
+        [["set_property", "volume", p["volume"]]] if "volume" in p else [])
 
 
 def _endpoint() -> str:
@@ -263,6 +325,11 @@ def _play(clip: Path, meta: dict, line: int | None) -> str:
                       target=_target())
     _forget_cache()
     if r.get("ok"):
+        if _pref_cmds():
+            try:
+                _send(_pref_cmds())
+            except Exception as e:                 # it plays; at the old rate
+                log.info("org-listen: the book channel kept its speed: %s", e)
         return "playing"
     return "copying" if r.get("fetching") else "error"
 
@@ -284,6 +351,7 @@ def _play_app(clip: Path, meta: dict, timings: dict | None, start: int,
         cmds.append(["set_property", "user-data/agent-media/chapters", chapters])
     if start > 0:
         cmds.append(["seek", start / 1000.0, "absolute"])
+    cmds += _pref_cmds()
     try:
         _send(cmds)
     except Exception as e:
@@ -294,7 +362,8 @@ def _play_app(clip: Path, meta: dict, timings: dict | None, start: int,
     _predict({"idle": False, "uri": url, "position_ms": start,
               "duration_ms": int(((timings or {}).get("duration") or 0) * 1000) or None,
               "paused": False, "speed": now.get("speed") or 1.0,
-              "volume": now.get("volume"), "muted": bool(now.get("muted"))})
+              "volume": now.get("volume"), "muted": bool(now.get("muted")),
+              **_prefs()})
     return "playing"
 
 
@@ -400,14 +469,16 @@ def _answer(np: dict) -> dict:
                 "muted": np.get("muted"), "chapters": t.get("chapters") or [],
                 "line": _line_at(t, pos / 1000.0), "pos_ms": pos,
                 "dur_ms": np.get("duration_ms") or int((t.get("duration") or 0) * 1000)}
+    # Nothing loaded: the knobs read what the next note will play at.
+    knobs = {"speed": 1.0, "volume": min(100, _vol_max()), **_prefs()}
     with _LOCK:
         job = next(iter(_JOBS.values()), None)
     if job:
-        return {"state": "rendering", **_who(job)}
+        return {"state": "rendering", **_who(job), **knobs}
     staged = _staging()
     if staged and (staged.get("path") or staged.get("doc")):
-        return {"state": "copying", **_who(staged)}
-    return {"state": "idle"}
+        return {"state": "copying", **_who(staged), **knobs}
+    return {"state": "idle", **knobs}
 
 
 def control(action: str, bearer: str, value: float | None = None) -> tuple[bool, dict]:
@@ -437,6 +508,11 @@ def control(action: str, bearer: str, value: float | None = None) -> tuple[bool,
         _predict({"idle": True})
         return True, _answer({"idle": True})
     np = _playing(_PRESS_AGE_S)
+    if np.get("idle") and action in _KNOBS:
+        # Nothing to send it to: kept for the next note.
+        p = _prefs()
+        _keep_prefs(*_turn(action, p.get("speed"), p.get("volume")))
+        return True, _answer(np)
     if np.get("idle"):
         if action in ("resume", "toggle"):
             if app:
@@ -487,18 +563,19 @@ def control(action: str, bearer: str, value: float | None = None) -> tuple[bool,
         else:
             seek(rows[cur]["start"] if pos - rows[cur]["start"] > _RESTART_S
                  else rows[max(cur - 1, 0)]["start"])
-    elif action.startswith("speed"):
-        rate = 1.0 if action == "speed0" else float(np.get("speed") or 1.0) + (
-            _SPEED_STEP if action == "speed+" else -_SPEED_STEP)
-        new["speed"] = round(max(_SPEED_MIN, min(_SPEED_MAX, rate)), 2)
-        cmds.append(["set_property", "speed", new["speed"]])
     elif action == "mute":
         new["muted"] = not np.get("muted")
         cmds.append(["set_property", "mute", new["muted"]])
     else:
-        cur_vol = int(np.get("volume") if np.get("volume") is not None else 100)
-        new["volume"] = max(0, min(_vol_max(), cur_vol + (_VOL_STEP if action == "vol+" else -_VOL_STEP)))
-        cmds.append(["set_property", "volume", new["volume"]])
+        speed, volume = _turn(action, np.get("speed"), np.get("volume"))
+        if action.startswith("speed"):
+            new["speed"] = speed
+            cmds.append(["set_property", "speed", speed])
+            _keep_prefs(speed, None)
+        else:
+            new["volume"] = volume
+            cmds.append(["set_property", "volume", volume])
+            _keep_prefs(None, volume)
     try:
         _send(cmds)
     except Exception as e:

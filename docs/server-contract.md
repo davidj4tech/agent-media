@@ -2276,6 +2276,12 @@ The sheet's keys (15 Oct 2026): `seek` takes `to` (seconds), `skip` takes
 past 100); `mute` toggles. The `GET` answer for something playing carries
 `speed`, `volume`, `muted` and `chapters` (`[{title, start}]`, its headings,
 from the sidecar).
+Speed and volume are kept between notes (15 Oct 2026, listen-prefs.json):
+every press of `speed±`/`speed0`/`vol±` writes them, playing or not, and
+each note is loaded with them. With nothing loaded those keys are not 409:
+they turn the kept values, and every answer that is not about something
+playing (`idle`, `rendering`, `copying`) carries `speed` and `volume` as
+the next note will play them (1 and 100 until set). `mute` is not kept.
 `prev` restarts the paragraph when it is more than 2 s in, and it is 409
 when nothing is being listened to. 400 for any other action.
 
