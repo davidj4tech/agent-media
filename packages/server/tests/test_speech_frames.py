@@ -464,3 +464,26 @@ def test_a_report_behind_only_on_appends_still_says_where_the_phone_is(endpoint)
                                     "time_pos": 1.0})
     assert ipc("get_property", "playlist-pos")["data"] == 2
     ipc.close()
+
+
+def test_a_report_behind_frames_the_phone_lost_is_its_word(endpoint, monkeypatch):
+    """17 Oct 2026: a chime's frames never reached the phone, every report
+    after was behind them, and the model said "playing" for nine hours with
+    its playhead running on by the clock."""
+    _listening()
+    ipc = Ipc(endpoint)
+    ipc("stop")
+    before = speech_frames.seq()
+    ipc("loadfile", "http://red5:8780/audio/earcon-held-v1.wav", "replace")
+    assert ipc("get_property", "idle-active")["data"] is False
+    idle = {"seq": before, "pos": -1, "count": 0, "idle": True, "eof": False,
+            "paused": False, "time_pos": -1, "duration": -1}
+    # Just sent: still in flight, so its report is old news.
+    speech_frames.report("d_test", dict(idle))
+    assert ipc("get_property", "idle-active")["data"] is False
+    # Long unacknowledged: lost, and the phone is right.
+    monkeypatch.setattr(speech_frames, "LOST_S", 0.0, raising=False)
+    speech_frames.report("d_test", dict(idle))
+    assert ipc("get_property", "idle-active")["data"] is True
+    assert ipc("get_property", "playlist-count")["data"] == 0
+    ipc.close()

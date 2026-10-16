@@ -70,6 +70,9 @@ log = logging.getLogger("agent-media.server.speech_frames")
 #: Frames kept for a stream that reconnects (`?speech_after=`), and how old.
 KEEP = 200
 REPLAY_S = 120.0
+#: How long a frame may go unacknowledged before a report that is still
+#: behind it is taken as the phone's word: it lost the frame.
+LOST_S = float(os.environ.get("MEDIA_SPEECH_FRAMES_LOST_S", "15"))
 #: Stored, not played: mpv's own metadata names (MpvServer.isStored).
 TITLE = "force-media-title"
 USER_DATA = "user-data/"
@@ -374,8 +377,9 @@ def report(device: str, body: dict, channel: str = "speech") -> tuple[bool, dict
     with hub.lock:
         try:
             got = int(body.get("seq", -1))
-            hub.model.report(body, current=got >= hub.seq,
-                             settled=got >= hub.seq_moved)
+            current = got >= hub.seq or _lost(hub, got)
+            hub.model.report(body, current=current,
+                             settled=current or got >= hub.seq_moved)
         except (TypeError, ValueError):
             return False, {"status": 400, "error": "malformed state"}
         hub.reported_at = time.time()
@@ -399,6 +403,28 @@ def report(device: str, body: dict, channel: str = "speech") -> tuple[bool, dict
                       **({"phone": x} if isinstance(x, dict) and x else {}))
     _notify_observers(hub)
     return True, {"seq": seq(channel)}
+
+
+def _lost(hub: "_Hub", got: int) -> bool:
+    """A report behind a frame sent more than LOST_S ago: the phone lost it.
+
+    Its word is then the truth, because the ops it never applied never
+    happened there. Taken as old news instead, a chime's three frames that
+    never reached the phone (a frame arriving before its player is up is
+    dropped; a stream can die unnoticed) left this model "playing" and its
+    playhead running on by the clock, with no duration to stop at: nine
+    hours of `▶` over a silent phone that kept reporting idle (David,
+    17 Oct 2026: "the player says speaking but there is nothing playing").
+    Caller holds hub.lock."""
+    first = next((f for f in hub.frames if f["seq"] > got), None)
+    age = time.time() - first["at"] if first is not None else None
+    if age is not None and age < LOST_S:
+        return False
+    trace("lost", hub, seq=got, behind=hub.seq,
+          age_s=None if age is None else round(age, 1))
+    log.warning("%s: the phone reports seq %s, %s behind; taking its word",
+                hub.channel, got, hub.seq)
+    return True
 
 
 def _trace_played(hub: "_Hub", extra) -> None:
