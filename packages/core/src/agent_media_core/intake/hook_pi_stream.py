@@ -9,7 +9,8 @@ while the model is still generating the rest of the reply.
 
 Honors the same env as `hook_pi`: `MEDIA_HOOK_ENABLED` / `PI_TTS_ENABLED`
 gate it, and `PI_TTS_ENGINE` / `PI_TTS_VOICE` override the generic
-`MEDIA_RENDER_*` (loaded from ~/.config/agent-media.env).
+`MEDIA_RENDER_*` (loaded from ~/.config/agent-media.env). `--session <id>`
+files the reply under its conversation, as `media-hook-pi --session` does.
 """
 
 from __future__ import annotations
@@ -28,7 +29,8 @@ from .submit import submit_stream
 _SENTINEL = object()
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
     if os.environ.get("MEDIA_HOOK_ENABLED", "1") == "0":
         return 0
     if os.environ.get("PI_TTS_ENABLED", "1") == "0":
@@ -47,6 +49,10 @@ def main() -> int:
         voice = os.environ.get(
             f"PI_TTS_VOICE_{engine.upper().replace('-', '_')}")
     voice = voice or os.environ.get("PI_TTS_VOICE")
+
+    metadata = {"kind": "stream"}
+    if len(args) >= 2 and args[0] == "--session" and args[1]:
+        metadata["session"] = args[1]
 
     sentencer = IncrementalSentencer()
     q: "queue.Queue" = queue.Queue()
@@ -90,7 +96,7 @@ def main() -> int:
     submit_stream(
         _sentences(),
         Event(text="", source=Source.PI, priority=Priority.NORMAL,
-              engine=engine, voice=voice, metadata={"kind": "stream"}),
+              engine=engine, voice=voice, metadata=metadata),
     )
     return 0
 
