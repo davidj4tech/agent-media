@@ -233,11 +233,8 @@ in when one fails.
   larger APK accepted.
 - **A killed app is woken by NotifyService's held connection**, as today: no
   FCM/Sygnal, no UnifiedPush.
-
-## Open questions for David
-
-1. Where would matrix.sasonica.com run (red4, a VPS), and on tuwunel or
-   Synapse with MAS?
-2. Threads as rooms (step 6): do you want agent threads readable in
-   Element, given their history would then live on the homeserver
-   (encrypted)?
+- **matrix.sasonica.com runs on red4, on tuwunel** — first check that its
+  sign-in can use the Sasonica account (cms.sasonica.com OIDC); Synapse with
+  MAS if it can't.
+- **Threads readable in Element (step 6): decide later**, once the
+  transport works.
