@@ -285,6 +285,15 @@ class StateStore:
                 (sink, uri, started_at, content_type, target,
                  json.dumps(extras) if extras else None),
             )
+            if sink == "speech":
+                # Outlives the now_playing row, which goes when the reply
+                # ends: what spoke last (`last_speech`).
+                cur.execute(
+                    "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)",
+                    (self._LAST_SPEECH_KEY, json.dumps({
+                        "started_at": started_at,
+                        "history_id": (extras or {}).get("history_id")})),
+                )
             if sink != "speech" and uri and uri != prev_uri:
                 cur.execute(
                     "INSERT INTO history "
@@ -333,6 +342,22 @@ class StateStore:
                 )
             return None
         return result
+
+    _LAST_SPEECH_KEY = "speech_last"
+
+    def last_speech(self) -> dict:
+        """The reply that started speaking last, playing or long over:
+        `{"started_at", "history_id"}` (a replay's row; None for a live
+        reply, whose row is filed under its `started_at`), or {}."""
+        with self._cursor() as cur:
+            cur.execute("SELECT value FROM meta WHERE key = ?",
+                        (self._LAST_SPEECH_KEY,))
+            row = cur.fetchone()
+        try:
+            got = json.loads(row[0]) if row else {}
+        except ValueError:
+            return {}
+        return got if isinstance(got, dict) else {}
 
     def clear_now_playing(self, sink: str) -> None:
         with self._cursor() as cur:

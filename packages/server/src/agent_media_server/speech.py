@@ -21,10 +21,11 @@ from . import audio, auth, sessions, threads
 #: the reply being said to one of its sentences) and `replay-id` with a
 #: `sentence` (play a recorded reply from one). The bearer is a listener's;
 #: the popup's other keys (keep a pane muted, focus tmux, open URLs) are the
-#: desk's.
+#: desk's. `again` is a headset's play with nothing loaded on the phone: the
+#: last reply from where it was stopped, else the open thread's newest.
 _APP_SPEECH_ACTIONS = frozenset({
     "toggle", "skip-", "skip+", "para-", "para+", "jump-end",
-    "prev", "replay", "replay-id", "speed-", "speed+", "speed0", "vol-", "vol+", "mute",
+    "prev", "replay", "replay-id", "again", "speed-", "speed+", "speed0", "vol-", "vol+", "mute",
     "goto-sentence",
 })
 

@@ -253,7 +253,7 @@ def _media(args: list[str], timeout: int = 10) -> str:
 #: Speech verbs that start a replay. A replay now waits (MEDIA_REPLAY_WAIT_S,
 #: 8s) for a speaking reply to step aside before it pushes, and the push
 #: itself is round trips to the phone, so ten seconds would kill it midway.
-_REPLAY_VERBS = frozenset({"replay", "replay-id", "prev"})
+_REPLAY_VERBS = frozenset({"replay", "replay-id", "again", "prev"})
 
 
 def _media_ctl(args: list[str], timeout: int) -> str:
@@ -1488,6 +1488,9 @@ def ctl_argv(channel: str, action: str, arg: int,
             # race).
             "replay-id": ["replay", "--id", str(arg)]
                          + (["--from-sentence", sarg] if sarg.isdigit() else []),
+            # A headset's play with nothing loaded on the phone: the last
+            # reply where it was stopped, else the open thread's newest.
+            "again": ["replay", "--again"],
             "jump-end": ["jump", "end"],
             "vol-": ["volume", "-5"],
             "vol+": ["volume", "5"],

@@ -3990,7 +3990,49 @@ def _push_replay(row: dict, ex: dict, clip_uris: list, clip_durations: list,
     return 0
 
 
+def _last_spoken_row() -> Optional[dict]:
+    """The history row of the reply that spoke last (`last_speech`), or None:
+    a replay names its row, a live reply is filed under its start."""
+    last = StateStore().last_speech()
+    hid = last.get("history_id")
+    if isinstance(hid, int):
+        return StateStore().history_row(hid)
+    start = last.get("started_at")
+    if start is None:
+        return None
+    for row in _speech_history(50):
+        try:
+            if abs(float(row.get("started_at")) - float(start)) < 0.01:
+                return row
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _replay_again() -> int:
+    """A headset's play with nothing loaded on the phone (Sasonica, David,
+    16 Oct 2026: "the same as tapping the most recent play button in a
+    thread"). The reply that spoke last, from where it was stopped, when a
+    Stop left it part way; else the newest reply of the thread open in the
+    app — on screen, or leased open as the screen went off — as its ▶ plays
+    it; else the newest of all."""
+    row = _last_spoken_row()
+    if row is not None:
+        resume = _resume_point(row, _question_before(row))
+        if resume is not None:
+            print(f"media: picking up where it was stopped "
+                  f"(sentence {resume + 1})", file=sys.stderr)
+            return _replay_row(row, from_sentence=resume)
+    from . import watching
+    for session in watching.open_sessions():
+        if _speech_history(1, session=session, include_live=True):
+            return _do_replay(1, session=session)
+    return _do_replay(1)
+
+
 def cmd_replay(a) -> int:
+    if getattr(a, "again", False):
+        return _replay_again()
     if getattr(a, "id", None) is not None:
         # Clip browser: address the row by stable history id, not a
         # traversal index — indexes shift when a new clip lands while the
@@ -9039,6 +9081,10 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("--from-sentence", type=int, default=None, metavar="N",
                    help="with --id: start at sentence N (0-based) of that "
                         "reply, where its clips allow it")
+    s.add_argument("--again", action="store_true",
+                   help="the last reply from where it was stopped, else the "
+                        "open thread's newest (a headset's play with nothing "
+                        "loaded)")
     s.set_defaults(func=cmd_replay)
 
     s = sub.add_parser("replay-prev", help=argparse.SUPPRESS)  # popup < (restart-first)

@@ -97,6 +97,22 @@ def pocket(session: str, on: bool) -> float:
     return until
 
 
+def open_sessions() -> list[str]:
+    """The threads open in the app: leased as the screen went off, the
+    newest lease first (a locked phone is where a headset is pressed), then
+    those on screen."""
+    out = [s for s, _ in sorted(_pockets().items(), key=lambda kv: -kv[1])]
+    try:
+        data = json.loads(_path().read_text())
+    except (OSError, ValueError):
+        return out
+    if isinstance(data, dict) and _alive(data.get("pid")):
+        sessions = data.get("sessions")
+        if isinstance(sessions, dict):
+            out += [s for s, n in sessions.items() if n and s not in out]
+    return out
+
+
 def is_open(session: str, pocketed: bool = False) -> bool:
     """Whether `session` is on screen in the app; with `pocketed`, also
     whether it was when the screen went off, not long ago."""
