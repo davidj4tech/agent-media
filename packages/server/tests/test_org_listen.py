@@ -444,6 +444,26 @@ def test_a_projects_documents_and_finding_one(tree, server, tmp_path, monkeypatc
     assert [h["title"] for h in doc_read.search(["guide"])] == ["Guide"]
 
 
+def test_finding_a_document_without_rg(tmp_path, monkeypatch):
+    """No ripgrep (GitHub's runners, a fresh Mac or Windows): the search walks
+    the documents itself and finds the same one, once."""
+    from agent_media_server import doc_read
+    proj = tmp_path / "projects"
+    for name in ("app", "app-copy"):
+        (proj / name / "docs").mkdir(parents=True)
+        (proj / name / "docs" / "new.md").write_text("# New idea\n\nThe kettle sings.\n")
+    (proj / "app" / ".git").mkdir()
+    (proj / "app" / ".git" / "kettle.md").write_text("# Hidden\n\nThe kettle sings.\n")
+    (proj / "app" / "docs" / "guide.md").write_text("# Guide\n\nNo kettles here.\n")
+    monkeypatch.setenv("MEDIA_PROJECTS_DIR", str(proj))
+    monkeypatch.setenv("MEDIA_DOC_ROOTS", str(tmp_path / "nowhere"))
+    monkeypatch.setattr(doc_read, "_rg", lambda args, cwd: None)
+    hits = doc_read.search(["kettle", "sings"])
+    assert [h["title"] for h in hits] == ["New idea"]
+    assert hits[0]["project"] in ("app", "app-copy") and hits[0]["snippet"] == "The kettle sings."
+    assert [h["title"] for h in doc_read.search(["guide"])] == ["Guide"]
+
+
 def test_a_projects_documents_carry_area_and_state(tree, server, tmp_path, monkeypatch):
     root = tmp_path / "projects" / "app"
     (root / "docs" / "proposals").mkdir(parents=True)
