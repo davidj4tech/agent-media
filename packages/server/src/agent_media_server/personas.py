@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import uuid
 from pathlib import Path
 
@@ -41,8 +42,25 @@ def renderer() -> Path:
     return repo_dir() / "bin" / "persona-render"
 
 
+def _command(windows: bool = os.name == "nt") -> list[str]:
+    """How to run the renderer. Windows cannot run a script by its shebang
+    (WinError 193, "not a valid Win32 application"), and persona-render is a
+    stdlib-only Python script (`#!/usr/bin/env python3`): there it is handed
+    to this server's own Python."""
+    exe = renderer()
+    if windows:
+        try:
+            with exe.open("rb") as fh:
+                first = fh.readline(256)
+        except OSError:
+            first = b""
+        if first.startswith(b"#!") and b"python" in first.lower():
+            return [sys.executable, str(exe)]
+    return [str(exe)]
+
+
 def _run(args: list[str], timeout: float) -> subprocess.CompletedProcess:
-    return subprocess.run([str(renderer()), *args], cwd=str(repo_dir()),
+    return subprocess.run([*_command(), *args], cwd=str(repo_dir()),
                           capture_output=True, text=True, timeout=timeout)
 
 
