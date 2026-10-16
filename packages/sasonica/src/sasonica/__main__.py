@@ -5,12 +5,14 @@
     sasonica tunnel       the quick tunnel the app reaches it through (media-tunnel run)
     sasonica pair         a pairing link for the app (media-visual-canvas pair), as
                           the app's pairing screen says: `sasonica pair --device NAME`
+    sasonica devices      the paired apps; --revoke ID forgets one
     sasonica install      shims on PATH, the two services, this host's config
     sasonica update       the newest release in place of this binary
     sasonica commands     every command it can run
     sasonica version
     sasonica <script> …   any console script of agent-media's packages or
                           edge-tts, by its own name: `sasonica media say hi`
+    sasonica shell …      Sasonica Shell, where it is installed (sasonica/shell.py)
 
 A command is found by its console-script name in the installed packages'
 metadata, so a script added to a pyproject.toml is a `sasonica` command in the
@@ -36,6 +38,9 @@ ALIASES = {
     "tunnel": ("media-tunnel", ["run"]),
     # The app's pairing screen and messages name `sasonica pair --device NAME`.
     "pair": ("media-visual-canvas", ["pair"]),
+    # Sasonica Shell's `devices` is this too; with Shell beside the server,
+    # `sasonica devices` is still the same command.
+    "devices": ("media-visual-canvas", ["devices"]),
 }
 
 
@@ -103,13 +108,14 @@ def main(argv: list[str] | None = None) -> int:
             return rc
     if not args or args[0] in ("-h", "--help", "help"):
         print(__doc__.strip())
+        print(_shell_help())
         return 0
     cmd, rest = args[0], args[1:]
     if cmd in ("version", "--version"):
         print(f"sasonica {build_version()}")
         return 0
     if cmd == "commands":
-        for name in sorted([*ALIASES, *commands()]):
+        for name in sorted([*ALIASES, "shell", *commands()]):
             print(name)
         return 0
     if cmd == "install":
@@ -118,10 +124,37 @@ def main(argv: list[str] | None = None) -> int:
     if cmd == "update":
         from sasonica import update
         return update.main(rest)
+    if cmd == "shell":
+        from sasonica import shell
+        return shell.run(rest)
     if cmd in ALIASES:
         script, pre = ALIASES[cmd]
         return run_script(script, [*pre, *rest])
+    if cmd not in commands():
+        from sasonica import shell
+        if cmd in shell.WORDS:
+            return shell.run(args, what=cmd)
     return run_script(cmd, rest)
+
+
+def _shell_help() -> str:
+    from sasonica import shell
+    found = shell.find_runner()
+    if found is None:
+        return ("\nSasonica Shell (an AI assistant such as Claude runs commands on this\n"
+                "computer) is not installed: `sasonica shell install` installs it.")
+    return (f"""
+Sasonica Shell, installed ({found[1]}):
+
+    sasonica shell [args…]   Shell's own command: `sasonica shell --help`;
+                             `sasonica shell install` sets it up again
+    sasonica status [n]      what the assistants ran here, newest first
+    sasonica skills          the tools set up here for an assistant
+    sasonica tools           the typed tools this computer publishes
+    sasonica url [--name N]  the connector URL (a password)
+    sasonica client add|list|revoke …   one connector URL per assistant
+    sasonica --once          one poll of the queue (the service polls for ever)
+    sasonica sign …          the signature the runner expects""")
 
 
 if __name__ == "__main__":

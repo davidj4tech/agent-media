@@ -7,7 +7,9 @@ has the binary instead of a checkout:
      `edge-tts`…), two lines that exec the binary with the command's name, so
      Claude Code's hooks, opencode's plugin and the run scripts find the names
      they already use. A file there that is not one of these shims (a checkout's
-     venv link) is left alone unless --force;
+     venv link) is left alone unless --force. Sasonica Shell, installed
+     before the server, loses its own command (sasonica-shell, or on Windows
+     its sasonica.cmd): it is `sasonica shell` now (sasonica/shell.py);
   2. this host's config when it has none: role `origin`, headless sessions on;
   3. the agents' hooks: Claude Code's settings, opencode's plugin, for those
      installed;
@@ -478,6 +480,10 @@ def main(argv: list[str] | None = None) -> int:
               f"{', '.join(kept[:6])}{'…' if len(kept) > 6 else ''} — --force replaces them")
     if a.bin_dir.resolve() not in {Path(p).resolve() for p in os.environ.get("PATH", "").split(os.pathsep) if p}:
         print(f"  note: {a.bin_dir} is not on your PATH; add it for your own shells")
+    # Sasonica Shell installed first: no second name for it beside this one.
+    from sasonica import shell
+    for p in shell.adopt_shims(a.bin_dir, dry_run=a.dry_run):
+        print(f"  Sasonica Shell is `sasonica shell` now: removed {p}")
 
     print("== This host's config")
     if not (_config_home() / "agent-media" / "config.toml").exists():

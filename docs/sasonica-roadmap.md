@@ -122,8 +122,10 @@ after pairing, one question, default No ("Also let an AI assistant such as
 Claude run commands on this computer? It needs a free Sasonica account.");
 `SASONICA_WITH_SHELL=1/0` and `-Shell`/`-NoShell` for unattended installs,
 `SASONICA_ONLY=shell` / `-ShellOnly` (and `sasonica.com/shell`,
-deploy/shell.sh) for Shell alone. Beside the server, Shell's command is
-`sasonica-shell`. docs/proposals/2026-09-29-single-binary.md, "Install".
+deploy/shell.sh) for Shell alone. Beside the server there is one command:
+`sasonica shell …`, and `sasonica status`/`skills`/`url`/… forwarded to
+Shell (David, 16 Oct 2026; branch one-command in both repos).
+docs/proposals/2026-09-29-single-binary.md, "Install".
 
 **A welcome, and Just look around** (David, 27 Sep 2026): a fresh install
 opens on Welcome, which says what Sasonica is and offers **Connect to my
