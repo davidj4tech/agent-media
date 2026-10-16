@@ -45,17 +45,21 @@ hostname is per-install:
 **For other users, 8 Oct 2026.** Built: the quick tunnel above, set up by
 `sasonica install` (`media-tunnel`, packages/server/.../tunnel.py; service
 `sasonica-quick-tunnel`), and `pair --device` naming its https URL. The
-**lookup is on hold pending Matrix** (David, 8 Oct 2026: a sasonica.com
-homeserver may replace it), so a quick tunnel's restart means pairing the
-phone again (or typing the new address into Settings → Server address: the
-device token holds across names). The lookup's design as built and tested
-locally — the id is base32(sha256(public key)[:16]), so the first write
-cannot be squatted; `PUT /r/<id>` `{url, ts, pub}` signed over the raw body;
-only `https://*.trycloudflare.com`; 1 KB; 20 writes/min per address, 5 s
-apart and 30/hour per id; entries live 60 days, republished daily — is on
-agent-media branch `lookup-hold` (deploy/lookup), and the app half on
-sasonica-app branch `tunnel-lookup`. It was deployed for a few minutes on
-8 Oct and taken down again when the hold came.
+lookup was put on hold pending Matrix on 8 Oct (a sasonica.com homeserver
+might replace it). **The hold was lifted on 16 Oct 2026** (David: "you
+decide"): the lookup ships now, and the Matrix transport proposal, being
+written in parallel, may later replace it. Its design, as built — the id is
+base32(sha256(public key)[:16]), so the first write cannot be squatted;
+`PUT /r/<id>` `{url, ts, pub}` signed over the raw body; only
+`https://*.trycloudflare.com`; 1 KB; 20 writes/min per address, 5 s apart
+and 30/hour per id; entries live 60 days, republished daily — is on
+agent-media branch `lookup` (deploy/lookup; revived from `lookup-hold`), and
+the app half on sasonica-app branch `lookup` (from `tunnel-lookup`). The
+contract has it under §9, Pairing. It was deployed for a few minutes on
+8 Oct and taken down; until the Worker is deployed again and the app ships,
+a quick tunnel's restart still means pairing the phone again (or typing the
+new address into Settings → Server address: the device token holds across
+names).
 
 red5's own name is only David's choice: a named tunnel on his domain now,
 and the lookup can come later without changing the server's routes.

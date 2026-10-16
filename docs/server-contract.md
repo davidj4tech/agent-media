@@ -3625,7 +3625,9 @@ Pinned by `packages/server/tests/test_devices.py`.
    (default: `MEDIA_VISUAL_PAIR_TTL`, else 1800 — the same 30 min as
    `PAIR_TTL_S`), and prints a QR of the app link plus both links:
    - `sasonica://pair?server=<base url, percent-encoded>&code=<code>` — what
-     the app reads;
+     the app reads; over a quick tunnel it also carries
+     `&lookup=<percent-encoded https://sasonica.com/r/<install id>>` (see
+     "The lookup" below);
    - `http://<host>:<port>/pair?c=<code>&device=1` — for the person at the
      terminal only. Opened in a browser it is **refused** (it reaches
      `GET /pair`, the amux page, which does not know device codes).
@@ -3667,6 +3669,36 @@ Pinned by `packages/server/tests/test_devices.py`.
    - The name stored is the one given at the desk. The body's `device` is
      used only when the desk gave none — the person with the shell decides
      what a device is called, not the device.
+   - `server.lookup` (16 Oct 2026) is present only when the request came in
+     on this server's running quick tunnel (`base` equals the URL in
+     `<state>/tunnel.json`) and publishing is on: the URL the app asks for
+     the server's new address after the tunnel restarts under another name.
+     Absent over a tailnet, a named tunnel or a proxy, whose names do not
+     change.
+
+   **The lookup** (`deploy/lookup`, a Worker at `sasonica.com/r/*`;
+   docs/proposals/2026-10-03-off-the-tailnet.md). `media-tunnel run`
+   publishes each new quick-tunnel URL, and again daily:
+   `PUT https://sasonica.com/r/<id>` `{"url", "ts", "pub"}`, header
+   `X-Sasonica-Signature: base64url(Ed25519(raw body))`, signed by the key in
+   `<state>/install-key` (made on first use, mode 600). `<id>` is
+   base32(sha256(pub)[:16]), lower case, 26 characters, so only that key can
+   write it. The app reads it with no auth:
+
+   - `GET /r/<id>` → 200 `{"url": "https://<name>.trycloudflare.com",
+     "updated": <unix s>}`, or 404 `{"error": "no such install"}`. CORS `*`.
+   - The app keeps `lookup` (from the link or `server.lookup`, the latter
+     winning) with its server. When a request to its base cannot get
+     through — the fetch throws, or a dead tunnel's 502/503/504/530 — it
+     GETs the lookup (one ask shared by concurrent failures, at most one per
+     20 s); an https `url` other than the current base becomes the new base,
+     stored, and the request is retried there once. The device token holds
+     across names. (sasonica-app api/auth.ts `relocate()`, test/lookup.mjs.)
+   - Only `https://*.trycloudflare.com` origins are accepted; entries live
+     60 days from the last write. `MEDIA_LOOKUP_URL` sets the base
+     (`-`, or `MEDIA_LOOKUP=0`, turns publishing off and drops `lookup`
+     from links and answers). `media-tunnel id` prints the id and URL;
+     `media-tunnel publish` publishes now.
 3. The app stores the token in the Android keystore (not WebView
    localStorage), and the base URL from the pairing link becomes its server
    address — replacing the "ABS host on 8781" guess.

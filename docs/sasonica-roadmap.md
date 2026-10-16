@@ -805,10 +805,12 @@ ahead.
    lookup** (a Worker keeping each install's current URL, signed by a key
    made at install) so the app re-finds the server after a restart instead
    of pairing again. `_pair_host` stops falling back to a bare hostname.
-   **The lookup is on hold pending Matrix (David, 8 Oct 2026)**: Sasonica's
-   own homeserver (threads as rooms, decided 29 Sep) may make it throwaway.
-   Until then the phone **pairs again whenever the quick tunnel's address
-   changes** (a reboot, a crash); the installer and `pair` say so. **Quick
+   The lookup was on hold pending Matrix from 8 Oct (Sasonica's own
+   homeserver may make it throwaway); **the hold was lifted 16 Oct 2026**
+   (David: "you decide"; the Matrix transport proposal may still replace
+   it). Until the Worker is deployed and the app ships, the phone **pairs
+   again whenever the quick tunnel's address changes** (a reboot, a crash);
+   the installer and `pair` say so. **Quick
    tunnel built 8 Oct** (agent-media 21c5ead): `sasonica install` fetches
    cloudflared 2026.9.3 (pinned sha256 per platform) to ~/.local/bin, writes
    `MEDIA_VISUAL_PUBLIC=127.0.0.1:8789`, and adds a third service,
@@ -827,10 +829,10 @@ ahead.
    cloudflared, wrote the listener, and (no systemd there; started by hand)
    paired a device from red5 through its tunnel. CI fix e837fba, 41d3216. The
    lookup as built (a Worker at sasonica.com/r/<id>, signed by a key made at
-   install; the app re-finding its server) is parked, not deployed: agent-media
-   branch `lookup-hold`, sasonica-app branch `tunnel-lookup` (1c52416, WIP;
-   worktree ~/projects/sasonica-app-tunnel); KV namespace `sasonica-lookup`
-   is kept on the South Pen Labs account.
+   install; the app re-finding its server) is revived on agent-media branch
+   `lookup` and sasonica-app branch `lookup` (16 Oct; from `lookup-hold` and
+   `tunnel-lookup`), not merged or deployed yet; KV namespace
+   `sasonica-lookup` is kept on the South Pen Labs account.
    **The real app paired, 8 Oct 2026** (David: the website changes "after a
    real phone pairs"; the app in a browser accepted): the released binary
    (2026.10.07+e8eab48) in a throwaway HOME, `install --no-services` (it
