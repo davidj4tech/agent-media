@@ -223,20 +223,21 @@ in when one fails.
    gateway can wake a killed app. This is separate from the transport and
    only worth doing once 1–5 are carrying real traffic.
 
+## Decided (David, 16 Oct 2026)
+
+- **The lookup stays** as the no-account path, not a throwaway (David: "you
+  decide"; it is being revived on branch `lookup`).
+- **matrix.sasonica.com requires a Sasonica account**; no anonymous
+  per-install users.
+- **E2EE is required from day one** on sasonica.com, native crypto and a
+  larger APK accepted.
+- **A killed app is woken by NotifyService's held connection**, as today: no
+  FCM/Sygnal, no UnifiedPush.
+
 ## Open questions for David
 
-1. Is the lookup now permanent, for no-account users, rather than
-   "throwaway once Matrix lands"?
-2. Should matrix.sasonica.com require a Sasonica account (proposed), or
-   also mint anonymous per-install users?
-3. E2EE required on sasonica.com from day one (proposed), even though it
-   means native crypto in the Windows/macOS/Linux binaries and a larger
-   APK?
-4. Where would matrix.sasonica.com run (red4, a VPS), and on tuwunel or
+1. Where would matrix.sasonica.com run (red4, a VPS), and on tuwunel or
    Synapse with MAS?
-5. Push when the app is killed: FCM through Sygnal (a Google and Firebase
-   dependency), UnifiedPush (ntfy), or keep NotifyService's held connection
-   as today?
-6. Threads as rooms (step 6): do you want agent threads readable in
+2. Threads as rooms (step 6): do you want agent threads readable in
    Element, given their history would then live on the homeserver
    (encrypted)?
