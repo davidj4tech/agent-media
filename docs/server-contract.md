@@ -3548,7 +3548,7 @@ in `<state_dir>/presets.json`. "Profile" stays the harness login (§6.6).
 
 ```
 GET  /presets → {"presets": [Preset…], "agents_md_default": "<the template a new project gets without a preset>",
-                 "personas": ["zara", …], "roles": ["reviewer", …]}
+                 "personas": ["zara", …], "roles": ["reviewer", …], "private": ["zara", …]}
 POST /presets Preset → {"ok": true, "preset": Preset}       // added, or replaced by name
 POST /presets/remove {"name"} → {"ok": true} | 404
 
@@ -3569,7 +3569,10 @@ only for `agents_md`.
 docs/proposals/2026-10-15-personas-in-presets.md) — `personas` and `roles`
 are what `persona-render --list` names in `MEDIA_PERSONAS_DIR` (default
 `~/agent-personas`); both `[]` on a host without it, so the app shows no
-persona chips. `/ask`'s `persona` and `role` (either, or both) start a
+persona chips. `private` (17 Oct 2026) is the personas with private material
+in the repo — a `private/<id>.sops.md` or `private/<id>-….sops.md`, judged by
+name alone; the app keeps them off the card until its lock is opened. They
+are still in `personas`, so an older app shows them all. `/ask`'s `persona` and `role` (either, or both) start a
 fresh session as `persona-render <persona or role> --adapter <agent>
 [--role <role>] --mode public` — always public, never `sops`. Unknown id →
 400; a render that fails or takes over 20 s → 502 with its last line, before

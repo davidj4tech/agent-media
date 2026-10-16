@@ -64,10 +64,23 @@ def _run(args: list[str], timeout: float) -> subprocess.CompletedProcess:
                           capture_output=True, text=True, timeout=timeout)
 
 
+def private_ids(ids: list[str]) -> list[str]:
+    """The personas among `ids` with private material in the repo's
+    `private/` — a `<id>.sops.md` or `<id>-….sops.md` there (only its name is
+    read, never what is in it). The app keeps them behind a lock (§6.24)."""
+    try:
+        names = [f.name for f in (repo_dir() / "private").iterdir()]
+    except OSError:
+        return []
+    return [i for i in ids
+            if any(n.startswith((f"{i}.", f"{i}-")) for n in names)]
+
+
 def listing() -> dict:
-    """`{"personas": [...], "roles": [...]}` from `persona-render --list`;
-    both empty when the repo (or its renderer) is not there or fails."""
-    out: dict[str, list[str]] = {"personas": [], "roles": []}
+    """`{"personas": [...], "roles": [...], "private": [...]}` from
+    `persona-render --list`, `private` the personas `private_ids` names; all
+    empty when the repo (or its renderer) is not there or fails."""
+    out: dict[str, list[str]] = {"personas": [], "roles": [], "private": []}
     if not renderer().is_file():
         return out
     try:
@@ -83,8 +96,9 @@ def listing() -> dict:
         if not line[:1].isspace() and line.rstrip().endswith(":"):
             section = line.strip()[:-1]
             continue
-        if section in out:
+        if section in ("personas", "roles"):
             out[section].append(line.strip())
+    out["private"] = private_ids(out["personas"])
     return out
 
 

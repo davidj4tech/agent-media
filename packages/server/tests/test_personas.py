@@ -79,7 +79,15 @@ def asker(monkeypatch):
 
 
 def test_the_lists_come_from_persona_render(repo):
-    assert personas.listing() == {"personas": ["zara", "sam"], "roles": ["reviewer", "planner"]}
+    assert personas.listing() == {"personas": ["zara", "sam"], "roles": ["reviewer", "planner"], "private": []}
+
+
+def test_a_persona_with_private_material_is_listed_private(repo):
+    (repo.root / "private").mkdir()
+    for name in ("zara.sops.md", "samantha.sops.md", "household-lore.sops.md", "README.md"):
+        (repo.root / "private" / name).write_text("")
+    assert personas.listing()["private"] == ["zara"]       # not sam: samantha is another id
+    assert personas.private_ids(["household", "sam"]) == ["household"]
 
 
 def test_on_windows_the_python_renderer_runs_under_our_python(repo):
@@ -93,10 +101,10 @@ def test_on_windows_the_python_renderer_runs_under_our_python(repo):
 
 def test_no_repo_is_empty_lists_not_an_error(monkeypatch, tmp_path):
     monkeypatch.setenv("MEDIA_PERSONAS_DIR", str(tmp_path / "nowhere"))
-    assert personas.listing() == {"personas": [], "roles": []}
+    assert personas.listing() == {"personas": [], "roles": [], "private": []}
     monkeypatch.setattr(auth_abs, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
     ok, d = presets.listing("tok")
-    assert ok and d["personas"] == [] and d["roles"] == []
+    assert ok and d["personas"] == [] and d["roles"] == [] and d["private"] == []
 
 
 def test_presets_carry_a_persona_and_role_and_list_them(repo, monkeypatch):
