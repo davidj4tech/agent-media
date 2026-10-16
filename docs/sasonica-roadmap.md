@@ -388,7 +388,7 @@ aren't there any mic and speaker control settings in the player on the
 browser's version?" — then: both, dictation and replies spoken in the
 browser). The shell's Mic/Speaker switches are Android's routing
 (AudioRoutePlugin), and a browser had nothing to route: it neither played
-nor heard anything. Built on sasonica-app branch `web-audio`:
+nor heard anything. Merged (sasonica-app `53fee18`) and deployed 16 Oct 2026:
 `lib/webAudio.ts` (the browser's SpeechRecognition for the mic key and
 hands-free, the chosen mic's track handed to `start(track)` where the browser
 takes one; `setSinkId` for the speaker; both choices per browser) and
