@@ -658,16 +658,50 @@ class _Final(Exception):
         self.err = err
 
 
+def _await_ids(s: socket.socket, want: set, timeout: float) -> bool:
+    """Read until every request id in `want` has been answered (events and
+    late replies to earlier calls are skipped). True when all were, False on a
+    timeout or a closed connection — the socket is then not fit to pool."""
+    deadline = time.monotonic() + timeout
+    buf = b""
+    while want:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return False
+        s.settimeout(left)
+        try:
+            chunk = s.recv(4096)
+        except socket.timeout:
+            return False
+        except OSError:
+            return False
+        if not chunk:
+            return False
+        buf += chunk
+        while b"\n" in buf:
+            line, buf = buf.split(b"\n", 1)
+            try:
+                want.discard(json.loads(line).get("request_id"))
+            except (ValueError, AttributeError):
+                pass
+    return True
+
+
 def _batch_pooled(sock_path: str | Path, payload_for, timeout: float) -> bool:
     """Send a batch on a pooled connection and lend it straight back. False
     when this call cannot pool (outside `reuse_connections`, a local socket, an
     endpoint that echoes no ids) — the caller then takes the one-shot path.
 
-    No wait for the answers: the connection stays open, so there is no close to
-    race (the reason the one-shot path drains), and the player reads a
-    connection's commands in order, so whatever this reply sends next on it
-    lands behind the batch. The answers carry request ids, which is what lets
-    the next call on this connection skip them as late replies."""
+    Waits for the answers. The player reads one connection's commands in
+    order, but the pool holds several connections, and the next call can go
+    out on another one while this batch still sits unread on its own: the
+    speech-frames server serves each connection on its own thread, so a
+    reply's appends, sent a few milliseconds apart on two connections, were
+    applied out of order — the phone's playlist read sentences 0, 1, 2, 5, 3, 4
+    and the voice jumped ahead and back (David, 17 Oct 2026). Answered, the
+    batch has been applied before anything after it is sent. An answer that
+    does not come in time is not a reason to send the batch again (that would
+    append it twice): the connection is dropped instead of pooled."""
     ep = str(sock_path)
     if not _is_remote(ep) or ep in _no_ids:
         return False
@@ -676,8 +710,15 @@ def _batch_pooled(sock_path: str | Path, payload_for, timeout: float) -> bool:
             return False
 
     def fire(s: socket.socket):
-        s.sendall(payload_for())
-        return None, True
+        payload = payload_for()
+        want = set()
+        for line in payload.splitlines():
+            try:
+                want.add(json.loads(line)["request_id"])
+            except (ValueError, KeyError):
+                pass
+        s.sendall(payload)
+        return None, _await_ids(s, want, timeout)
 
     _on_connection(sock_path, timeout, fire)
     return True

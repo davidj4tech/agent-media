@@ -270,3 +270,78 @@ def test_an_error_answer_is_final_when_asked(monkeypatch):
     with pytest.raises(ipc.MpvIpcError):
         ipc.get_property("tcp://p8a:6614", "user-data/am-owner")
     assert len(calls) == 3, "the default still retries a tcp endpoint"
+
+
+class _OrderedPlayer:
+    """Records the order it applies commands in; one thread per connection,
+    as the speech-frames server serves them. The first connection is slow."""
+
+    def __init__(self):
+        self.applied = []
+        self._lock = threading.Lock()
+        self._srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._srv.bind(("127.0.0.1", 0))
+        self._srv.listen(16)
+        self.endpoint = f"tcp://127.0.0.1:{self._srv.getsockname()[1]}"
+        self._n = 0
+        threading.Thread(target=self._accept, daemon=True).start()
+
+    def _accept(self):
+        while True:
+            try:
+                c, _ = self._srv.accept()
+            except OSError:
+                return
+            self._n += 1
+            threading.Thread(target=self._serve, args=(c, self._n == 1),
+                             daemon=True).start()
+
+    def _serve(self, c, slow):
+        buf = b""
+        while True:
+            try:
+                chunk = c.recv(4096)
+            except OSError:
+                return
+            if not chunk:
+                return
+            buf += chunk
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                req = json.loads(line)
+                if slow:
+                    threading.Event().wait(0.3)
+                with self._lock:
+                    self.applied.append(req["command"][1])
+                c.sendall((json.dumps({"request_id": req.get("request_id"),
+                                       "error": "success"}) + "\n").encode())
+
+    def close(self):
+        self._srv.close()
+
+
+def test_appends_on_two_pooled_connections_are_applied_in_order(monkeypatch):
+    """17 Oct 2026: a reply's appends went out a few ms apart, on whichever
+    pooled connection was free; the frames server serves each connection on
+    its own thread, and the phone's playlist read 0, 1, 2, 5, 3, 4. A batch
+    has to have been applied before the next is sent."""
+    monkeypatch.setattr(_breaker, "record", lambda *a, **k: None, raising=False)
+    p = _OrderedPlayer()
+    try:
+        with ipc.reuse_connections():
+            # Two connections in the pool, as a reply's reads leave it.
+            a, _ = ipc._take(p.endpoint, 2.0)
+            b, _ = ipc._take(p.endpoint, 2.0)
+            ipc._give_back(p.endpoint, b, True)
+            ipc._give_back(p.endpoint, a, True)       # LIFO: `a` (slow) is next
+            ipc.command_batch(p.endpoint, [["loadfile", "s3", "append"]])
+            # The follow loop's read takes that connection meanwhile...
+            held, _ = ipc._take(p.endpoint, 2.0)
+            # ...so the next append goes out on the other one.
+            ipc.command_batch(p.endpoint, [["loadfile", "s4", "append"]])
+            threading.Event().wait(0.6)
+            ipc._give_back(p.endpoint, held, True)
+        assert p.applied == ["s3", "s4"]
+    finally:
+        p.close()
