@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 
 import pytest
 
@@ -228,7 +229,7 @@ def test_a_project_document_reads_and_listens(book, server, tmp_path, monkeypatc
     status, got = _call(server, "POST", "/org/listen", {"doc": str(doc)})
     assert status == 200 and got["state"] == "rendering" and got["doc"] == str(doc)
     assert _until(lambda: book.calls)
-    assert "/doc-" in book.calls[0][1]
+    assert Path(book.calls[0][1]).name.startswith("doc-")
     book.np["position_ms"] = 3500            # heading 0, 2, heading 4, then 6
     _, got = _call(server, "GET", "/org/listen")
     assert got["doc"] == str(doc) and "path" not in got and got["line"] == 6
