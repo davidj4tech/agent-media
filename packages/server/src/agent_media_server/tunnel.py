@@ -120,10 +120,14 @@ def identity(create: bool = True) -> tuple[bytes, bytes, str] | None:
 def lookup_base() -> str:
     if os.environ.get("MEDIA_LOOKUP", "1") == "0":
         return ""
-    base = os.environ.get("MEDIA_LOOKUP_URL")
-    if base is None or base == "":
-        base = DEFAULT_LOOKUP
-    return "" if base == "-" else base.rstrip("/")
+    # `-` is off, also once load_env_file (main) has made it "" — which
+    # otherwise reads as unset and gets the default: the Windows smoke test's
+    # stand-in tunnel published to sasonica.com/r (found 16 Oct 2026).
+    from agent_media_core.intake._env import switched_off
+    if switched_off("MEDIA_LOOKUP_URL"):
+        return ""
+    base = os.environ.get("MEDIA_LOOKUP_URL") or DEFAULT_LOOKUP
+    return base.rstrip("/")
 
 
 def lookup_url() -> str:

@@ -74,6 +74,32 @@ def test_lookup_off(monkeypatch):
     assert tunnel.lookup_url() == ""
 
 
+def test_lookup_off_survives_the_env_loader(monkeypatch, tmp_path):
+    # media-tunnel's main() loads the env files first, which turns `-` into
+    # "": that must still be off, not the default lookup.
+    from agent_media_core.intake import _env
+    monkeypatch.setattr(_env, "_OFF_KEYS", set())
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.delenv("MEDIA_ENV_FILE", raising=False)
+    monkeypatch.delenv("RELAY_ENV_FILE", raising=False)
+    monkeypatch.setenv("MEDIA_LOOKUP_URL", "-")
+    saved = dict(os.environ)        # the loader fills in the shipped defaults
+    try:
+        _env.load_env_file("tunnel")
+        lookup = os.environ["MEDIA_LOOKUP_URL"]
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+    monkeypatch.setenv("MEDIA_LOOKUP_URL", lookup)
+    assert lookup == ""
+    assert tunnel.lookup_base() == ""
+    assert tunnel.publish("https://a.trycloudflare.com") == (False, "lookup off")
+    monkeypatch.setenv("MEDIA_LOOKUP_URL", "")          # unset-ish, not switched off
+    monkeypatch.setattr(_env, "_OFF_KEYS", set())
+    assert tunnel.lookup_base() == tunnel.DEFAULT_LOOKUP
+
+
 def _fake_cloudflared(tmp_path, body: str):
     """A stand-in cloudflared running `body` (Python): a script with a #!
     line, or on Windows a .cmd that runs it with this Python."""
