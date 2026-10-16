@@ -215,10 +215,10 @@ logon tasks and hooks exercised on a real desktop.
 **Windows on ARM64** (David, 16 Oct 2026): no ARM64 build. Windows 11 on
 ARM64 runs the x64 .exe under its x64 emulation (Prism), and the x64
 cloudflared with it (Cloudflare builds no ARM64 Windows cloudflared).
-install.ps1 reads the machine's own architecture (`RuntimeInformation.
-OSArchitecture`, then `PROCESSOR_ARCHITEW6432`, then
-`PROCESSOR_ARCHITECTURE`, so an emulated x64 PowerShell still counts as
-ARM64), takes the x64 file and says once that it runs emulated; 32-bit
+install.ps1 reads the machine's own architecture (the system's
+`PROCESSOR_ARCHITECTURE` in the registry, Session Manager\Environment: an
+emulated x64 PowerShell reads AMD64 in its own variable and X64 from .NET
+Framework's `OSArchitecture`, as seen on the ARM64 runner), takes the x64 file and says once that it runs emulated; 32-bit
 Windows is refused. Inside the binary, an emulated Python's
 `platform.machine()` may say AMD64 or (3.12 asks WMI for the CPU) ARM64:
 `tunnel.platform_asset()` and `sasonica update` take the x64 builds for

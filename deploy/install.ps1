@@ -125,17 +125,21 @@ function Invoke-ShellStep {
   }
 }
 
-# The machine's own architecture, not this PowerShell's: an x64 PowerShell
-# emulated on ARM64 reads AMD64 in PROCESSOR_ARCHITECTURE. OSArchitecture
-# (.NET; PowerShell 7 and Windows PowerShell 5.1 alike) is the OS's; failing
-# that, PROCESSOR_ARCHITEW6432 (set for an emulated 32-bit process), then
+# The machine's own architecture, not this PowerShell's. Under the x64
+# emulation on ARM64 a process's PROCESSOR_ARCHITECTURE reads AMD64 and
+# .NET Framework's OSArchitecture says X64 (GitHub's windows-11-arm runner,
+# 16 Oct 2026). The system's own PROCESSOR_ARCHITECTURE, in the registry, is
+# the native one; failing that OSArchitecture, PROCESSOR_ARCHITEW6432, then
 # PROCESSOR_ARCHITECTURE. AMD64, ARM64 or x86. The parameters are for tests.
 function Get-WindowsArch {
   param(
+    [string]$Native = $(try { (Get-ItemProperty -ErrorAction Stop -Path `
+        'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Environment').PROCESSOR_ARCHITECTURE } catch { '' }),
     [string]$OS = $(try { "$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)" } catch { '' }),
     [string]$W6432 = $env:PROCESSOR_ARCHITEW6432,
     [string]$Proc = $env:PROCESSOR_ARCHITECTURE
   )
+  if ($Native) { return $Native.ToUpper() -replace '^X86$', 'x86' }
   switch ($OS) { 'X64' { return 'AMD64' } 'Arm64' { return 'ARM64' } 'X86' { return 'x86' } }
   if ($W6432) { return $W6432 }
   return $Proc

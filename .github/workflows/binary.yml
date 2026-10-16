@@ -174,9 +174,13 @@ jobs:
       - name: Where we are
         run: |
           echo "PROCESSOR_ARCHITECTURE=$PROCESSOR_ARCHITECTURE PROCESSOR_ARCHITEW6432=${PROCESSOR_ARCHITEW6432:-}"
-          # (Git Bash itself may be x64, emulated: then it reads AMD64.)
-          powershell -NoProfile -Command '"OS " + [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture + ", Windows PowerShell " + [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture'
-          powershell -NoProfile -Command '[System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture' | tr -d '\r' | grep -qx Arm64
+          # Git Bash here is x64, emulated: it reads AMD64, and a PowerShell
+          # it starts says X64 for OS and process alike. The registry's
+          # system value is the machine's own.
+          powershell -NoProfile -Command '"OS " + [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture + ", Windows PowerShell " + [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture' || true
+          pwsh -NoProfile -Command '"pwsh: OS " + [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture + ", process " + [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture' || true
+          reg query 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' //v PROCESSOR_ARCHITECTURE | tee reg.txt
+          grep -q 'ARM64' reg.txt
 
       - name: Smoke test (x64 under emulation)
         run: deploy/binary/smoke-windows.sh "$PWD/build/binary/sasonica-windows-x86_64.exe"
