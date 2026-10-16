@@ -353,9 +353,11 @@ def test_the_first_sentence_starts_when_the_player_does(monkeypatch):
             if n <= 4:
                 return {"idle-active": False, "pause": False, "playlist-pos": 0, "time-pos": 0.0}
             if n <= 8:
-                return {"idle-active": False, "pause": False, "playlist-pos": 0, "time-pos": (n - 4) * 0.5}
+                return {"idle-active": False, "pause": False, "playlist-pos": 0, "time-pos": (n - 4) * 0.5,
+                        "duration": 2.0}
             if n <= 10:
-                return {"idle-active": False, "pause": False, "playlist-pos": 1, "time-pos": (n - 8) * 0.5}
+                return {"idle-active": False, "pause": False, "playlist-pos": 1, "time-pos": (n - 8) * 0.5,
+                        "duration": 2.0}
             return {"idle-active": True, "pause": False}
 
     state = StateStore()
@@ -366,3 +368,40 @@ def test_the_first_sentence_starts_when_the_player_does(monkeypatch):
     assert starts, "the reply measured no starts"
     assert 1.5 <= starts[0] <= 2.5, f"sentence one began when the player did, not at 0: {starts}"
     assert len(starts) < 2 or 1.5 <= starts[1] - starts[0] <= 2.5, f"and sentence two a clip later: {starts}"
+
+
+def test_a_torn_reading_does_not_move_the_first_start(monkeypatch):
+    """17 Oct 2026, thread 0f14b788: clip 0 began at 2.0 s and clip 1 at
+    5.5 s, and red5 stamped both 5.4 — one reading said position 0 with clip
+    1's playhead (the position read before the phone's report, the playhead
+    after it), and sentence 0 was moved to clip 1's start. The app kept the
+    bold 3.4 s ahead of the voice for the whole reply."""
+    monkeypatch.setattr(S, "render_text", _render)
+    clock = [1000.0]
+    monkeypatch.setattr(S.time, "time", lambda: clock[0])
+
+    class _Torn(_Sink):
+        def snapshot(self, target=None):
+            self.snapshots += 1
+            clock[0] += 0.5
+            n = self.snapshots
+            if n <= 4:
+                return {"idle-active": False, "pause": False, "playlist-pos": 0, "time-pos": 0.0}
+            if n <= 7:
+                return {"idle-active": False, "pause": False, "playlist-pos": 0,
+                        "time-pos": (n - 4) * 0.5, "duration": 2.0}
+            if n == 8:
+                # Torn: clip 1 began 0.3 s ago, the position still says 0.
+                return {"idle-active": False, "pause": False, "playlist-pos": 0,
+                        "time-pos": 0.3, "duration": 5.0}
+            if n <= 10:
+                return {"idle-active": False, "pause": False, "playlist-pos": 1,
+                        "time-pos": (n - 8) * 0.5 + 0.3, "duration": 5.0}
+            return {"idle-active": True, "pause": False}
+
+    state = StateStore()
+    S.submit_event(Event(text=FOUR, source=Source.CLI, target=PHONE,
+                         metadata={"pane": "%7"}),
+                   state=state, sink=_Torn(), coordinator=_Coord())
+    starts = ((_row(state) or {}).get("extras") or {}).get("clip_starts_s") or []
+    assert starts and 1.5 <= starts[0] <= 2.5, f"sentence one moved to sentence two's start: {starts}"

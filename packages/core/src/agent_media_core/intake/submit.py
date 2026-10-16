@@ -1177,6 +1177,31 @@ def carry_pause_stamp(prior: dict, extras: dict, live_seen: bool) -> None:
         extras["paused_at"] = held
 
 
+def first_start_reading(mark_clock: dict, live: Optional[dict]) -> bool:
+    """Whether `live` is the reading that dates the first sentence's start —
+    once per reply, and only from the phone's own word.
+
+    Sentence 0 is stamped at the handover and moved to where the player says
+    it began. That move used to be taken from every reading that put it
+    later, and a torn one — `playlist-pos` read before a report and
+    `time-pos` after it, so position 0 with sentence 1's playhead — moved it
+    to sentence 1's start. Sentence 1 is never stamped before sentence 0, so
+    both read 5.4 s where the voice began at 2.0 (17 Oct 2026, thread
+    0f14b788: `[5.4, 5.4, 14.9, ...]`); the app took the 3.4 s for the voice
+    being ahead and kept the bold that far ahead for the whole reply. The
+    first reading with a playhead and a clip length (the frames model
+    carries no length until the phone has reported one) is the one.
+    """
+    if mark_clock.get("first_dated") or not live:
+        return False
+    tp, d = live.get("time-pos"), live.get("duration")
+    if (not isinstance(tp, (int, float)) or tp <= 0.2
+            or not isinstance(d, (int, float)) or d <= 0):
+        return False
+    mark_clock["first_dated"] = True
+    return True
+
+
 def credit_resume(prior: dict, live: Optional[dict]) -> None:
     """Take a pause off the clock when a reading shows it is over, in place.
 
@@ -4918,7 +4943,7 @@ def _submit_event(event: Event,
                     # ahead until the reader's skew caught up. Once the player
                     # says how far in it is, the sentence began that long ago.
                     tp = (live or {}).get("time-pos")
-                    if tp is not None and float(tp) > 0.2:
+                    if first_start_reading(mark_clock, live):
                         at = elapsed_from_row(prior, mark_clock["origin"])
                         read_at = (live or {}).get("_read_at")
                         if read_at:
