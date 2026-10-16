@@ -960,10 +960,13 @@ def bin_path() -> str:
     """
     home = Path.home()
     extra = [home / ".local" / "bin", home / ".bun" / "bin", home / ".npm-global" / "bin",
-             home / ".claude" / "local", Path("/usr/local/bin"),
+             home / ".claude" / "local",
              # fnm puts the live node on PATH through a per-shell symlink dir
              # under /run; its `default` alias is the stable name for it.
-             home / ".local" / "share" / "fnm" / "aliases" / "default" / "bin"]
+             # Ahead of /usr/local/bin, as in the shell fnm sets up (it
+             # prepends): a system node there is not the one the user chose.
+             home / ".local" / "share" / "fnm" / "aliases" / "default" / "bin",
+             Path("/usr/local/bin")]
     return os.pathsep.join([os.environ.get("PATH") or "", *map(str, extra)])
 
 
