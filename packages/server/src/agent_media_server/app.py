@@ -150,7 +150,9 @@ device gets its token):
                   sentence: "read from here")
   GET  /speech/sentences?id=<history id> → the sentences a replay of that
                   reply can start at, as goto/replay count them
-  POST /focus     {"pane": "%23"} → bring the attached tmux client to a pane
+  GET  /speech/clip?text=…&voice=… → one sentence as mp3, for the app in a
+                  browser speaking replies itself (the words of a `tts:` load)
+  POST /focus    {"pane": "%23"} → bring the attached tmux client to a pane
                   (the canvas's own token also admits this one)
   GET  /dashboard → the home screen in one answer: what needs you, what is
                   working, what is being said, recent threads with recaps,
@@ -227,7 +229,7 @@ CORS_PATHS = frozenset({
     "/session/answer", "/session/archive", "/session/seal", "/session/pin", "/session/priority", "/session/pocket",
     "/session/stop",
     "/session/retract", "/session/move", "/session/settings",
-    "/speech/now", "/speech/ctl", "/speech/sentences", "/speech/default", "/speech/voice",
+    "/speech/now", "/speech/ctl", "/speech/sentences", "/speech/clip", "/speech/default", "/speech/voice",
     "/settings/language",
     "/sessions/state", "/commands", "/rename",
     "/harnesses", "/harnesses/run", "/harnesses/screen",
@@ -774,6 +776,15 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         # The app's language, every device's (language.py).
         ok, detail = pins.settings_language(_bearer(h))
         _json(h, 200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
+    elif path == "/speech/clip":
+        # A sentence's audio, for the app in a browser speaking replies
+        # itself: the words of a `tts:` load op it was sent (speech.clip).
+        q = parse_qs(query)
+        ok, detail = speech.clip(_bearer(h), (q.get("text") or [""])[0], (q.get("voice") or [""])[0])
+        if not ok:
+            _json(h, detail.pop("status", 400), {"ok": False, **detail})
+            return True
+        _send_file(h, detail["file"], detail["size"], detail["type"])
     elif path == "/speech/now":
         # The app's speech bar: /speech's live bit, named — the session's
         # title and library item — and gated by the caller's ABS bearer.

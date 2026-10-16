@@ -383,6 +383,24 @@ or Mark all read, clears it.
 
 ## In flight
 
+**The app in a browser: its own mic and speaker** (David, 16 Oct 2026: "why
+aren't there any mic and speaker control settings in the player on the
+browser's version?" — then: both, dictation and replies spoken in the
+browser). The shell's Mic/Speaker switches are Android's routing
+(AudioRoutePlugin), and a browser had nothing to route: it neither played
+nor heard anything. Built on sasonica-app branch `web-audio`:
+`lib/webAudio.ts` (the browser's SpeechRecognition for the mic key and
+hands-free, the chosen mic's track handed to `start(track)` where the browser
+takes one; `setSinkId` for the speaker; both choices per browser) and
+`lib/webSpeaker.ts` (Settings → "Speak replies in this browser", and Speak
+here in the speech sheet: holds `/sessions/events?speech=frames`, plays each
+`tts:` entry fetched from the new `GET /speech/clip` (contract §6.5), reports
+to `/speech/state`). The sheet shows Speak here / Mic / Speaker in a browser
+in place of the phone/earbuds pills. Test: `test/webaudio.mjs`. Open: Firefox
+has no recogniser (no mic key there); the newest frames stream wins, so a
+browser and the phone both on take it in turns as they reconnect; a tab
+nobody has touched since it loaded starts a reply paused (autoplay).
+
 **New projects, worktrees and presets** (David, 15 Oct 2026). Server done
 (`1142230`, contract §6.24): `/ask` takes `new_project` (+ `repo`,
 `agents_md`, `preset`) or `worktree: {from, branch}`; `/presets` CRUD. App:

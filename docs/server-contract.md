@@ -1736,6 +1736,22 @@ carry a second copy of every reply's words. (The app asked when the listener
 picked "Read from here" under a selection; that chip was removed 25 Sep
 2026 — a tap on the reply being said is the way in — and nothing in the app
 asks now.)
+
+#### `GET /speech/clip?text=…&voice=…` — gated
+
+One sentence as `audio/mpeg`, for the app in a browser that speaks replies
+itself (16 Oct 2026). Such a browser holds `/sessions/events?speech=frames`
+as the phone does and plays each `load` op's entry; a `tts:<id>?text=…&voice=…`
+entry is sent back here with its `text` and `voice`. An `edge:` voice is
+rendered as is; any other (the phone's own voices) gets the server's engine
+and voice. Rendered once and kept under `cache/agent-media/web-clips/` (three
+days since written). The bearer travels as a header, so the app fetches a
+Blob rather than handing the URL to `<audio>`. 400 no text, 413 over 2000
+characters, 502 the render failed (`error` says why). Same gate as
+`/speech/ctl`. The browser's reports go to `POST /speech/state` like the
+phone's; the newest `speech=frames` stream is the one frames go to, so a
+browser turned on takes speech from the phone until the phone's stream
+reconnects.
 - `ok: true` means the command ran, not that it did anything — read `out`.
 - `error` is added (and `out` starts `error: `) when the verb ran and could
   not do it — a replay whose audio was cleared from the cache, or was

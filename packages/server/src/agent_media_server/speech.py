@@ -282,3 +282,63 @@ def speech_now(bearer: str, state: dict) -> tuple[bool, dict]:
             _NOW_CACHE[session] = hit
         out.update(session=session, title=hit[0], item=hit[1])
     return True, out
+
+
+#: One sentence's audio for a browser that speaks replies itself
+#: (`GET /speech/clip`): kept here so a replay is not rendered twice.
+CLIP_MAX_CHARS = 2000
+#: Kept this long since last written, then cleared on the next render.
+CLIP_KEEP_S = 3 * 86400
+
+
+def _prune_clips(folder) -> None:
+    cutoff = time.time() - CLIP_KEEP_S
+    for f in folder.iterdir():
+        try:
+            if f.stat().st_mtime < cutoff:
+                f.unlink()
+        except OSError:
+            pass
+
+
+def clip(bearer: str, text: str, voice: str = "") -> tuple[bool, dict]:
+    """The app in a browser has no voice of its own (David, 16 Oct 2026:
+    replies spoken in the browser, on the speaker chosen there). It holds
+    the same `?speech=frames` stream the phone does, and each `load` op's
+    `tts:` URI carries the words and the voice; this renders them to mp3
+    here. A Microsoft voice (`edge:…`) is used as is; the phone's own
+    voices are not this host's, so those get the server's (render/device.py
+    server_voice's engine and voice)."""
+    import hashlib
+    import os
+    from agent_media_core._paths import cache_dir
+    from agent_media_core.render import render_text
+
+    ok, detail = auth.may_control_speech(bearer)
+    if not ok:
+        return False, detail
+    text = (text or "").strip()
+    if not text:
+        return False, {"status": 400, "error": "text, please"}
+    if len(text) > CLIP_MAX_CHARS:
+        return False, {"status": 413, "error": f"at most {CLIP_MAX_CHARS} characters"}
+    if voice.startswith("edge:"):
+        engine, name = "edge", voice[len("edge:"):]
+    else:
+        engine = (os.environ.get("MEDIA_RENDER_ENGINE")
+                  or os.environ.get("CLAUDE_TTS_ENGINE") or "edge")
+        name = (os.environ.get(f"MEDIA_RENDER_VOICE_{engine.upper().replace('-', '_')}")
+                or os.environ.get("MEDIA_RENDER_VOICE") or "")
+    key = hashlib.sha256(f"{engine}\0{name}\0{text}".encode()).hexdigest()[:32]
+    folder = cache_dir() / "web-clips"
+    folder.mkdir(parents=True, exist_ok=True)
+    out = folder / f"{key}.mp3"
+    if not (out.exists() and out.stat().st_size > 0):
+        part = folder / f".{key}.{os.getpid()}.mp3"
+        done, err = render_text(text, part, engine=engine, voice=name or None)
+        if not done or not part.exists() or part.stat().st_size == 0:
+            part.unlink(missing_ok=True)
+            return False, {"status": 502, "error": f"could not render: {err or 'empty'}"}
+        part.replace(out)
+        _prune_clips(folder)
+    return True, {"file": str(out), "size": out.stat().st_size, "type": "audio/mpeg"}
