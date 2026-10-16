@@ -714,8 +714,19 @@ def _as_response_timeline(pos, dur, playlist_pos):
     if not total:
         return pos, dur, False
     clip_durs = ex.get("clip_durations_s")
-    if clip_durs:
-        ppos = max(0, int(playlist_pos or 0))
+    clip_offs = ex.get("clip_offsets_s")
+    ppos = max(0, int(playlist_pos or 0))
+    if (clip_offs and clip_durs and len(clip_offs) == len(clip_durs)
+            and ppos < len(clip_offs)):
+        # A replay followed on the clock: where each clip starts on the
+        # clock the reader's `elapsed` runs on, corrected by the player as it
+        # plays (`_replay_anchor`). Summing `clip_durations_s` instead — on a
+        # replay, lengths guessed from the characters — put this `pos` off
+        # that clock by every guess's error so far, and the app, which takes
+        # the difference for lag, moved the bold 3-11 s ahead or up to 23 s
+        # behind the voice (follow-trace.log, 16 Oct 2026).
+        offset = float(clip_offs[ppos])
+    elif clip_durs:
         offset = sum(clip_durs[:ppos])
     else:
         offset = ex.get("clip_offset_s") or 0.0
