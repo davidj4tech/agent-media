@@ -151,12 +151,18 @@ def test_the_tunnel_step_adds_the_public_listener_once(tmp_path, monkeypatch, ca
     monkeypatch.setattr(install.Path, "home", lambda: tmp_path)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
     monkeypatch.delenv("MEDIA_VISUAL_PAIR_SERVER", raising=False)
+    monkeypatch.delenv("MEDIA_LOOKUP_URL", raising=False)
+    monkeypatch.delenv("MEDIA_LOOKUP", raising=False)
     monkeypatch.setattr(tunnel, "fetch_cloudflared",
                         lambda d, dry_run=False: (str(d / "cloudflared"), "fetched"))
     env = tmp_path / ".config" / "agent-media.env"
     assert install._tunnel_step(_args(tmp_path), env) is True
     assert install._tunnel_step(_args(tmp_path), env) is True
     assert env.read_text().count("MEDIA_VISUAL_PUBLIC=127.0.0.1:8789") == 1
+    out = capsys.readouterr().out
+    assert "where the app finds it again" in out and "sasonica.com/r/" in out
+    monkeypatch.setenv("MEDIA_LOOKUP_URL", "-")
+    assert install._tunnel_step(_args(tmp_path), env) is True
     assert "pairing again" in capsys.readouterr().out
     # No cloudflared: no tunnel service.
     monkeypatch.setattr(tunnel, "fetch_cloudflared", lambda d, dry_run=False: ("", "no build"))

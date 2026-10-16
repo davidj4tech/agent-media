@@ -15,7 +15,9 @@ has the binary instead of a checkout:
      tailnet and no account (roadmap item 15): cloudflared, fetched to
      ~/.local/bin and checked against its pinned sha256, and the app-routes-
      only listener (MEDIA_VISUAL_PUBLIC=127.0.0.1:8789). Its address changes
-     when the tunnel restarts, and the phone then pairs again. Skipped where
+     when the tunnel restarts; the tunnel publishes each new one to the
+     sasonica.com lookup, where the app finds it (with publishing off,
+     MEDIA_LOOKUP_URL=-, the phone pairs again). Skipped where
      the phone already has a way in (MEDIA_VISUAL_PAIR_SERVER, a named
      tunnel's ~/.cloudflared/config.yml, a checkout's canvas), or --no-tunnel;
   5. the services, sasonica-canvas (`sasonica serve`), sasonica-sessiond
@@ -420,7 +422,11 @@ def _tunnel_step(a, env_file: Path) -> bool:
             with env_file.open("a") as f:
                 f.write(f"MEDIA_VISUAL_PUBLIC={PUBLIC_LISTEN}\n")
     print("  A quick tunnel's address changes whenever it restarts (a reboot, a crash);")
-    print("  the phone then needs pairing again.")
+    if tunnel.lookup_base():
+        print(f"  each new one is published to {tunnel.lookup_base()}/<this install's id>,")
+        print("  where the app finds it again: no pairing again.")
+    else:
+        print("  the lookup is off (MEDIA_LOOKUP_URL), so the phone then needs pairing again.")
     return True
 
 
