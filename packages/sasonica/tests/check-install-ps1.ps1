@@ -44,6 +44,13 @@ Check ((Get-ShellChoice -Yes) -eq $true) '-Shell: Yes'
 Remove-Item Env:SASONICA_WITH_SHELL
 Check ((Get-ShellChoice -No) -eq $false) '-NoShell: No'
 
+# The checksum, from SHA256SUMS as text or as the bytes Windows PowerShell 5.1
+# gives GitHub's application/octet-stream.
+$sums = "1111  sasonica-linux-x86_64`n2222  sasonica-windows-x86_64.exe`n"
+Check ((Get-WantedSum $sums 'sasonica-windows-x86_64.exe') -eq '2222') 'the checksum, from text'
+Check ((Get-WantedSum ([Text.Encoding]::UTF8.GetBytes($sums)) 'sasonica-windows-x86_64.exe') -eq '2222') 'the checksum, from bytes'
+Check ($null -eq (Get-WantedSum $sums 'sasonica-macos-aarch64')) 'no line for the asset: no checksum'
+
 # The step runs Shell's one-liner and says yes; a failing one is caught,
 # with the way to try again.
 $env:SASONICA_SHELL_URL = $good

@@ -124,6 +124,17 @@ function Invoke-ShellStep {
   }
 }
 
+# The checksum SHA256SUMS gives an asset. Windows PowerShell 5.1 hands an
+# application/octet-stream body (as GitHub serves release assets) back as
+# bytes, not text, and no line of bytes matched: every install there stopped
+# at "does not match its checksum" (found on hpo, 16 Oct 2026).
+function Get-WantedSum {
+  param($Sums, [string]$Asset)
+  if ($Sums -is [byte[]]) { $Sums = [Text.Encoding]::UTF8.GetString($Sums) }
+  ("$Sums" -split "`n" | Where-Object { $_ -match "\s\*?$([regex]::Escape($Asset))\s*$" } |
+   ForEach-Object { ($_ -split '\s+')[0] }) | Select-Object -First 1
+}
+
 if ($Lib) { return }
 
 if ($ShellOnly -or $env:SASONICA_ONLY -eq 'shell') {
@@ -147,8 +158,7 @@ $new = "$exe.new"
 Write-Host "`n== Sasonica's server (x86_64)"
 Invoke-WebRequest -UseBasicParsing "$base/$asset" -OutFile $new
 $sums = (Invoke-WebRequest -UseBasicParsing "$base/SHA256SUMS").Content
-$want = ($sums -split "`n" | Where-Object { $_ -match "\s\*?$([regex]::Escape($asset))\s*$" } |
-         ForEach-Object { ($_ -split '\s+')[0] }) | Select-Object -First 1
+$want = Get-WantedSum $sums $asset
 $got = (Get-FileHash -Algorithm SHA256 $new).Hash.ToLower()
 if (-not $want -or $got -ne $want.ToLower()) {
   Remove-Item -Force $new
