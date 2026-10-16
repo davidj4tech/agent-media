@@ -35,6 +35,61 @@ _EDGE_RETRIES = int(os.environ.get("MEDIA_EDGE_RETRIES", "3"))
 _EDGE_RETRY_BACKOFF_S = float(os.environ.get("MEDIA_EDGE_RETRY_BACKOFF_S", "0.6"))
 
 
+# Microsoft retired the legacy synthesis host for some regions: since ~10 Oct
+# 2026 `speech.platform.bing.com/consumer/speech/synthesize/readaloud` answers
+# 403 from Australian IPs (it still serves from EU hosts, so this reproduces on
+# some machines and not others with identical code). The fix is upstream
+# edge-tts PR #491, which was CLOSED unmerged, and no release carries it — 7.3.1
+# still ships only the legacy host. Patching each venv by hand does not survive
+# `uv sync` or a rebuild, which silently restores the 403 (agent-media #149).
+#
+# So repair it in place, once per process, before the first edge render. This is
+# idempotent and self-retiring: the moment a release (or anything else) provides
+# the new endpoint, the check finds it and does nothing.
+_EDGE_NEW_HOST = "api.msedgeservices.com"
+_edge_endpoint_checked = False
+
+
+def _ensure_edge_endpoint() -> None:
+    """Make the installed edge_tts use the current synthesis host.
+
+    Best-effort: a read-only or unexpected install is left alone and rendering
+    proceeds, so this can only ever fix the 403, never cause one.
+    """
+    global _edge_endpoint_checked
+    if _edge_endpoint_checked:
+        return
+    _edge_endpoint_checked = True
+    if os.environ.get("MEDIA_EDGE_NO_ENDPOINT_PATCH"):
+        return
+    try:
+        import edge_tts.constants as _c
+
+        src = Path(_c.__file__)
+        text = src.read_text()
+        if _EDGE_NEW_HOST in text:
+            return
+        if "TRUSTED_CLIENT_TOKEN" not in text:
+            return  # not the layout we know; do not guess
+        src.write_text(
+            text.rstrip("\n")
+            + "\n\n# Added by agent-media (edge-tts PR #491; see agent-media #149):\n"
+            + "# the legacy host 403s synthesis in some regions. Reapplied automatically\n"
+            + "# after any venv rebuild; removed by upstream shipping the new endpoint.\n"
+            + "WSS_URL = (\n"
+            + f'    "wss://{_EDGE_NEW_HOST}/tts/cognitiveservices/websocket/v1"\n'
+            + '    f"?Ocp-Apim-Subscription-Key={TRUSTED_CLIENT_TOKEN}"\n'
+            + ")\n"
+        )
+        print(
+            f"agent-media: patched {src} to use {_EDGE_NEW_HOST} "
+            "(edge-tts PR #491; legacy host 403s in some regions)",
+            file=sys.stderr,
+        )
+    except Exception as exc:  # never block a render on this
+        print(f"agent-media: edge endpoint check skipped: {exc}", file=sys.stderr)
+
+
 def _engine_path(bin_name: str) -> str:
     """Absolute `bin_name`, looked up beside our own interpreter first.
 
@@ -62,6 +117,7 @@ def _render_edge(text: str, outfile: Path, *, voice: str, edge_bin: str,
     render, no extra latency. That is what lets a host that only receives the
     finished audio still know where each sentence starts (see subtitles.py).
     """
+    _ensure_edge_endpoint()
     err = ""
     for attempt in range(_EDGE_RETRIES + 1):
         try:
