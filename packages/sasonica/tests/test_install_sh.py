@@ -7,7 +7,12 @@ machine's real server; HOME is a temporary directory.
 The Shell step (David, 16 Oct 2026): one question after the server, default
 No; no terminal is No; SASONICA_WITH_SHELL=1/0 answers it; a Shell that fails
 does not fail the install; SASONICA_ONLY=shell (or `bash -s shell`, or
-sasonica.com/shell) is Shell alone, no server."""
+sasonica.com/shell) is Shell alone, no server.
+
+One command (David, 16 Oct 2026): beside the server Shell has no command of
+its own, its runner recorded in ~/.config/sasonica/runner for `sasonica
+shell`; a Shell shim found (installed first, or by an older Shell) is read
+into that record and removed."""
 
 from __future__ import annotations
 
@@ -36,15 +41,24 @@ esac
 exit 0
 """
 
-# What Shell's install.mjs does to ~/.local/bin/sasonica (rm, then its own
-# two-line shim), and its exit status from SHELL_STUB_EXIT.
+# What Shell's install.mjs does: its runner recorded in ~/.config/sasonica;
+# beside the server (a ~/.local/bin/sasonica that is not its shim) nothing
+# more, else its two-line shim there. SHELL_STUB_OLD=1: an older Shell, which
+# wrote the shim over whatever was there. Its exit status from SHELL_STUB_EXIT.
 FAKE_SHELL_INSTALL = """#!/usr/bin/env bash
 echo "$*" >>"$HOME/shell-calls"
 echo "    Open this link: https://relay.example.invalid/join?x=1   code: TEST-CODE"
+here=$(cd "$(dirname "$0")" && pwd)
+b="$HOME/.local/bin/sasonica"
 mkdir -p "$HOME/.local/bin"
-rm -f "$HOME/.local/bin/sasonica"
-printf '#!/bin/sh\\nexec "node" "%s/sasonica.mjs" "$@"\\n' "$(dirname "$0")" >"$HOME/.local/bin/sasonica"
-chmod +x "$HOME/.local/bin/sasonica"
+if [ -z "${SHELL_STUB_OLD:-}" ]; then
+  mkdir -p "$HOME/.config/sasonica"
+  printf 'node\\n%s/sasonica.mjs\\n' "$here" >"$HOME/.config/sasonica/runner"
+  if [ -f "$b" ] && ! grep -q sasonica.mjs "$b"; then exit "${SHELL_STUB_EXIT:-0}"; fi
+fi
+rm -f "$b"
+printf '#!/bin/sh\\nexec "node" "%s/sasonica.mjs" "$@"\\n' "$here" >"$b"
+chmod +x "$b"
 exit "${SHELL_STUB_EXIT:-0}"
 """
 
@@ -116,6 +130,15 @@ def binary(world):
     return world["home"] / ".local" / "bin" / "sasonica"
 
 
+def record(world):
+    f = world["home"] / ".config" / "sasonica" / "runner"
+    return f.read_text().splitlines() if f.exists() else None
+
+
+def unpacked(world):
+    return world["home"] / ".local" / "share" / "sasonica" / "shell"
+
+
 def test_no_terminal_is_no(world):
     r = run(world)
     assert r.returncode == 0, r.stdout + r.stderr
@@ -130,15 +153,23 @@ def test_with_shell_1_installs_it_and_keeps_the_server(world):
     assert r.returncode == 0, r.stdout + r.stderr
     assert calls(world, "shell-calls") == ["--hosted"]
     assert "TEST-CODE" in r.stdout                      # Shell's sign-in, shown
-    # Shell wrote over ~/.local/bin/sasonica; the server's binary is back and
-    # Shell's command is sasonica-shell.
+    # One command: the server's binary, Shell's runner recorded for
+    # `sasonica shell`, no second name.
     assert binary(world).read_text() == world["server"]
-    shim = binary(world).with_name("sasonica-shell")
-    assert "sasonica.mjs" in shim.read_text()
-    assert "command here is sasonica-shell" in r.stdout
+    assert not binary(world).with_name("sasonica-shell").exists()
+    assert record(world) == ["node", f"{unpacked(world)}/sasonica.mjs"]
+    assert "`sasonica shell` here" in r.stdout
     assert not list(binary(world).parent.glob(".sasonica-server.*"))
-    unpacked = world["home"] / ".local" / "share" / "sasonica" / "shell"
-    assert (unpacked / "sasonica.mjs").exists()
+    assert (unpacked(world) / "sasonica.mjs").exists()
+
+
+def test_an_older_shell_that_wrote_over_the_server(world):
+    r = run(world, SASONICA_WITH_SHELL="1", SHELL_STUB_OLD="1")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert binary(world).read_text() == world["server"]
+    assert not binary(world).with_name("sasonica-shell").exists()
+    assert record(world) == ["node", f"{unpacked(world)}/sasonica.mjs"]
+    assert not list(binary(world).parent.glob(".sasonica-server.*"))
 
 
 def test_with_shell_0_skips_it(world):
@@ -171,6 +202,7 @@ def test_shell_only_skips_the_server(world):
     assert calls(world, "shell-calls") == ["--hosted"]
     # Alone, Shell keeps the name `sasonica`, as its own installer leaves it.
     assert "sasonica.mjs" in binary(world).read_text()
+    assert "`sasonica shell`" not in r.stdout
     assert not binary(world).with_name("sasonica-shell").exists()
     assert "Pairing" not in r.stdout
 
@@ -195,15 +227,36 @@ def test_only_takes_shell_alone(world):
     assert r.returncode == 2 and "SASONICA_ONLY" in r.stderr
 
 
-def test_a_shell_installed_first_moves_aside_for_the_server(world):
+def test_a_shell_installed_first_becomes_sasonica_shell(world):
     b = binary(world)
     b.parent.mkdir(parents=True)
     b.write_text(SHELL_SHIM)
     r = run(world, SASONICA_WITH_SHELL="0")
     assert r.returncode == 0, r.stdout + r.stderr
     assert b.read_text() == world["server"]
-    assert b.with_name("sasonica-shell").read_text() == SHELL_SHIM
-    assert "now sasonica-shell" in r.stdout
+    assert not b.with_name("sasonica-shell").exists()
+    assert record(world) == ["node", "/old/sasonica-shell/sasonica.mjs"]
+    assert "`sasonica shell` now" in r.stdout
+
+
+def test_a_sasonica_shell_left_by_the_last_version_goes(world):
+    """The first side-by-side installs named Shell sasonica-shell; a re-run
+    (how the server updates) takes that name away. A record that already
+    names a runner that exists is kept."""
+    b = binary(world)
+    b.parent.mkdir(parents=True)
+    b.write_text("#!/bin/sh\n# an older server\n")
+    b.with_name("sasonica-shell").write_text(SHELL_SHIM)
+    live = world["home"] / "live" / "sasonica.mjs"
+    live.parent.mkdir()
+    live.write_text("// stand-in\n")
+    conf = world["home"] / ".config" / "sasonica"
+    conf.mkdir(parents=True)
+    (conf / "runner").write_text(f"/usr/bin/node\n{live}\n")
+    r = run(world, SASONICA_WITH_SHELL="0")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert not b.with_name("sasonica-shell").exists()
+    assert record(world) == ["/usr/bin/node", str(live)]
 
 
 def _on_a_terminal(world, answer: bytes, **extra):

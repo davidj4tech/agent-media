@@ -94,14 +94,22 @@ a host that cannot ask, the answer is No.
 Through `irm`, a switch needs the script block form:
 `& ([scriptblock]::Create((irm https://sasonica.com/install.ps1))) -Shell`.
 
-Both are called `sasonica`. On Linux and a Mac, Shell's installer writes its
-command to `~/.local/bin/sasonica`, which is the server's binary: install.sh
-keeps a hard link to the server's file while Shell installs, then moves
-Shell's shim to `~/.local/bin/sasonica-shell` and puts the server back. A
-Shell installed before the server is moved there the same way. On Windows
-nothing is overwritten (Shell's `sasonica.cmd` is in `%APPDATA%\sasonica\bin`,
-after the server's folder on PATH), but the server's `sasonica.exe` wins, so
-install.ps1 copies Shell's to `sasonica-shell.cmd`. Nothing else collides:
+Both are called `sasonica`, and where both are installed there is one
+command, the server's (David, 16 Oct 2026): `sasonica shell …` runs Shell
+with any arguments, and Shell's words the server has none of (`status`,
+`skills`, `tools`, `url`, `client`, `sign`, `--once`) go to Shell by
+themselves; `install`, `pair`, `help` and no words stay the server's, and
+its help lists Shell's when Shell is there (packages/sasonica/src/sasonica/
+shell.py). Beside the server Shell's installer writes no command: it records
+its runner (the node, then `sasonica.mjs`, a line each) in
+`~/.config/sasonica/runner` (`%APPDATA%\sasonica\runner`), which it writes
+alone too, and its service runs node and the runner directly. A Shell
+installed first, or one that wrote a shim beside the server (an older
+installer: over `~/.local/bin/sasonica`, which install.sh keeps a hard link
+of and puts back, or as `sasonica-shell`/`sasonica-shell.cmd`), has the
+shim read into that record and removed, by install.sh, install.ps1 and
+`sasonica install`. Shell itself refuses a word it does not know rather
+than starting its polling loop. Nothing else collides:
 Shell's service is `sasonica-shell` (systemd), `com.sasonica.shell` (launchd)
 or the root Scheduled Task `sasonica-shell`, beside the server's
 `sasonica-canvas`/`-sessiond`/`-quick-tunnel`, `com.sasonica.*` and

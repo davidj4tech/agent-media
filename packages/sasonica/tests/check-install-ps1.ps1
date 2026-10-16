@@ -58,17 +58,31 @@ Check ((Said $r) -eq $false) 'a Shell that fails: the step says so, without thro
 Check ($text -match 'not affected') 'the server is said to be unaffected'
 Check ($text -match [regex]::Escape('irm https://sasonica.com/shell.ps1 | iex')) 'how to try again'
 
-# Beside the server, Shell's command gets a name of its own.
+# Beside the server, Shell has no command of its own: its .cmd files go,
+# their runner recorded for `sasonica shell` (David, 16 Oct 2026).
 $saved = @{ APPDATA = $env:APPDATA; USERPROFILE = $env:USERPROFILE }
 $env:APPDATA = Join-Path $tmp 'appdata'; $env:USERPROFILE = Join-Path $tmp 'profile'
-New-Item -ItemType Directory -Force (Join-Path $env:APPDATA 'sasonica\bin') | Out-Null
-Set-Content (Join-Path $env:APPDATA 'sasonica\bin\sasonica.cmd') '@echo off'
-Set-ShellAlias 6>&1 | Out-Null
-Check (-not (Test-Path (Join-Path $env:APPDATA 'sasonica\bin\sasonica-shell.cmd'))) 'Shell alone keeps its one name'
+$sbin = Join-Path $env:APPDATA 'sasonica\bin'
+New-Item -ItemType Directory -Force $sbin | Out-Null
+$runner = Join-Path $tmp 'shell dir\sasonica.mjs'
+New-Item -ItemType Directory -Force (Split-Path -Parent $runner) | Out-Null
+Set-Content $runner '// stand-in'
+$shimText = "@echo off`r`n`"C:\node\node.exe`" `"$runner`" %*`r`n"
+Set-Content (Join-Path $sbin 'sasonica.cmd') $shimText
+Remove-ShellShims 6>&1 | Out-Null
+Check (Test-Path (Join-Path $sbin 'sasonica.cmd')) 'Shell alone keeps its sasonica.cmd'
+Check (-not (Test-Path (Join-Path $env:APPDATA 'sasonica\runner'))) 'Shell alone: no record written here'
 New-Item -ItemType Directory -Force (Join-Path $env:USERPROFILE '.local\bin') | Out-Null
 Set-Content (Join-Path $env:USERPROFILE '.local\bin\sasonica.exe') 'MZ'
-Set-ShellAlias 6>&1 | Out-Null
-Check (Test-Path (Join-Path $env:APPDATA 'sasonica\bin\sasonica-shell.cmd')) 'beside the server: sasonica-shell.cmd'
+Set-Content (Join-Path $sbin 'sasonica-shell.cmd') $shimText
+Set-Content (Join-Path $sbin 'other.cmd') '@echo off'
+$said = (Remove-ShellShims 6>&1 | ForEach-Object { "$_" }) -join "`n"
+Check (-not (Test-Path (Join-Path $sbin 'sasonica.cmd'))) 'beside the server: sasonica.cmd removed'
+Check (-not (Test-Path (Join-Path $sbin 'sasonica-shell.cmd'))) 'beside the server: sasonica-shell.cmd removed'
+Check (Test-Path (Join-Path $sbin 'other.cmd')) 'only Shell''s shims are removed'
+$rec = @(Get-Content (Join-Path $env:APPDATA 'sasonica\runner'))
+Check ($rec[0] -eq 'C:\node\node.exe' -and $rec[1] -eq $runner) "the runner is recorded ($($rec -join ' | '))"
+Check ($said -match 'sasonica shell') 'it says Shell is `sasonica shell`'
 $env:APPDATA = $saved.APPDATA; $env:USERPROFILE = $saved.USERPROFILE
 
 # -ShellOnly / SASONICA_ONLY=shell: Shell alone, the server never fetched

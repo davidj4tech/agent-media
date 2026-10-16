@@ -30,9 +30,12 @@
 #                           (deploy/shell.sh):
 #                             curl -fsSL https://sasonica.com/install | bash -s shell
 #
-# Shell's command is `sasonica` too: where the server is ~/.local/bin/sasonica,
-# Shell's is ~/.local/bin/sasonica-shell (moved there, and the server's binary
-# put back, if Shell's installer wrote over it).
+# One command (David, 16 Oct 2026): beside the server Shell has no command of
+# its own; it is `sasonica shell …` (and `sasonica status`, `skills`, `url`…),
+# the server finding its runner in ~/.config/sasonica/runner. Shell's
+# installer writes that and no command when the server is here; a Shell
+# installed first, or an older one that wrote ~/.local/bin/sasonica or
+# sasonica-shell, has its shim read into that record and removed.
 #
 # The platform installer is fetched to a file and run from there with the
 # terminal as its stdin (when there is one), not the pipe this came in on.
@@ -73,6 +76,24 @@ tty_ok() { ( : </dev/tty ) 2>/dev/null; }
 # two-line sh shim that runs its sasonica.mjs under Node.
 is_shell_shim() { [ -f "$1" ] && head -c 400 "$1" 2>/dev/null | grep -q 'sasonica\.mjs'; }
 
+# Shell's shim gone, its runner kept where the server's `sasonica shell` finds
+# it: the record (the node, then the runner, a line each) in Shell's config
+# folder, unless one there already names a runner that exists.
+adopt_shell_shim() {
+  is_shell_shim "$1" || return 0
+  line=$(grep -m1 'sasonica\.mjs' "$1")
+  node=$(printf '%s\n' "$line" | sed -n 's/^exec "\([^"]*\)" "\([^"]*\)".*/\1/p')
+  runner=$(printf '%s\n' "$line" | sed -n 's/^exec "\([^"]*\)" "\([^"]*\)".*/\2/p')
+  conf=${SASONICA_CONF:-$HOME/.config/sasonica}
+  have=$(sed -n 2p "$conf/runner" 2>/dev/null || true)
+  if [ -n "$runner" ] && { [ -z "$have" ] || [ ! -f "$have" ]; }; then
+    mkdir -p "$conf" && printf '%s\n%s\n' "$node" "$runner" >"$conf/runner"
+  fi
+  rm -f "$1"
+  adopted=1
+}
+adopted=
+
 sha256() { if command -v sha256sum >/dev/null; then sha256sum "$1"; else shasum -a 256 "$1"; fi; }
 
 # Linux or a Mac: the binary. On Linux its launcher needs glibc (2.31+), not musl.
@@ -100,10 +121,11 @@ unix() {
     echo "install: the download does not match its checksum; nothing was changed." >&2; exit 1
   fi
   chmod +x "$bin/sasonica.new"
-  # Shell, installed first, had this name: it moves aside, still working.
-  if is_shell_shim "$bin/sasonica"; then
-    mv -f "$bin/sasonica" "$bin/sasonica-shell"
-    echo "Sasonica Shell's command is now sasonica-shell (sasonica is the server)."
+  # Shell, installed first, had this name: it becomes `sasonica shell`.
+  adopt_shell_shim "$bin/sasonica"
+  adopt_shell_shim "$bin/sasonica-shell"
+  if [ -n "$adopted" ]; then
+    echo "Sasonica Shell is \`sasonica shell\` now (sasonica is the server)."
   fi
   # A rename, not a copy over: a running server keeps the file it started from.
   mv -f "$bin/sasonica.new" "$bin/sasonica"
@@ -188,8 +210,9 @@ shell_install() {
   rm -rf "$tmp"
   echo "Unpacked to $dest."
 
-  # Shell writes its command to ~/.local/bin/sasonica, the server's binary:
-  # keep the server's (a hard link, the same file) and put it back after.
+  # Shell writes no command beside the server; one that did (an older Shell)
+  # wrote ~/.local/bin/sasonica, the server's binary: keep the server's (a
+  # hard link, the same file) and put it back after.
   bin="$HOME/.local/bin"
   saved=
   if [ -f "$bin/sasonica" ] && ! is_shell_shim "$bin/sasonica"; then
@@ -205,12 +228,11 @@ shell_install() {
     if cmp -s "$saved" "$bin/sasonica"; then
       rm -f "$saved"
     else
-      if is_shell_shim "$bin/sasonica"; then mv -f "$bin/sasonica" "$bin/sasonica-shell"; fi
+      adopt_shell_shim "$bin/sasonica"
       mv -f "$saved" "$bin/sasonica"
     fi
-    if [ -f "$bin/sasonica-shell" ]; then
-      echo "Sasonica Shell's command here is sasonica-shell (sasonica is the server)."
-    fi
+    adopt_shell_shim "$bin/sasonica-shell"
+    echo "Sasonica Shell is \`sasonica shell\` here (sasonica is the server): sasonica shell --help"
   fi
   return "$rc"
 }

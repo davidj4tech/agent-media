@@ -23,9 +23,13 @@
 # Scheduled Task sasonica-shell), run in a scope of its own. Read-Host asks;
 # a host that cannot (-NonInteractive, input redirected, a service) is No. A
 # Shell that does not install does not fail the server's install: it says how
-# to try again. Shell's command is `sasonica` too (sasonica.cmd in
-# %APPDATA%\sasonica\bin, after the server's folder on PATH, so the server's
-# sasonica.exe wins): beside the server it is also sasonica-shell.cmd.
+# to try again. One command (David, 16 Oct 2026): alone, Shell's command is
+# `sasonica` (sasonica.cmd in %APPDATA%\sasonica\bin); beside the server it
+# has none and is `sasonica shell …`, the server finding its runner in
+# %APPDATA%\sasonica\runner. Shell's installer writes that and no command
+# when the server is here; a Shell installed first (or an older one, which
+# also wrote sasonica-shell.cmd) has its .cmd files read into that record
+# and removed, here and by `sasonica install`.
 #
 # Switches, for an unattended install. Through irm, as a script block:
 #   & ([scriptblock]::Create((irm https://sasonica.com/install.ps1))) -Shell
@@ -71,14 +75,29 @@ function Get-ShellChoice {
   return ("$a" -match '^\s*y')
 }
 
-# Shell's `sasonica` loses to the server's on PATH: give it its own name too.
-function Set-ShellAlias {
-  $shim = Join-Path $env:APPDATA 'sasonica\bin\sasonica.cmd'
+# Beside the server, Shell's .cmd files go: their runner is recorded (the
+# node, then the runner, a line each) where `sasonica shell` finds it, unless
+# a record there already names a runner that exists.
+function Remove-ShellShims {
   $server = Join-Path $env:USERPROFILE '.local\bin\sasonica.exe'
-  if ((Test-Path $shim) -and (Test-Path $server)) {
-    Copy-Item -Force $shim (Join-Path (Split-Path -Parent $shim) 'sasonica-shell.cmd')
-    Write-Host "Sasonica Shell's command here is sasonica-shell (sasonica is the server)."
+  if (-not (Test-Path $server)) { return }
+  $conf = Join-Path $env:APPDATA 'sasonica'
+  $record = Join-Path $conf 'runner'
+  $gone = $false
+  foreach ($name in 'sasonica.cmd', 'sasonica-shell.cmd') {
+    $shim = Join-Path $conf "bin\$name"
+    if (-not (Test-Path -LiteralPath $shim)) { continue }
+    $m = [regex]::Match((Get-Content -Raw -LiteralPath $shim), '"([^"\r\n]+)"\s+"([^"\r\n]*sasonica\.mjs)"')
+    if (-not $m.Success) { continue }
+    $have = if (Test-Path -LiteralPath $record) { @(Get-Content -LiteralPath $record)[1] } else { $null }
+    if (-not $have -or -not (Test-Path -LiteralPath $have)) {
+      # No BOM (Set-Content -Encoding UTF8 writes one in Windows PowerShell).
+      [IO.File]::WriteAllText($record, "$($m.Groups[1].Value)`n$($m.Groups[2].Value)`n")
+    }
+    Remove-Item -Force -LiteralPath $shim
+    $gone = $true
   }
+  if ($gone) { Write-Host 'Sasonica Shell is `sasonica shell` now (sasonica is the server).' }
 }
 
 # Shell's own one-liner in a scope of its own (its $ErrorActionPreference and
@@ -94,7 +113,7 @@ function Invoke-ShellStep {
     $text = if (Test-Path -LiteralPath $src) { Get-Content -Raw -LiteralPath $src }
             else { Invoke-RestMethod -UseBasicParsing $src }
     & ([scriptblock]::Create([string]$text)) | Out-Host
-    Set-ShellAlias
+    Remove-ShellShims
     return $true
   } catch {
     Write-Warning "Sasonica Shell did not install: $($_.Exception.Message)"
@@ -153,8 +172,9 @@ if (-not ($userPath -split ';' | Where-Object { $_ -eq $bin })) {
 
 & $exe install
 if ($LASTEXITCODE -ne 0) { Write-Error 'sasonica install failed.' }
-# Shell, installed before the server: its command keeps a name of its own.
-Set-ShellAlias
+# Shell, installed before the server: `sasonica shell` now (sasonica install
+# does this too; here it is said where the install is watched).
+Remove-ShellShims
 
 # A function, so its early returns still reach the Shell step after it.
 function Invoke-Pairing {
