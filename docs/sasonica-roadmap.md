@@ -827,7 +827,13 @@ ahead.
    Settings → Server address would also do, instead of pairing again). The
    real one-liner in a Debian bookworm container (binary af70566) fetched
    cloudflared, wrote the listener, and (no systemd there; started by hand)
-   paired a device from red5 through its tunnel. CI fix e837fba, 41d3216. The
+   paired a device from red5 through its tunnel. CI fix e837fba, 41d3216.
+   **Windows too (16 Oct, branch `lookup`)**: cloudflared-windows-amd64.exe
+   (2026.9.3, sha256 pinned) to ~/.local/bin, the logon task
+   Sasonica\quick-tunnel (task XML, restarted when it fails), cloudflared in
+   a kill-on-close job so it never outlives its runner, install.ps1 waiting
+   for the URL; the binary's Windows smoke test pairs through a stand-in
+   cloudflared, and a network step (allowed to fail) through a real one. The
    lookup as built (a Worker at sasonica.com/r/<id>, signed by a key made at
    install; the app re-finding its server) is revived on agent-media branch
    `lookup` and sasonica-app branch `lookup` (16 Oct; from `lookup-hold` and

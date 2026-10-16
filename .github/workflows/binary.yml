@@ -131,8 +131,25 @@ jobs:
           for i in $(seq 1 30); do grep -q "listening on" sessiond.log && break; sleep 1; done
           cat sessiond.log
           grep -q "listening on 127.0.0.1:" sessiond.log
-          "$b" install --dry-run --no-services
+          "$b" install --dry-run --no-services | tee install.txt
           kill %1 %2 || true
+          # The quick tunnel is Windows' too: install fetches Cloudflare's
+          # pinned Windows build (or finds one already there).
+          tr -d '\r' <install.txt | grep -Eq 'cloudflared: (would fetch .*/cloudflared-windows-amd64\.exe|.*(already there|on PATH))'
+          # A tunnel's URL into `pair --device`, through a stand-in cloudflared
+          # (no network): media-tunnel run reads its name off stderr, and the
+          # pairing link names it and its lookup.
+          printf '@echo INF ^|  https://ci-fake-tunnel.trycloudflare.com  ^| 1>&2\r\n@ping -n 60 127.0.0.1 >nul\r\n' >fakecf.cmd
+          MEDIA_CLOUDFLARED="$(cygpath -w "$PWD/fakecf.cmd")" MEDIA_LOOKUP_URL=- \
+            "$b" media-tunnel run >tunnel.log 2>&1 &
+          tpid=$!
+          for i in $(seq 1 60); do "$b" media-tunnel url >/dev/null 2>&1 && break; sleep 1; done
+          cat tunnel.log
+          "$b" media-tunnel url | tr -d '\r' | grep -qx 'https://ci-fake-tunnel.trycloudflare.com'
+          MEDIA_LOOKUP_URL=https://lookup.invalid/r "$b" pair --device CI | tr -d '\r' | tee pair.txt
+          grep -q 'sasonica://pair?server=https%3A%2F%2Fci-fake-tunnel.trycloudflare.com&code=' pair.txt
+          grep -q '&lookup=https%3A%2F%2Flookup.invalid%2Fr%2F[a-z2-7]\{26\}' pair.txt
+          kill $tpid || true
           # The audio seam's windows backend, from inside the .exe: chosen,
           # and its winrt projection (a win32-only dependency) importable.
           "$b" media-audio --json | tee audio.json
@@ -142,6 +159,29 @@ jobs:
           "$b" media-sink-speech --print | tee speech.txt
           grep -q 'pipe' speech.txt
           "$b" install --dry-run --no-services --local-speech
+
+      - name: Quick tunnel through Cloudflare (NEEDS NETWORK; allowed to fail)
+        # The real thing: the pinned cloudflared fetched and checked by
+        # install, a quick tunnel to the public listener, and /healthz
+        # answered through it from trycloudflare.com. Quick tunnels are
+        # best-effort (no SLA) and need Cloudflare and GitHub reachable, so a
+        # failure here is a warning, not a red build. Nothing is published:
+        # MEDIA_LOOKUP_URL=-.
+        continue-on-error: true
+        timeout-minutes: 6
+        run: |
+          b=$PWD/build/binary/sasonica-windows-x86_64.exe
+          export MEDIA_LOOKUP_URL=-
+          "$b" install --no-services | tee install-real.txt
+          tr -d '\r' <install-real.txt | grep -q 'sha256 checked\|already there\|on PATH'
+          MEDIA_VISUAL_PUBLIC=127.0.0.1:18789 "$b" serve --bind 127.0.0.1 --port 18781 >serve-t.log 2>&1 &
+          MEDIA_VISUAL_PUBLIC=127.0.0.1:18789 "$b" media-tunnel run >tunnel-real.log 2>&1 &
+          url=$("$b" media-tunnel url --wait 90 | tr -d '\r') || { cat tunnel-real.log; exit 1; }
+          echo "tunnel: $url"
+          for i in $(seq 1 30); do curl -fsS -m 10 "$url/healthz" && break; sleep 3; done
+          curl -fsS -m 10 "$url/healthz"
+          "$b" pair --device CI | tr -d '\r' | grep -q "server=$(printf %s "$url" | sed 's|:|%3A|; s|/|%2F|g')&code="
+          kill %1 %2 || true
 
       - uses: actions/upload-artifact@v4
         with:
