@@ -10,4 +10,11 @@
 # differ. Defaults live there too, so changing the policy is one edit.
 exec 2>&1
 [ -f "$HOME/.config/agent-media.env" ] && . "$HOME/.config/agent-media.env"
-exec media state-gc
+media state-gc
+rc=$?
+# systemd runs this from a daily timer (`timer`; it sets INVOCATION_ID). runit,
+# the phone's supervisor, has no timers: it restarts whatever exits, so this
+# pruned the DB every second and doctor called it down. There, the day's
+# wait is the service's own.
+[ -n "$INVOCATION_ID" ] && exit $rc
+exec sleep 86400
