@@ -290,7 +290,9 @@ had queued (the `read` cut; `/reply` and Claude Code's UserPromptSubmit hook).
 While the thread is read, the reply box carries a "Stops reading" chip; a tap
 makes it "Keep reading" for that one send (`keep_reading`, §6.3). Auto speak
 threads are never cut. agent-media `5518ac7`, chat-prototype `5c3f8d1a`,
-android-next `6861b775`, installed on p8a.
+android-next `6861b775`, installed on p8a. Since 16 Oct 2026 the chip sits
+in the voice's bar instead, on a second row with the speed (− 1× +), shown
+only in the thread being read (sasonica-app `66cc2ea`).
 
 Earcons (David, 25 Sep 2026): made in code, no audio assets
 (`earcons.py`) — a soft tick when a reply is cut short on purpose (a Stop, a
