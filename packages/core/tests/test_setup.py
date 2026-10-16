@@ -654,7 +654,7 @@ def test_an_extra_that_is_not_here_is_skipped_with_a_reason(tmp_path, monkeypatc
     out = capsys.readouterr().out
     assert "skipped   mail" in out and "is not installed here" in out
     data = json.loads((tmp_path / "settings.json").read_text())
-    cmds = [h.get("command") for groups in data["hooks"].values()
+    cmds = [h.get("command") for groups in data.get("hooks", {}).values()
             for g in groups for h in (g.get("hooks") or [])]
     assert not any("agent-mail-inbox-hook" in c for c in cmds)
 
@@ -861,3 +861,20 @@ def test_the_loopback_bridges_belong_where_the_phone_is():
         assert setup.service_wanted(name, phone)[0], name
         wanted, why = setup.service_wanted(name, hub)
         assert not wanted and "observe" in why, (name, why)
+
+
+def test_the_status_line_is_ours_unless_one_is_already_set(tmp_path, monkeypatch, capsys):
+    """A status line someone set is theirs: left alone, and skipped with a
+    reason. Without one, the profile sets agent-media's."""
+    _only_hook_rows(monkeypatch)
+    monkeypatch.setattr(setup.shutil, "which", lambda name: f"/usr/bin/{name}")
+    assert setup.cmd_profile(_profile_args(tmp_path, only="statusline")) == 0
+    data = json.loads((tmp_path / "settings.json").read_text())
+    assert setup.STATUSLINE_COMMAND in data["statusLine"]["command"]
+
+    (tmp_path / "settings.json").write_text(json.dumps(
+        {"statusLine": {"type": "command", "command": "my-line"}}))
+    assert setup.cmd_profile(_profile_args(tmp_path, only="statusline")) == 0
+    data = json.loads((tmp_path / "settings.json").read_text())
+    assert data["statusLine"]["command"] == "my-line"
+    assert "a status line of your own" in capsys.readouterr().out

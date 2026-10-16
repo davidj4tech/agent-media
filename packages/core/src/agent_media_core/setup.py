@@ -1483,6 +1483,47 @@ def _row_heard(args, *, check_only: bool):
     return ("installed" if changed else "ok"), str(path)
 
 
+#: How full the session's context is: a UserPromptSubmit hook that tells the
+#: session at 50/70/85%, and the status line that tells the hook the real
+#: window (`intake.context`). Not async: its note has to reach the prompt.
+CONTEXT_HOOK_COMMAND = "media-hook-context"
+STATUSLINE_COMMAND = "media-statusline"
+
+
+def _row_context(args, *, check_only: bool):
+    """The context warnings: how full the window is, told to the session."""
+    path = _settings_path(args)
+    if check_only:
+        return ("ok" if _hook_installed(path, CONTEXT_HOOK_COMMAND)
+                else "missing"), str(path)
+    merged, changed = _merge_hook_entry(
+        _load_json(path), "UserPromptSubmit", hook_command(CONTEXT_HOOK_COMMAND),
+        CONTEXT_HOOK_COMMAND, 5, False)
+    if changed:
+        _write_settings(path, merged, dry_run=args.dry_run)
+    return ("installed" if changed else "ok"), str(path)
+
+
+def _row_statusline(args, *, check_only: bool):
+    """The status line: the window and how much of it is used. One a person
+    set themselves is theirs — left alone, and the context hook guesses the
+    window instead."""
+    path = _settings_path(args)
+    settings = _load_json(path)
+    current = (settings.get("statusLine") or {}).get("command") or ""
+    if current and STATUSLINE_COMMAND not in current:
+        return "absent", f"a status line of your own is set: {current}"
+    entry = {"type": "command", "command": hook_command(STATUSLINE_COMMAND),
+             "padding": 0}
+    if check_only:
+        return ("ok" if current else "missing"), str(path)
+    if settings.get("statusLine") == entry:
+        return "ok", str(path)
+    settings["statusLine"] = entry
+    _write_settings(path, settings, dry_run=args.dry_run)
+    return "installed", str(path)
+
+
 def _hook_row(hook, tool: str):
     """A row that registers `hook` when `tool` is on this machine."""
     event, command, match, timeout, async_ = hook
@@ -1608,6 +1649,10 @@ PROFILE_ROWS = (
     ("speech", "the hooks that speak a reply and record the turn", "core", _row_speech),
     ("heard", "how far a reply had been read aloud, told to the next turn",
      "core", _row_heard),
+    ("context", "how full the context is, told to the session near the limit",
+     "core", _row_context),
+    ("statusline", "the status line: context used of the model's window", "core",
+     _row_statusline),
     ("services", "this host's services, by its roles", "core", _row_services),
     ("shell", "the tmux popup and control surface on PATH", "core", _row_shell),
     ("mail", "agent mail announced at the top of a turn", "extra",
