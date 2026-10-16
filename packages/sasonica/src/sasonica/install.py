@@ -25,8 +25,8 @@ has the binary instead of a checkout:
      (`sasonica tunnel`): systemd --user units on Linux, launchd agents on
      a Mac (~/Library/LaunchAgents/com.sasonica.*.plist, logs in
      ~/Library/Logs/sasonica), logon tasks on Windows (Task Scheduler →
-     Sasonica, registered from task XML so they restart when they fail; an
-     older install's tasks are replaced). Not when the host already runs a canvas from a
+     Sasonica: canvas, sessiond, quick-tunnel; registered from task XML so
+     they restart when they fail; an older install's tasks are replaced). Not when the host already runs a canvas from a
      checkout (agent-media-visual-canvas.service), unless --force;
   6. with --local-speech, on Windows: a speech player on this computer, the
      logon task Sasonica\\speech running your own mpv (`sasonica
@@ -182,8 +182,9 @@ def _launchd(binary: str, a) -> int:
     return rc
 
 
-#: Task Scheduler's name for each service (Windows).
-TASKS = {name: "Sasonica\\" + name.removeprefix("sasonica-") for name in UNITS}
+#: Task Scheduler's name for each service (Windows): Sasonica\canvas,
+#: Sasonica\sessiond and, with the quick tunnel, Sasonica\quick-tunnel.
+TASKS = {name: "Sasonica\\" + name.removeprefix("sasonica-") for name in {**UNITS, **TUNNEL_UNIT}}
 
 
 def task_args(binary: str, word: str, bind: str = "0.0.0.0", port: int = 8781) -> str:
@@ -309,11 +310,12 @@ def upgrade_task(name: str, description: str) -> bool:
 
 
 def _schtasks(binary: str, a) -> int:
-    """The two services as Task Scheduler tasks that start at logon, registered
-    from task XML (restarted when they fail), replacing whatever had the name
-    — an install made before task XML included — then started now."""
+    """The services (two, or three with the quick tunnel) as Task Scheduler
+    tasks that start at logon, registered from task XML (restarted when they
+    fail), replacing whatever had the name — an install made before task XML
+    included — then started now."""
     rc = 0
-    for name, (word, what) in UNITS.items():
+    for name, (word, what) in getattr(a, "units", UNITS).items():
         task = TASKS[name]
         print(f"  task {task}")
         rc = register_task(task, task_xml(task_args(binary, word, a.bind, a.port),
@@ -391,8 +393,6 @@ def tunnel_skip_reason(a, env_lines: list[str]) -> str:
         return "~/.cloudflared/config.yml: this host runs its own named tunnel"
     if (_config_home() / "systemd" / "user" / CHECKOUT_CANVAS_UNIT).exists() and not a.force:
         return f"{CHECKOUT_CANVAS_UNIT}: a checkout install serves this host"
-    if os.name == "nt":
-        return "not on Windows yet"
     return ""
 
 

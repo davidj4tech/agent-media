@@ -6,8 +6,9 @@
 # (sasonica-windows-x86_64.exe, from the server-latest release, built by
 # deploy/binary/build.sh), checked against SHA256SUMS and put at
 # %USERPROFILE%\.local\bin\sasonica.exe; then `sasonica install` (shims for
-# every command, this machine's config, the agents' hooks, two logon tasks
-# under Task Scheduler → Sasonica) and a pairing QR code for the app.
+# every command, this machine's config, the agents' hooks, logon tasks
+# under Task Scheduler → Sasonica, a quick tunnel among them) and a pairing
+# QR code for the app.
 # Running it again updates. docs/proposals/2026-09-29-single-binary.md.
 #
 # $env:SASONICA_BINARY_BASE overrides where the binary is (tests).
@@ -64,6 +65,22 @@ if (-not $up) {
   Write-Host 'The server is not answering on port 8781 yet; when it is, pair with:'
   Write-Host "  sasonica pair --device `"$env:COMPUTERNAME`""
   return
+}
+# The quick tunnel (sasonica install, where the phone has no other way in):
+# pair with its https address once cloudflared has named it.
+if (Get-ScheduledTask -TaskPath '\Sasonica\' -TaskName 'quick-tunnel' -ErrorAction SilentlyContinue) {
+  $url = (& $exe media-tunnel url --wait 60) | Select-Object -First 1
+  if ($LASTEXITCODE -ne 0 -or -not $url) {
+    Write-Host 'The quick tunnel has not started yet; when it has, pair with:'
+    Write-Host "  sasonica pair --device `"$env:COMPUTERNAME`""
+    Write-Host '(Task Scheduler -> Sasonica -> quick-tunnel)'
+    return
+  }
+  Write-Host "The phone reaches this computer at $url (a Cloudflare quick tunnel)."
+  foreach ($i in 1..30) {
+    try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 "$url/healthz" | Out-Null; break }
+    catch { Start-Sleep 2 }
+  }
 }
 Write-Host 'Scan this with Sasonica (Pair a server), or paste the link into its pairing screen:'
 & $exe pair --device $env:COMPUTERNAME

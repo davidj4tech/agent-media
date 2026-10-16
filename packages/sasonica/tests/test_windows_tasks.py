@@ -54,6 +54,21 @@ def test_the_services_are_registered_from_xml(monkeypatch):
     assert all("/F" in c for c in rec.calls if c[1] == "/Create")
 
 
+def test_the_quick_tunnel_is_a_third_task(monkeypatch):
+    rec = _Recorder()
+    monkeypatch.setattr(install, "_run", rec)
+    a = argparse.Namespace(bind="0.0.0.0", port=8781, dry_run=False,
+                           units={**install.UNITS, **install.TUNNEL_UNIT})
+    assert install._schtasks("C:\\bin\\sasonica.exe", a) == 0
+    assert set(rec.xml) == {"Sasonica\\canvas", "Sasonica\\sessiond", "Sasonica\\quick-tunnel"}
+    tunnel = _parsed(rec.xml["Sasonica\\quick-tunnel"])
+    assert tunnel.find("t:Actions/t:Exec/t:Command", NS).text == "conhost.exe"
+    assert tunnel.find("t:Actions/t:Exec/t:Arguments", NS).text == (
+        '--headless "C:\\bin\\sasonica.exe" tunnel')
+    assert tunnel.find("t:Settings/t:RestartOnFailure/t:Interval", NS).text == "PT1M"
+    assert ["schtasks", "/Run", "/TN", "Sasonica\\quick-tunnel"] in rec.calls
+
+
 def test_the_speech_task_shares_the_xml():
     a = install.speech_task_xml("C:\\b.exe", "PC\\ann")
     b = install.task_xml('--headless "C:\\b.exe" media-sink-speech', "PC\\ann",

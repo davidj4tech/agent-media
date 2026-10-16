@@ -20,9 +20,6 @@ from agent_media_server import devices, tunnel
 
 from test_contract import call, server, typed  # noqa: F401
 
-# No quick tunnel on Windows yet (sasonica install skips it there).
-pytestmark = pytest.mark.skipif(os.name == "nt", reason="no quick tunnel on Windows yet")
-
 
 def _unb64(s: str) -> bytes:
     return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
@@ -60,7 +57,8 @@ def test_the_install_key_is_made_once_and_private():
     seed, pub, iid = tunnel.identity()
     assert len(iid) == 26 and set(iid) <= set("abcdefghijklmnopqrstuvwxyz234567")
     assert tunnel.identity() == (seed, pub, iid)
-    assert stat.S_IMODE(tunnel.key_path().stat().st_mode) == 0o600
+    if os.name != "nt":   # Windows has no mode bits; the profile's ACL guards it
+        assert stat.S_IMODE(tunnel.key_path().stat().st_mode) == 0o600
 
 
 def test_publish_is_signed_by_the_key_its_id_names(lookup):
@@ -76,17 +74,28 @@ def test_lookup_off(monkeypatch):
     assert tunnel.lookup_url() == ""
 
 
+def _fake_cloudflared(tmp_path, body: str):
+    """A stand-in cloudflared running `body` (Python): a script with a #!
+    line, or on Windows a .cmd that runs it with this Python."""
+    script = tmp_path / "cloudflared.py"
+    script.write_text(f"#!{sys.executable}\n" + body)
+    if os.name == "nt":
+        fake = tmp_path / "cloudflared.cmd"
+        fake.write_text(f'@"{sys.executable}" "{script}" %*\r\n')
+        return fake
+    script.chmod(0o755)
+    return script
+
+
 def test_run_writes_the_url_publishes_it_and_clears_it(lookup, monkeypatch, tmp_path):
-    fake = tmp_path / "cloudflared"
     # What cloudflared prints, give or take: the API host first, then its own.
-    fake.write_text(f"""#!{sys.executable}
+    fake = _fake_cloudflared(tmp_path, """
 import sys, time, json, os
 print(json.dumps(sys.argv[1:]), file=open(os.environ["ARGS_OUT"], "w"))
 print("INF Requesting new quick Tunnel on trycloudflare.com...", file=sys.stderr, flush=True)
 print("INF |  https://quiet-river-a1b2.trycloudflare.com  |", file=sys.stderr, flush=True)
 time.sleep(1.5)
 """)
-    fake.chmod(0o755)
     monkeypatch.setenv("MEDIA_CLOUDFLARED", str(fake))
     monkeypatch.setenv("ARGS_OUT", str(tmp_path / "args"))
     monkeypatch.setenv("MEDIA_VISUAL_PUBLIC", "127.0.0.1:18789")
@@ -127,3 +136,43 @@ def test_platform_assets_are_pinned():
         assert name.startswith("cloudflared-") and len(sha) == 64
     if sys.platform.startswith("linux") and os.uname().machine in ("x86_64", "aarch64"):
         assert tunnel.platform_asset() is not None
+    if sys.platform == "win32" and os.environ.get("PROCESSOR_ARCHITECTURE") == "AMD64":
+        assert tunnel.platform_asset()[0] == "cloudflared-windows-amd64.exe"
+
+
+@pytest.mark.parametrize("plat,machine,want", [
+    ("win32", "AMD64", "cloudflared-windows-amd64.exe"),
+    ("win32", "ARM64", None),                       # Cloudflare builds none
+    ("linux", "x86_64", "cloudflared-linux-amd64"),
+    ("linux", "aarch64", "cloudflared-linux-arm64"),
+    ("darwin", "arm64", "cloudflared-darwin-arm64.tgz"),
+])
+def test_platform_asset_per_platform(monkeypatch, plat, machine, want):
+    monkeypatch.setattr(tunnel.sys, "platform", plat)
+    monkeypatch.setattr(tunnel.platform, "machine", lambda: machine)
+    got = tunnel.platform_asset()
+    assert (got[0] if got else None) == want
+
+
+def test_windows_fetches_cloudflared_exe(monkeypatch, tmp_path):
+    monkeypatch.setattr(tunnel.sys, "platform", "win32")
+    monkeypatch.setattr(tunnel.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(tunnel.shutil, "which", lambda name: None)
+    path, what = tunnel.fetch_cloudflared(tmp_path, dry_run=True)
+    assert path == str(tmp_path / "cloudflared.exe")
+    assert what.endswith("/2026.9.3/cloudflared-windows-amd64.exe")
+    (tmp_path / "cloudflared.exe").write_bytes(b"")
+    assert tunnel.fetch_cloudflared(tmp_path)[1].endswith("(already there)")
+
+
+def test_cloudflared_is_tied_to_its_runner_on_windows_only():
+    if os.name == "nt":
+        import subprocess
+        p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            assert tunnel._die_with_me(p) is not None
+        finally:
+            p.kill()
+            p.wait()
+    else:
+        assert tunnel._die_with_me(None) is None

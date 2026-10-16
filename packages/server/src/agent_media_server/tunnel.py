@@ -2,7 +2,9 @@
 users"; docs/proposals/2026-10-03-off-the-tailnet.md).
 
 A stranger's install has no tailnet and no domain. `sasonica install` puts
-cloudflared in ~/.local/bin and a service that runs `media-tunnel run`:
+cloudflared in ~/.local/bin (cloudflared.exe on Windows) and a service that
+runs `media-tunnel run` — a systemd --user unit, a launchd agent, or on
+Windows the logon task Sasonica\\quick-tunnel (restarted when it fails):
 
   1. `cloudflared tunnel --url http://<MEDIA_VISUAL_PUBLIC>` — a quick tunnel
      (no Cloudflare account) to the app-routes-only listener, which names
@@ -20,7 +22,7 @@ Config (env):
   MEDIA_VISUAL_PUBLIC   the listener the tunnel points at (default 127.0.0.1:8789)
   MEDIA_LOOKUP_URL      the lookup's base (default https://sasonica.com/r);
                         `-` or MEDIA_LOOKUP=0 turns publishing off
-  MEDIA_CLOUDFLARED     the cloudflared to run (default ~/.local/bin/cloudflared,
+  MEDIA_CLOUDFLARED     the cloudflared to run (default ~/.local/bin/cloudflared[.exe],
                         else PATH)
 
     media-tunnel run            the service: cloudflared, kept, URL published
@@ -66,6 +68,10 @@ CLOUDFLARED_ASSETS = {
                            "aaeb2d7d0da3614634c7e03ab13487a1522c2e79165ed2929cfe23d5e95b326d"),
     ("darwin", "arm64"): ("cloudflared-darwin-arm64.tgz",
                           "587c2cfb1c230fe36c7fa7727da78be459dae028cabe8c001291999350f07095"),
+    # x64 only: Cloudflare builds no arm64 Windows cloudflared (and the
+    # server's own Windows build is x64 only, deploy/install.ps1).
+    ("windows", "x86_64"): ("cloudflared-windows-amd64.exe",
+                            "f096265ec2fcbe9bb6e2d64268db167ced3fcbb83d894bdb9e2fcdb26f2ea7e2"),
 }
 _RELEASES = "https://github.com/cloudflare/cloudflared/releases/download"
 
@@ -206,7 +212,7 @@ def cloudflared_path() -> str:
     want = os.environ.get("MEDIA_CLOUDFLARED")
     if want:
         return want
-    local = Path.home() / ".local" / "bin" / ("cloudflared.exe" if os.name == "nt" else "cloudflared")
+    local = Path.home() / ".local" / "bin" / _exe_name()
     if local.exists():
         return str(local)
     return shutil.which("cloudflared") or ""
@@ -217,7 +223,13 @@ def platform_asset() -> tuple[str, str] | None:
     if sys.platform == "darwin":
         return CLOUDFLARED_ASSETS.get(("darwin", "arm64" if machine in ("arm64", "aarch64") else machine))
     machine = {"amd64": "x86_64", "arm64": "aarch64"}.get(machine, machine)
+    if sys.platform == "win32":
+        return CLOUDFLARED_ASSETS.get(("windows", machine))
     return CLOUDFLARED_ASSETS.get(("linux", machine)) if sys.platform.startswith("linux") else None
+
+
+def _exe_name() -> str:
+    return "cloudflared.exe" if sys.platform == "win32" else "cloudflared"
 
 
 def _sha256(p: Path) -> str:
@@ -231,7 +243,7 @@ def _sha256(p: Path) -> str:
 def fetch_cloudflared(bin_dir: Path, *, dry_run: bool = False) -> tuple[str, str]:
     """cloudflared into `bin_dir`, checked against its pinned sha256.
     `(path or "", what happened)`. One already there is used as it is."""
-    dest = bin_dir / "cloudflared"
+    dest = bin_dir / _exe_name()
     if dest.exists():
         return str(dest), f"{dest} (already there)"
     found = shutil.which("cloudflared")
@@ -269,6 +281,70 @@ def fetch_cloudflared(bin_dir: Path, *, dry_run: bool = False) -> tuple[str, str
     return str(dest), f"{dest} ({CLOUDFLARED_VERSION}, sha256 checked)"
 
 
+def _die_with_me(child: subprocess.Popen) -> object:
+    """Windows: put cloudflared in a job object that kills it when this
+    process ends, however it ends — a killed runner (Task Scheduler's End, a
+    crash) would otherwise leave cloudflared running, and the next start a
+    second tunnel beside it. POSIX: nothing (cloudflared's stderr pipe closes
+    and it is terminated in run()'s finally). The handle, to be kept, or None."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateJobObjectW.restype = wintypes.HANDLE
+        k32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+        k32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                                wintypes.LPVOID, wintypes.DWORD]
+        k32.OpenProcess.restype = wintypes.HANDLE
+        k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+        class _Basic(ctypes.Structure):
+            _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64),
+                        ("PerJobUserTimeLimit", ctypes.c_int64),
+                        ("LimitFlags", wintypes.DWORD),
+                        ("MinimumWorkingSetSize", ctypes.c_size_t),
+                        ("MaximumWorkingSetSize", ctypes.c_size_t),
+                        ("ActiveProcessLimit", wintypes.DWORD),
+                        ("Affinity", ctypes.c_size_t),
+                        ("PriorityClass", wintypes.DWORD),
+                        ("SchedulingClass", wintypes.DWORD)]
+
+        class _Io(ctypes.Structure):
+            _fields_ = [(n, ctypes.c_uint64) for n in (
+                "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+        class _Extended(ctypes.Structure):
+            _fields_ = [("BasicLimitInformation", _Basic), ("IoInfo", _Io),
+                        ("ProcessMemoryLimit", ctypes.c_size_t),
+                        ("JobMemoryLimit", ctypes.c_size_t),
+                        ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                        ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+        job = k32.CreateJobObjectW(None, None)
+        if not job:
+            return None
+        info = _Extended()
+        info.BasicLimitInformation.LimitFlags = 0x2000   # KILL_ON_JOB_CLOSE
+        # 9: JobObjectExtendedLimitInformation.
+        if not k32.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info)):
+            k32.CloseHandle(job)
+            return None
+        # PROCESS_SET_QUOTA | PROCESS_TERMINATE
+        h = k32.OpenProcess(0x0100 | 0x0001, False, child.pid)
+        if h:
+            k32.AssignProcessToJobObject(job, h)
+            k32.CloseHandle(h)
+        return job       # never closed: it goes when this process does
+    except (OSError, AttributeError, ValueError):
+        return None
+
+
 def origin() -> str:
     pub = os.environ.get("MEDIA_VISUAL_PUBLIC") or DEFAULT_PUBLIC
     host, _, port = pub.rpartition(":")
@@ -293,6 +369,7 @@ def run() -> int:
     print("media-tunnel: " + " ".join(argv), file=sys.stderr, flush=True)
     child = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                              text=True, errors="replace")
+    _job = _die_with_me(child)  # held: closing it ends cloudflared
     stop = threading.Event()
 
     def _term(*_a) -> None:
