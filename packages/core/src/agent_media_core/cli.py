@@ -3819,6 +3819,12 @@ def _push_replay(row: dict, ex: dict, clip_uris: list, clip_durations: list,
     # can compute a spanning bar; otherwise omit total_duration_s and let
     # cmd_status fall back to mpv's raw time-pos/duration.
     np_extras: dict = {"text": replay_text}
+    # A question read back is still a question: answering it stops it, as it
+    # does one read for the first time (hook_claude_code._stop_playing_ask).
+    # Since a thread's open plays its held questions (732b27b), most are heard
+    # this way, and untagged they read on after the answer.
+    if ex.get("ask"):
+        np_extras["ask"] = ex["ask"]
     # Which record is audible. A clip picker draws its ▸ from this: without it
     # the only handle on "where you are" is the text, and two turns can say the
     # same thing. Absent on a live readout, which is correct — the turn being
@@ -4627,6 +4633,20 @@ def cmd_replay_track(a) -> int:
         at = _read_speech_cut(replay_session).get("read")
         return isinstance(at, (int, float)) and at >= follow_began
 
+    replay_ask = bool((_np0.get("extras") or {}).get("ask"))
+
+    def _answered_now() -> bool:
+        """This replay is a question, and it was answered after it began
+        (submit's `ask` cut): it has nothing left to ask, and is heard."""
+        if not (replay_ask and replay_session):
+            return False
+        from .intake.submit import _read_speech_cut
+        at = _read_speech_cut(replay_session).get("ask")
+        if not (isinstance(at, (int, float)) and at >= follow_began):
+            return False
+        _mark_heard(heard_id)
+        return True
+
     def _read_check(idx: int) -> bool:
         """True once the sentence the reply landed on has been heard out:
         stop there, note where (the row's resume point), and tick."""
@@ -4883,6 +4903,10 @@ def cmd_replay_track(a) -> int:
         threading.Thread(target=_watch_player, name="replay-watch",
                          daemon=True).start()
         while True:
+            # Before `gone`: the answer's hook may have stopped the player
+            # already, and an answered question keeps no place to resume.
+            if _answered_now():
+                return _step_aside()
             if gone.is_set():
                 # Nothing is playing it any more. Stamp where it had got to,
                 # as a Stop does, so ▶ picks up there instead of the top.
@@ -5028,6 +5052,10 @@ def cmd_replay_track(a) -> int:
         if _barged_in():
             _note_displaced()
             return _step_aside()
+        if _answered_now():
+            # Answered: on to the reply queued behind it, if one is.
+            _step_aside()
+            return _then() if then_id is not None else 0
         if _ended_by_listener():
             # End of the question moves on to its answer.
             target = _active_speech_target()

@@ -208,3 +208,14 @@ def test_replay_resumes_a_kept_stop_however_old(monkeypatch):
     row = {"id": 7, "extras": {"stopped_at": {"sentence": 2, "at": 0}}}
     assert cli._resume_point(row, None) == 2
     assert cli._resume_point({"id": 8, "extras": {}}, None) is None
+
+
+def test_a_question_read_back_is_still_tagged_a_question(rig):
+    """What the answer's hook (`_stop_playing_ask`) looks for to stop it."""
+    row = _playlist_row()
+    ask = [{"question": "Install now?", "options": []}]
+    row["extras"]["ask"] = ask
+    cli._replay_row(row)
+    assert rig["rows"][-1]["extras"]["ask"] == ask
+    cli._replay_row(_playlist_row())
+    assert "ask" not in rig["rows"][-1]["extras"]
