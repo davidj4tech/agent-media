@@ -44,3 +44,27 @@ def test_bad_session_and_nothing_found_leave_text_alone(monkeypatch):
     _no_files(monkeypatch)
     assert refs.expand("see @[X]", {"X": "not-a-session"}) == "see @[X]"
     assert refs.expand("see @[X]", ["junk"]) == "see @[X]"
+
+
+class _Room:
+    thread = B
+
+    def title(self):
+        return "Mum"
+
+    def page(self, limit):
+        return [{"id": "$e1", "at": 0, "parts": [{"type": "text", "text": "running  late"}],
+                 "sender": {"name": "Mum"}, "role": "assistant"},
+                {"id": "$e2", "at": 60, "parts": [{"type": "text", "text": "ok"}],
+                 "sender": {"name": "David"}, "role": "user"}], True
+
+
+def test_room_chip_carries_its_tail(monkeypatch):
+    _no_files(monkeypatch)
+    from agent_media_server import matrix
+    monkeypatch.setattr(matrix, "room", lambda s: _Room() if s == B else None)
+    out = refs.expand("what did @[Mum] say?", {"Mum": B})
+    foot = out.split("\n\n", 1)[1].splitlines()
+    assert foot[0] == (f"@[Mum] is conversation {B} (Matrix room Mum; last 2 messages below, "
+                       f"older ones: media room-log {B} --before $e1)")
+    assert foot[1].endswith("] Mum: running late") and foot[2].endswith("] David: ok")

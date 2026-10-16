@@ -435,6 +435,12 @@ def _bearer(h: BaseHTTPRequestHandler) -> str:
     return (h.headers.get("Authorization") or "").removeprefix("Bearer").strip()
 
 
+def _is_room(session: str) -> bool:
+    from . import matrix
+
+    return sessions._SESSION.fullmatch(session) is not None and matrix.room(session) is not None
+
+
 # --- the routes -------------------------------------------------------------------
 
 def dispatch(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
@@ -599,7 +605,13 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         page = {"limit": qs.get("limit", [None])[0], "before": qs.get("before", [""])[0]}
         if session and _sealed(h, session):
             return True
-        if session:
+        if session and not _bearer(h) and _TOKEN_OK is not None and _TOKEN_OK(h) \
+                and _is_room(session):
+            # A Matrix room chipped into a message (refs.py): the host's own
+            # token reads it, so `media room-log` can page back. A room is
+            # the one thread an agent here cannot read off the disk.
+            ok, detail = threads.session_log(session, **page)
+        elif session:
             # `around=<message id>`: the page holding that message (a jump
             # from search, §6.14). Session form only.
             ok, detail = threads.log_for_session(session, _bearer(h), **page,

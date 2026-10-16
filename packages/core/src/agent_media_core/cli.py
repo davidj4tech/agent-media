@@ -8459,6 +8459,32 @@ def cmd_session_delete(a) -> int:
                       as_json=a.json)
 
 
+def cmd_room_log(a) -> int:
+    """A Matrix room's messages, as a chip's foot names them (refs.py): read
+    from the server with this host's own token, oldest first."""
+    import datetime as dt
+    import urllib.parse
+
+    from .phone_ask import _call
+
+    q = {"session": a.session, "messages": "1", "limit": str(a.limit)}
+    if a.before:
+        q["before"] = a.before
+    code, obj = _call("GET", "/conversation/log?" + urllib.parse.urlencode(q))
+    if code != 200 or not obj.get("ok"):
+        print(f"media room-log: {obj.get('error') or f'HTTP {code}'}", file=sys.stderr)
+        return 1
+    msgs = obj.get("messages") or []
+    for m in msgs:
+        text = " ".join(p.get("text") or "" for p in m.get("parts") or []).strip()
+        when = dt.datetime.fromtimestamp(m.get("at") or 0).strftime("%d %b %H:%M")
+        who = (m.get("sender") or {}).get("name") or m.get("role")
+        print(f"[{when}] {who}: {text}")
+    if obj.get("older") and msgs:
+        print(f"(older: media room-log {a.session} --before {msgs[0]['id']})")
+    return 0
+
+
 def cmd_session_seal(a) -> int:
     """Seal or unseal a thread (agent_media_server.seal)."""
     seal = _server_module("seal")
@@ -9405,6 +9431,13 @@ def _build_parser() -> argparse.ArgumentParser:
     sseal.add_argument("--unseal", action="store_true", help="put a sealed thread back")
     sseal.add_argument("--dry-run", action="store_true", help="say what would be sealed")
     sseal.set_defaults(func=cmd_session_seal)
+
+    rl = sub.add_parser("room-log",
+                        help="read a Matrix room's messages (the line under its @[chip])")
+    rl.add_argument("session", metavar="SESSION")
+    rl.add_argument("--before", default="", metavar="ID", help="only messages before this one")
+    rl.add_argument("--limit", type=int, default=60, help="how many (default 60, at most 500)")
+    rl.set_defaults(func=cmd_room_log)
 
     sc = sub.add_parser("selfcheck",
                         help="report this host's install health (key=value lines)")

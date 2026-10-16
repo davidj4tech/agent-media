@@ -14,6 +14,10 @@ The chip stays in the text as written. A chip the app sent no session for
 (a draft that came back from another device, a hand-typed one) is looked up
 by title among the threads, and used only when exactly one has it. One that
 resolves to nothing is left alone, with no line.
+
+A Matrix room (matrix.py) has no transcript on the disk, so its line says
+how to page back (`media room-log`) and its last messages follow it,
+indented, oldest first.
 """
 from __future__ import annotations
 
@@ -22,6 +26,8 @@ import re
 from agent_media_core import harnesses
 
 from . import sessions, transcript
+
+ROOM_TAIL = 40          # a room's messages carried under its chip
 
 CHIP = re.compile(r"@\[([^\[\]\n]{1,200})\]")
 
@@ -51,7 +57,29 @@ def _by_title(labels: list[str]) -> dict[str, str]:
             if len(found[label.casefold()]) == 1}
 
 
+def _room_tail(r, limit: int = ROOM_TAIL) -> str:
+    """`r`'s last `limit` messages as indented lines, oldest first, with how
+    to read further back."""
+    import datetime as dt
+
+    msgs, older = r.page(limit)
+    out = [f"(Matrix room {r.title()}; last {len(msgs)} messages below"
+           + (f", older ones: media room-log {r.thread} --before {msgs[0]['id']})"
+              if older and msgs else ")")]
+    for m in msgs:
+        text = " ".join(p.get("text") or "" for p in m.get("parts") or []).strip()
+        when = dt.datetime.fromtimestamp(m.get("at") or 0).strftime("%d %b %H:%M")
+        who = (m.get("sender") or {}).get("name") or m.get("role")
+        out.append(f"    [{when}] {who}: {' '.join(text.split())[:2000]}")
+    return "\n".join(out)
+
+
 def line_for(label: str, session: str) -> str:
+    from . import matrix
+
+    r = matrix.room(session)
+    if r is not None:
+        return f"@[{label}] is conversation {session} {_room_tail(r)}"
     harness, path = transcript.transcript_of(session)
     if path:
         return f"@[{label}] is conversation {session} ({harness}, transcript {path})"
