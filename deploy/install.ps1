@@ -14,9 +14,105 @@
 # QR code for the app.
 # Running it again updates. docs/proposals/2026-09-29-single-binary.md.
 #
-# $env:SASONICA_BINARY_BASE overrides where the binary is (tests).
+# Then one question, default No (David, 16 Oct 2026): also install Sasonica
+# Shell, which lets an AI assistant such as Claude run commands on this
+# computer through the hosted relay. It needs Node (Shell's installer gets it
+# with winget) and a free Sasonica account: Shell prints a link and a code to
+# sign in with. It is Shell's own one-liner, sasonica.com/shell.ps1 (its
+# get.ps1: a zip to %LOCALAPPDATA%\sasonica\shell, install.ps1 -Hosted, the
+# Scheduled Task sasonica-shell), run in a scope of its own. Read-Host asks;
+# a host that cannot (-NonInteractive, input redirected, a service) is No. A
+# Shell that does not install does not fail the server's install: it says how
+# to try again. Shell's command is `sasonica` too (sasonica.cmd in
+# %APPDATA%\sasonica\bin, after the server's folder on PATH, so the server's
+# sasonica.exe wins): beside the server it is also sasonica-shell.cmd.
+#
+# Switches, for an unattended install. Through irm, as a script block:
+#   & ([scriptblock]::Create((irm https://sasonica.com/install.ps1))) -Shell
+#   -Shell        install Shell without asking   ($env:SASONICA_WITH_SHELL = '1')
+#   -NoShell      skip it, no question            ($env:SASONICA_WITH_SHELL = '0')
+#   -ShellOnly    Shell alone, no server          ($env:SASONICA_ONLY = 'shell')
+#                 (the same as irm https://sasonica.com/shell.ps1 | iex)
+#
+# $env:SASONICA_BINARY_BASE overrides where the binary is (tests);
+# $env:SASONICA_SHELL_URL where Shell's one-liner is (a URL or a file: tests).
+# -Lib defines the functions and returns, installing nothing (CI).
+
+param(
+  [switch]$Shell,
+  [switch]$NoShell,
+  [switch]$ShellOnly,
+  [switch]$Lib
+)
 
 $ErrorActionPreference = 'Stop'
+
+# Shell or not. The switches, then $env:SASONICA_WITH_SHELL, then the
+# question; no question where nobody can answer it.
+function Test-CanAsk {
+  if (-not [Environment]::UserInteractive) { return $false }
+  if ([Environment]::GetCommandLineArgs() | Where-Object { $_ -match '^-noni' }) { return $false }
+  try { if ([Console]::IsInputRedirected) { return $false } } catch { }
+  return $true
+}
+
+function Get-ShellChoice {
+  param([switch]$Yes, [switch]$No)
+  if ($Yes) { return $true }
+  if ($No) { return $false }
+  switch -regex ("$env:SASONICA_WITH_SHELL") {
+    '^(1|y|yes|true)$' { return $true }
+    '^(0|n|no|false)$' { return $false }
+  }
+  if (-not (Test-CanAsk)) { return $false }
+  Write-Host ''
+  $a = Read-Host ("Also let an AI assistant such as Claude run commands on this computer`n" +
+                  "(Sasonica Shell)? It needs a free Sasonica account. [y/N]")
+  return ("$a" -match '^\s*y')
+}
+
+# Shell's `sasonica` loses to the server's on PATH: give it its own name too.
+function Set-ShellAlias {
+  $shim = Join-Path $env:APPDATA 'sasonica\bin\sasonica.cmd'
+  $server = Join-Path $env:USERPROFILE '.local\bin\sasonica.exe'
+  if ((Test-Path $shim) -and (Test-Path $server)) {
+    Copy-Item -Force $shim (Join-Path (Split-Path -Parent $shim) 'sasonica-shell.cmd')
+    Write-Host "Sasonica Shell's command here is sasonica-shell (sasonica is the server)."
+  }
+}
+
+# Shell's own one-liner in a scope of its own (its $ErrorActionPreference and
+# `return` stay there); its output to the screen, where its sign-in link and
+# code are. Returns whether it installed.
+function Invoke-ShellStep {
+  param([switch]$Alone)
+  $src = if ($env:SASONICA_SHELL_URL) { $env:SASONICA_SHELL_URL } else { 'https://sasonica.com/shell.ps1' }
+  Write-Host "`n== Sasonica Shell"
+  Write-Host 'Shell prints a link and a code: open the link, sign in with your Sasonica'
+  Write-Host 'account (or make one, free), check the code matches and press Join.'
+  try {
+    $text = if (Test-Path -LiteralPath $src) { Get-Content -Raw -LiteralPath $src }
+            else { Invoke-RestMethod -UseBasicParsing $src }
+    & ([scriptblock]::Create([string]$text)) | Out-Host
+    Set-ShellAlias
+    return $true
+  } catch {
+    Write-Warning "Sasonica Shell did not install: $($_.Exception.Message)"
+    if (-not $Alone) { Write-Host 'The server is installed and is not affected.' }
+    Write-Host 'To try again:'
+    Write-Host '  irm https://sasonica.com/shell.ps1 | iex'
+    return $false
+  }
+}
+
+if ($Lib) { return }
+
+if ($ShellOnly -or $env:SASONICA_ONLY -eq 'shell') {
+  # Write-Error, not exit: under irm | iex, exit would close their window.
+  if (-not (Invoke-ShellStep -Alone)) { Write-Error 'Sasonica Shell did not install.' }
+  return
+}
+
 $base = if ($env:SASONICA_BINARY_BASE) { $env:SASONICA_BINARY_BASE } else {
   'https://github.com/davidj4tech/agent-media/releases/download/server-latest' }
 
@@ -57,33 +153,41 @@ if (-not ($userPath -split ';' | Where-Object { $_ -eq $bin })) {
 
 & $exe install
 if ($LASTEXITCODE -ne 0) { Write-Error 'sasonica install failed.' }
+# Shell, installed before the server: its command keeps a name of its own.
+Set-ShellAlias
 
-Write-Host "`n== Pairing"
-$up = $false
-foreach ($i in 1..30) {
-  try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 'http://127.0.0.1:8781/healthz' | Out-Null; $up = $true; break }
-  catch { Start-Sleep 1 }
-}
-if (-not $up) {
-  Write-Host 'The server is not answering on port 8781 yet; when it is, pair with:'
-  Write-Host "  sasonica pair --device `"$env:COMPUTERNAME`""
-  return
-}
-# The quick tunnel (sasonica install, where the phone has no other way in):
-# pair with its https address once cloudflared has named it.
-if (Get-ScheduledTask -TaskPath '\Sasonica\' -TaskName 'quick-tunnel' -ErrorAction SilentlyContinue) {
-  $url = (& $exe media-tunnel url --wait 60) | Select-Object -First 1
-  if ($LASTEXITCODE -ne 0 -or -not $url) {
-    Write-Host 'The quick tunnel has not started yet; when it has, pair with:'
+# A function, so its early returns still reach the Shell step after it.
+function Invoke-Pairing {
+  Write-Host "`n== Pairing"
+  $up = $false
+  foreach ($i in 1..30) {
+    try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 'http://127.0.0.1:8781/healthz' | Out-Null; $up = $true; break }
+    catch { Start-Sleep 1 }
+  }
+  if (-not $up) {
+    Write-Host 'The server is not answering on port 8781 yet; when it is, pair with:'
     Write-Host "  sasonica pair --device `"$env:COMPUTERNAME`""
-    Write-Host '(Task Scheduler -> Sasonica -> quick-tunnel)'
     return
   }
-  Write-Host "The phone reaches this computer at $url (a Cloudflare quick tunnel)."
-  foreach ($i in 1..30) {
-    try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 "$url/healthz" | Out-Null; break }
-    catch { Start-Sleep 2 }
+  # The quick tunnel (sasonica install, where the phone has no other way in):
+  # pair with its https address once cloudflared has named it.
+  if (Get-ScheduledTask -TaskPath '\Sasonica\' -TaskName 'quick-tunnel' -ErrorAction SilentlyContinue) {
+    $url = (& $exe media-tunnel url --wait 60) | Select-Object -First 1
+    if ($LASTEXITCODE -ne 0 -or -not $url) {
+      Write-Host 'The quick tunnel has not started yet; when it has, pair with:'
+      Write-Host "  sasonica pair --device `"$env:COMPUTERNAME`""
+      Write-Host '(Task Scheduler -> Sasonica -> quick-tunnel)'
+      return
+    }
+    Write-Host "The phone reaches this computer at $url (a Cloudflare quick tunnel)."
+    foreach ($i in 1..30) {
+      try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 "$url/healthz" | Out-Null; break }
+      catch { Start-Sleep 2 }
+    }
   }
+  Write-Host 'Scan this with Sasonica (Pair a server), or paste the link into its pairing screen:'
+  & $exe pair --device $env:COMPUTERNAME | Out-Host
 }
-Write-Host 'Scan this with Sasonica (Pair a server), or paste the link into its pairing screen:'
-& $exe pair --device $env:COMPUTERNAME
+Invoke-Pairing
+
+if (Get-ShellChoice -Yes:$Shell -No:$NoShell) { Invoke-ShellStep | Out-Null }

@@ -69,6 +69,48 @@ the binary, opencode, both services up, a pairing code redeemed. The server
 is ~237 MB there (the file and its unpacked copy), opencode 240 MB; the
 whole Debian 871 MB, where it was 2.0 GB with Node.
 
+**Sasonica Shell as the last step, opt-in** (David, 16 Oct 2026). After the
+server is installed and paired, on Linux, a Mac and Windows (not Termux),
+one question, default No:
+
+    Also let an AI assistant such as Claude run commands on this computer
+    (Sasonica Shell)? It needs a free Sasonica account. [y/N]
+
+Yes runs Shell's own hosted install: on Windows its one-liner,
+`sasonica.com/shell.ps1` (get.ps1 → `install.ps1 -Hosted`); on Linux and a
+Mac its repository as a tarball to `~/.local/share/sasonica/shell` and its
+`install.sh --hosted`. Shell gets Node if it is missing and prints a link and
+a code to sign in with a Sasonica account. A Shell that fails does not fail
+the install; it prints how to try again. The question comes from `/dev/tty`
+under `curl | bash` and from Read-Host under `irm | iex`; with no terminal, or
+a host that cannot ask, the answer is No.
+
+| | install.sh | install.ps1 |
+|---|---|---|
+| Shell without asking | `SASONICA_WITH_SHELL=1` | `-Shell`, or the same variable |
+| no Shell, no question | `SASONICA_WITH_SHELL=0` | `-NoShell`, or the same variable |
+| Shell alone, no server | `SASONICA_ONLY=shell`, `bash -s shell`, or `sasonica.com/shell` (deploy/shell.sh) | `-ShellOnly`, `SASONICA_ONLY=shell`, or `sasonica.com/shell.ps1` |
+
+Through `irm`, a switch needs the script block form:
+`& ([scriptblock]::Create((irm https://sasonica.com/install.ps1))) -Shell`.
+
+Both are called `sasonica`. On Linux and a Mac, Shell's installer writes its
+command to `~/.local/bin/sasonica`, which is the server's binary: install.sh
+keeps a hard link to the server's file while Shell installs, then moves
+Shell's shim to `~/.local/bin/sasonica-shell` and puts the server back. A
+Shell installed before the server is moved there the same way. On Windows
+nothing is overwritten (Shell's `sasonica.cmd` is in `%APPDATA%\sasonica\bin`,
+after the server's folder on PATH), but the server's `sasonica.exe` wins, so
+install.ps1 copies Shell's to `sasonica-shell.cmd`. Nothing else collides:
+Shell's service is `sasonica-shell` (systemd), `com.sasonica.shell` (launchd)
+or the root Scheduled Task `sasonica-shell`, beside the server's
+`sasonica-canvas`/`-sessiond`/`-quick-tunnel`, `com.sasonica.*` and
+`\Sasonica\*`; Shell listens on no port (8781 and 8789 are the server's); its
+config, `~/.config/sasonica` (`%APPDATA%\sasonica`), is one the server only
+reads (shell_signin.py), the server's own being `~/.config/agent-media.env`.
+Tested: `packages/sasonica/tests/test_install_sh.py` (stand-ins for the
+binary, Shell and /healthz) and `test_install_ps1.py` (Windows CI).
+
 ## Does it need a multiplexer?
 
 No, and headless-first is the decision (David, 29 Sep). A headless session is
