@@ -189,8 +189,29 @@ class Model:
         elif o == "meta":
             self.stored[str(op.get("name"))] = op.get("value")
 
-    def report(self, r: dict, current: bool) -> None:
-        """The phone's own word. `current`: it has applied every frame sent."""
+    def report(self, r: dict, current: bool, settled: bool = False) -> None:
+        """The phone's own word. `current`: it has applied every frame sent.
+        `settled`: it has applied every frame but appends (`inert`), so where
+        it is playing is news even though its list is still short."""
+        if not current and settled:
+            # Behind only on appends: a reply's sentences are appended as they
+            # render, a frame every second or so, and a report is built before
+            # the newest one lands — so for the first 10-15 s of a reply no
+            # report was current, `pos` stayed 0 here while the phone read on
+            # through sentences 1, 2, 3, and the follow loop stamped sentence
+            # 0's start late by all of it, then 1-3 on top of it. The app read
+            # that as the voice ahead of the clock and pushed the bold ahead by
+            # 5-10 s for the rest of the reply (follow-trace.log, 16 Oct 2026:
+            # starts [12.7, 14.0, 14.0, 14.0], skew -8.2). The playhead is
+            # taken; the count is not (the phone's list is short by the
+            # appends), nor idle/eof (a phone out of clips it was sent later
+            # is not the end).
+            pos = int(r.get("pos", self.pos))
+            if 0 <= pos < len(self.entries) and pos != self.pos:
+                self.pos = pos
+                self.duration = -1.0
+            self.paused = bool(r.get("paused", self.paused))
+            self.speed = float(r.get("speed", self.speed))
         if current:
             count = int(r.get("count", len(self.entries)))
             pos = int(r.get("pos", self.pos))
@@ -217,7 +238,7 @@ class Model:
             self.speed = float(r.get("speed", self.speed))
             self.idle = bool(r.get("idle", self.idle))
             self.eof = bool(r.get("eof", self.eof))
-        if (current or int(r.get("pos", -2)) == self.pos) and "time_pos" in r:
+        if (current or settled or int(r.get("pos", -2)) == self.pos) and "time_pos" in r:
             self._at(float(r["time_pos"]))
             self.duration = float(r.get("duration", self.duration))
         if isinstance(r.get("ringer"), dict):
@@ -244,6 +265,9 @@ class _Hub:
         # "current" — a report built before the newest frames reached it
         # emptied a reply it then played (9 Oct 2026).
         self.seq = int(time.time() * 1000)
+        #: The last frame that did more than append (`inert`): a report that
+        #: has applied it knows where the phone is playing (Model.report).
+        self.seq_moved = self.seq
         #: stream id → (device id, connected at); the newest one plays.
         self.listeners: dict[int, tuple[str, float]] = {}
         self._next_listener = 0
@@ -260,6 +284,9 @@ class _Hub:
             return self.listeners[_newest(self.listeners)][0]
 
 
+_TRACE_LOCK = threading.Lock()
+
+
 def trace(event: str, hub: "_Hub", **kw) -> None:
     """One line in state_dir/frames-timing.log: when a load was sent, when the
     stream delivered it, when the phone first reported on it and first knew
@@ -271,8 +298,12 @@ def trace(event: str, hub: "_Hub", **kw) -> None:
         path = state_dir() / "frames-timing.log"
         line = json.dumps({"at": round(time.time(), 3), "ch": hub.channel,
                            "event": event, **kw}, separators=(",", ":"))
-        old = path.read_text().splitlines() if path.exists() else []
-        path.write_text("\n".join((old + [line])[-300:]) + "\n")
+        # One writer at a time: two threads each reading the file and
+        # writing back their own copy lost each other's lines, and the log
+        # held a dozen lines instead of 300 (16 Oct 2026).
+        with _TRACE_LOCK:
+            old = path.read_text().splitlines() if path.exists() else []
+            path.write_text("\n".join((old + [line])[-300:]) + "\n")
     except Exception:  # noqa: BLE001 — a trace is never worth a frame
         pass
 
@@ -342,7 +373,9 @@ def report(device: str, body: dict, channel: str = "speech") -> tuple[bool, dict
         return False, {"status": 409, "error": f"this device is not the one {channel} plays on"}
     with hub.lock:
         try:
-            hub.model.report(body, current=int(body.get("seq", -1)) >= hub.seq)
+            got = int(body.get("seq", -1))
+            hub.model.report(body, current=got >= hub.seq,
+                             settled=got >= hub.seq_moved)
         except (TypeError, ValueError):
             return False, {"status": 400, "error": "malformed state"}
         hub.reported_at = time.time()
@@ -390,6 +423,14 @@ def _trace_played(hub: "_Hub", extra) -> None:
               phone_at=round(at / 1000.0, 3))
 
 
+def inert(op: dict) -> bool:
+    """An op that changes neither where the player is nor whether it plays:
+    an append (not `append-play`, which starts an idle player) or stored
+    metadata."""
+    o = op.get("op")
+    return (o == "load" and str(op.get("mode") or "replace") == "append") or o == "meta"
+
+
 def _send(ops: list[dict], hub: "_Hub") -> None:
     """Apply `ops` here and send them to the phone as one frame."""
     if not ops:
@@ -398,6 +439,8 @@ def _send(ops: list[dict], hub: "_Hub") -> None:
         for op in ops:
             hub.model.apply(op)
         hub.seq += 1
+        if not all(inert(op) for op in ops):
+            hub.seq_moved = hub.seq
         hub.frames.append({"seq": hub.seq, "at": round(time.time(), 3), "ops": ops})
         if any(o.get("op") in ("load", "pos") for o in ops):
             hub.traced = {"seq": hub.seq, "at": time.time()}

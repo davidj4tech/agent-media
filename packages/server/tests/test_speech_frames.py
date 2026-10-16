@@ -430,3 +430,37 @@ def test_a_reconnect_on_a_coarse_clock_still_gets_what_it_missed(server, screen,
     the same clock tick as the listener before it."""
     monkeypatch.setattr(speech_frames, "time", _CoarseClock())
     test_a_reconnecting_stream_gets_what_it_missed(server, screen, endpoint)
+
+
+def test_a_report_behind_only_on_appends_still_says_where_the_phone_is(endpoint):
+    """A reply's sentences are appended as they render, so a report is built
+    before the newest append lands and none is current for the first 10-15 s.
+    Its `pos` was dropped: the server held sentence 0 while the phone read on,
+    the follow loop stamped the first sentences late (starts [12.7, 14.0,
+    14.0, 14.0]) and the app pushed the bold 8 s ahead (16 Oct 2026)."""
+    _listening()
+    ipc = Ipc(endpoint)
+    ipc("am-claim-play", "user-data/am-owner", {"owner": "reply", "deadline": 2000}, 1000, [
+        ["stop"], ["playlist-clear"],
+        ["loadfile", "tts:a?text=Yes.", "append"],
+        ["set_property", "pause", False],
+        ["set_property", "playlist-pos", 0],
+    ])
+    started = speech_frames.seq()
+    ipc("loadfile", "tts:b?text=Two.", "append")
+    ipc("loadfile", "tts:c?text=Three.", "append")
+    # Built when the phone had the claim and b, not yet c.
+    speech_frames.report("d_test", {"seq": started + 1, "pos": 1, "count": 2,
+                                    "paused": False, "idle": False,
+                                    "time_pos": 0.5, "duration": 3.0})
+    assert ipc("get_property", "playlist-pos")["data"] == 1
+    assert 0.5 <= ipc("get_property", "time-pos")["data"] < 1.5
+    # Its short list is not ours: c is still queued, and the reply goes on.
+    assert ipc("get_property", "playlist-count")["data"] == 3
+    assert ipc("get_property", "idle-active")["data"] is False
+    # Behind on a jump made here, it is old news as before.
+    ipc("set_property", "playlist-pos", 2)
+    speech_frames.report("d_test", {"seq": started + 2, "pos": 1, "count": 3,
+                                    "time_pos": 1.0})
+    assert ipc("get_property", "playlist-pos")["data"] == 2
+    ipc.close()
