@@ -232,3 +232,54 @@ def test_higher_priority_yield_resumes_the_reply(monkeypatch):
     assert sink.claims >= 2
     assert (coord.before, coord.after) == (1, 1)
     assert state.get_now_playing("speech") is None
+
+
+def test_the_time_away_is_not_left_on_the_replys_clock(monkeypatch):
+    """Back from stepping aside, the phone starts the sentence it was on again
+    from its beginning: the reply's clock must read that sentence's start
+    then, not its start plus however long the other speaker had. Left on, the
+    time away was a hole before the next sentence that the app read as lag,
+    and the bold went back three sentences (David, 16 Oct 2026)."""
+    monkeypatch.setattr(S, "render_text", _fake_render)
+    monkeypatch.setenv("MEDIA_RENDER_ENGINE", "edge")
+    monkeypatch.setenv("MEDIA_RENDER_VOICE", "en-US-AriaNeural")
+
+    real_time = S.time.time
+    away = {"s": 0.0}
+    monkeypatch.setattr(S.time, "time", lambda: real_time() + away["s"])
+    calls = {"n": 0}
+
+    def fake_should_yield(self):
+        calls["n"] += 1
+        return calls["n"] == 3
+
+    def fake_yield(self):
+        away["s"] += 40.0            # the other speaker's turn
+
+    monkeypatch.setattr(S._SpeechPlaybackLock, "should_yield", fake_should_yield)
+    monkeypatch.setattr(S._SpeechPlaybackLock, "yield_to_higher", fake_yield)
+
+    state = StateStore()
+    rows = []
+    real_set = state.set_now_playing
+
+    def recording_set(sink_name, **kw):
+        if sink_name == "speech":
+            rows.append((S.time.time(), dict(kw.get("extras") or {})))
+        return real_set(sink_name, **kw)
+
+    monkeypatch.setattr(state, "set_now_playing", recording_set)
+    ev = Event(text="First sentence here. Second sentence here.",
+               source=Source.CLI, target=PHONE, metadata={"pane": "%7"})
+    S.submit_event(ev, state=state, sink=_ResumeSink(), coordinator=_RecordingCoord())
+
+    after = [(t, ex) for t, ex in rows
+             if away["s"] and ex.get("current_sentence_idx") == 1
+             and ex.get("play_started_at") and t >= rows[0][0] + 40.0]
+    assert after, "no row was written after the resume"
+    t, ex = after[0]
+    starts = ex.get("clip_starts_s") or []
+    assert len(starts) >= 2
+    elapsed = S.elapsed_from_row(ex, 0.0) - (real_time() + away["s"] - t)
+    assert elapsed == pytest.approx(starts[1], abs=1.0), (
+        "the time away was counted as reply")

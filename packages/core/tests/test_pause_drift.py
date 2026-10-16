@@ -227,3 +227,45 @@ def test_the_resume_correction_works_again_end_to_end():
     stamp_speech_pause(st, False)                   # resume, four seconds on
     assert elapsed_from_row(st.ex, 0) == pytest.approx(held, abs=0.3), \
         "the four seconds paused were counted as four seconds spoken"
+
+
+# --- a pause nobody stamped the end of ---------------------------------------
+#
+# The earbud, the notification's controls and the app taking the output back
+# pause and resume the phone's player without the toggle. Readings date the
+# pause (carry_pause_stamp); the first reading that says playing must take it
+# off the clock, or the next sentence is stamped late by the whole pause.
+
+from agent_media_core.intake.submit import credit_resume
+
+
+def test_a_reading_that_says_playing_credits_the_pause_back():
+    now = time.time()
+    prior = {"play_started_at": now - 30.0, "paused_at": now - 20.0,
+             "live_pos_at": now - 21.0}
+    held = elapsed_from_row(prior, 0)
+    credit_resume(prior, {"pause": False, "_read_at": now})
+    assert "paused_at" not in prior
+    assert prior["play_started_at"] == pytest.approx(now - 10.0)
+    assert prior["live_pos_at"] == pytest.approx(now - 1.0)
+    assert elapsed_from_row(prior, 0) == pytest.approx(held, abs=0.1)
+
+
+def test_a_reading_that_says_paused_credits_nothing():
+    prior = {"play_started_at": 100.0, "paused_at": 120.0}
+    credit_resume(prior, {"pause": True})
+    assert prior == {"play_started_at": 100.0, "paused_at": 120.0}
+
+
+def test_no_reading_or_no_pause_field_credits_nothing():
+    """An incomplete answer is no answer: absent `pause` is not "playing"."""
+    for live in (None, {"time-pos": 3.0}):
+        prior = {"play_started_at": 100.0, "paused_at": 120.0}
+        credit_resume(prior, live)
+        assert prior["paused_at"] == 120.0
+
+
+def test_a_toggle_resume_already_credited_is_not_credited_twice():
+    prior = {"play_started_at": 100.0}
+    credit_resume(prior, {"pause": False})
+    assert prior == {"play_started_at": 100.0}

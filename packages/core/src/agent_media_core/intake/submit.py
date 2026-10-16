@@ -1177,6 +1177,37 @@ def carry_pause_stamp(prior: dict, extras: dict, live_seen: bool) -> None:
         extras["paused_at"] = held
 
 
+def credit_resume(prior: dict, live: Optional[dict]) -> None:
+    """Take a pause off the clock when a reading shows it is over, in place.
+
+    `stamp_speech_pause` does this for a resume someone issued through the
+    toggle. A pause made and ended on the phone itself — the earbud, the
+    notification's controls, the app taking the output back — is seen only
+    as readings: one that says paused dates it (`carry_pause_stamp`), and the
+    first that says playing used to drop the stamp without the correction, so
+    the whole pause stayed on the clock as if spoken. The next sentence's
+    start was stamped that much late, the app read the hole as lag, and the
+    bold went back by it (David, 16 Oct 2026).
+
+    The resume happened at or before this reading, so the credit can be a
+    poll too long, never too short by more than that.
+    """
+    if live is None or "pause" not in live or live.get("pause"):
+        return
+    paused_at = prior.get("paused_at")
+    if not paused_at:
+        return
+    resumed = float(live.get("_read_at") or time.time())
+    held = max(0.0, resumed - float(paused_at))
+    started = float(prior.get("play_started_at") or 0)
+    if started:
+        prior["play_started_at"] = started + held
+    read_at = float(prior.get("live_pos_at") or 0)
+    if read_at:
+        prior["live_pos_at"] = read_at + held
+    prior.pop("paused_at", None)
+
+
 class _SentenceFollower:
     """Keep `current_sentence` moving for a lane whose audio plays elsewhere.
 
@@ -4843,6 +4874,10 @@ def _submit_event(event: Event,
                 now = time.time()
                 if mark_clock["origin"] is None:
                     mark_clock["origin"] = now
+                elif mark_clock.pop("rebased", False):
+                    # Just re-set by the resume after a yield (_mark's
+                    # `rebase`): the row's origin is from before it.
+                    pass
                 else:
                     # A pause since the last mark moved the origin on the row.
                     mark_clock["origin"] = float(prior.get("play_started_at")
@@ -4896,7 +4931,8 @@ def _submit_event(event: Event,
 
             # Shared per-clip marker — drives the popup (status bar, current
             # sentence, skip map). Identical for both playback paths below.
-            def _mark(idx: int, live: Optional[dict] = None) -> None:
+            def _mark(idx: int, live: Optional[dict] = None, *,
+                      rebase: bool = False, paused: bool = False) -> None:
                 # One consistent view of the clip lists: a streaming reply
                 # appends to them from another thread, and a row whose
                 # sentences, clips and durations disagree in length is one a
@@ -4973,6 +5009,24 @@ def _submit_event(event: Event,
                     # over us and is what is heard now. The row says so; this
                     # reply must not write its own sentences over it.
                     return
+                if rebase:
+                    # Back after stepping aside (a yield): the phone starts
+                    # sentence `idx` again from its beginning, now. The time
+                    # away — and a pause from before it, whose stamp went
+                    # with the row the replay wrote over — is not reply.
+                    # Left on the clock it was a hole before the next
+                    # sentence's start that the clip lengths summed do not
+                    # have, read by the app as lag: the bold went back three
+                    # sentences (David, 16 Oct 2026, reply d91548d3).
+                    now = time.time()
+                    if idx < len(mark_clock["starts"]):
+                        mark_clock["origin"] = now - float(mark_clock["starts"][idx])
+                        mark_clock["rebased"] = True
+                    prior.pop("paused_at", None)
+                    if paused:
+                        prior["paused_at"] = now   # comes back paused: frozen here
+                elif prior.get("writer_pid") == os.getpid():
+                    credit_resume(prior, live)
                 _stamp_start(idx, live, prior, extras)
                 if live is not None:
                     d, at = live.get("duration"), live.get("playlist-pos")
@@ -5176,7 +5230,7 @@ def _submit_event(event: Event,
                         _pl_started = time.monotonic() - offsets[resume_i]
                         last_broker_refresh = time.monotonic()
                         mark_i = resume_i
-                        _mark(resume_i)
+                        _mark(resume_i, rebase=True, paused=resume_paused)
                         continue
                     # Keep our cross-host broker claim alive while we play so
                     # another machine's reply doesn't take it for a stalled one.
