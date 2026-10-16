@@ -1,6 +1,9 @@
 # Sasonica's server on Windows, in one line (PowerShell):
 #
-#   irm https://raw.githubusercontent.com/davidj4tech/agent-media/main/deploy/install.ps1 | iex
+#   irm https://sasonica.com/install.ps1 | iex
+#
+# (sasonica.com/install.ps1 redirects here; until 16 Oct 2026 it was Sasonica
+# Shell, now at sasonica.com/shell.ps1.)
 #
 # The Windows twin of deploy/install.sh: the server as one file
 # (sasonica-windows-x86_64.exe, from the server-latest release, built by
