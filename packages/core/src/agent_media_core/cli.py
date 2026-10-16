@@ -4050,8 +4050,9 @@ def cmd_replay(a) -> int:
                 row = None
         if row is not None:
             then_id = _next_unheard(row)
-            return (_replay_row(row, then_id=then_id) if start is None
-                    else _replay_row(row, from_sentence=start, then_id=then_id))
+            kw = {"then_id": then_id} if then_id is not None else {}
+            return (_replay_row(row, **kw) if start is None
+                    else _replay_row(row, from_sentence=start, **kw))
         print(f"media replay: no clip with id {a.id}", file=sys.stderr)
         return 1
     # A thread named by the caller (the app's Replay, inside that thread):
