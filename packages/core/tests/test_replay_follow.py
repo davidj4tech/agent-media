@@ -368,8 +368,11 @@ def test_a_position_without_a_duration_is_not_the_phones_word(store, monkeypatch
 # pushed; the phone stalled at sentence 15 and the reply lost its Play.
 
 def _held_track(monkeypatch, readings, offsets=(0.0, 0.1, 0.2),
-                durs=(0.1, 0.1, 0.1)):
+                durs=(0.1, 0.1, 0.1), then_id=None, spawned=None):
     heard: list = []
+    if spawned is not None:
+        monkeypatch.setattr(cli.subprocess, "Popen",
+                            lambda argv, **kw: spawned.append(argv))
     stops: list = []
     monkeypatch.setattr(cli, "_mark_heard", lambda rid: heard.append(rid))
     monkeypatch.setattr("agent_media_core.sinks.speech.mark_speech_stopped",
@@ -386,7 +389,8 @@ def _held_track(monkeypatch, readings, offsets=(0.0, 0.1, 0.2),
     monkeypatch.setattr(cli, "_replay_read_player", read)
     cli.cmd_replay_track(argparse.Namespace(
         sentences=cli.json.dumps(SENTS), offsets=cli.json.dumps(list(offsets)),
-        pane="", durations=cli.json.dumps(list(durs)), heard_id=14231))
+        pane="", durations=cli.json.dumps(list(durs)), heard_id=14231,
+        then_id=then_id))
     return heard, stops
 
 
@@ -427,3 +431,21 @@ def test_a_player_that_never_answered_is_taken_at_the_clock(store, monkeypatch):
     is all there is to go on, as before."""
     heard, _ = _held_track(monkeypatch, [{}])
     assert heard == [14231]
+
+
+def test_heard_out_on_the_phone_it_goes_on_to_the_next_unheard(store, monkeypatch):
+    """16 Oct 2026: a thread opened with two unheard replies read the first
+    and stopped — this lane marked it heard but never handed on."""
+    spawned: list = []
+    heard, _ = _held_track(monkeypatch, [_on(0), _on(1), _on(2)] * 3 + [IDLE],
+                           then_id=14232, spawned=spawned)
+    assert heard == [14231]
+    assert [argv[-3:] for argv in spawned] == [["replay", "--id", "14232"]]
+
+
+def test_stalled_on_the_phone_it_goes_no_further(store, monkeypatch):
+    spawned: list = []
+    heard, _ = _held_track(
+        monkeypatch, [_on(0), _on(1)] * 2 + [IDLE], offsets=(0.0, 0.1, 30.0),
+        durs=(0.1, 0.1, 30.0), then_id=14232, spawned=spawned)
+    assert heard == [] and not any("replay" in argv for argv in spawned)

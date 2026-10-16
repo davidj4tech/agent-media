@@ -4757,6 +4757,28 @@ def cmd_replay_track(a) -> int:
             pass
         return 0
 
+    then_id = getattr(a, "then_id", None)
+
+    def _then() -> int:
+        """Start the row queued behind this one (`--then-id`: the reply after
+        a replayed question, or the thread's next unheard reply), as its own replay with its own follower. The
+        token goes first, or that replay would wait on us for it. Both lanes
+        hand on: the clock lane (the phone) as well as the player-polling one."""
+        if token is not None:
+            try:
+                token.release()
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            subprocess.Popen([sys.executable, "-m", "agent_media_core.cli",
+                              "replay", "--id", str(then_id)],
+                             start_new_session=True, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+        except OSError:
+            pass
+        return 0
+
     if offsets:
         # One clip, a known timeline, and — on the lane that produces those —
         # a player 400ms away behind a circuit breaker. Polling it is what
@@ -4906,7 +4928,8 @@ def cmd_replay_track(a) -> int:
             # Before `gone`: the answer's hook may have stopped the player
             # already, and an answered question keeps no place to resume.
             if _answered_now():
-                return _step_aside()
+                _step_aside()
+                return _then() if then_id is not None else 0
             if gone.is_set():
                 # Nothing is playing it any more. Stamp where it had got to,
                 # as a Stop does, so ▶ picks up there instead of the top.
@@ -4915,7 +4938,9 @@ def cmd_replay_track(a) -> int:
                 # reply has been heard.
                 if reached.is_set():
                     _mark_heard(heard_id)
-                elif last < len(timeline["offsets"]) - 1:
+                    _finish()
+                    return _then() if then_id is not None else 0
+                if last < len(timeline["offsets"]) - 1:
                     from .sinks.speech import mark_speech_stopped
                     mark_speech_stopped(sentence=max(last, 0), tick=False)
                 return _finish()
@@ -4925,6 +4950,8 @@ def cmd_replay_track(a) -> int:
             if _ended_by_listener():
                 target = _active_speech_target()
                 _step_aside()
+                if then_id is not None:
+                    return _then()
                 _end_tick(target)
                 return 0
             # The row owns the timeline: `media skip` re-stamps its origin and
@@ -4953,6 +4980,10 @@ def cmd_replay_track(a) -> int:
                 # there is to go on.
                 if reached.is_set() or not answered.is_set():
                     _mark_heard(heard_id)
+                    _finish()
+                    # The phone lane (David, 16 Oct 2026: opening a thread
+                    # read the first of two unheard replies, not the second).
+                    return _then() if then_id is not None else 0
                 return _finish()
             idx = 0
             for i, off in enumerate(offsets):
@@ -4990,27 +5021,6 @@ def cmd_replay_track(a) -> int:
         except Exception:  # noqa: BLE001
             pass
         time.sleep(0.05)
-
-    then_id = getattr(a, "then_id", None)
-
-    def _then() -> int:
-        """Start the row queued behind this one (`--then-id`: the reply after
-        a replayed question), as its own replay with its own follower. The
-        token goes first, or that replay would wait on us for it."""
-        if token is not None:
-            try:
-                token.release()
-            except Exception:  # noqa: BLE001
-                pass
-        try:
-            subprocess.Popen([sys.executable, "-m", "agent_media_core.cli",
-                              "replay", "--id", str(then_id)],
-                             start_new_session=True, stdin=subprocess.DEVNULL,
-                             stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL)
-        except OSError:
-            pass
-        return 0
 
     began = time.time()
 
