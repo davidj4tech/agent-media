@@ -34,6 +34,19 @@ foreach ($k in 'SASONICA_WITH_SHELL', 'SASONICA_ONLY', 'SASONICA_SHELL_URL') {
 
 . $install -Lib
 
+# The architecture (David, 16 Oct 2026: ARM64 runs the x64 build emulated):
+# the system's own (registry), whatever this PowerShell is emulated as; then
+# .NET's answer, then the variables.
+Check ((Get-WindowsArch -Native 'AMD64' -OS 'X64' -W6432 '' -Proc 'AMD64') -eq 'AMD64') 'arch: x64'
+Check ((Get-WindowsArch -Native 'ARM64' -OS 'X64' -W6432 '' -Proc 'AMD64') -eq 'ARM64') 'arch: ARM64 from an emulated x64 PowerShell'
+Check ((Get-WindowsArch -Native 'x86' -OS 'X86' -W6432 '' -Proc 'x86') -eq 'x86') 'arch: 32-bit'
+Check ((Get-WindowsArch -Native '' -OS 'Arm64' -W6432 '' -Proc 'AMD64') -eq 'ARM64') 'arch: no registry answer, OSArchitecture'
+Check ((Get-WindowsArch -Native '' -OS '' -W6432 'ARM64' -Proc 'x86') -eq 'ARM64') 'arch: no .NET answer, PROCESSOR_ARCHITEW6432'
+Check ((Get-WindowsArch -Native '' -OS '' -W6432 '' -Proc 'ARM64') -eq 'ARM64') 'arch: no .NET answer, PROCESSOR_ARCHITECTURE'
+if ($env:SASONICA_EXPECT_ARCH) {
+  Check ((Get-WindowsArch) -eq $env:SASONICA_EXPECT_ARCH) "arch: this machine is $env:SASONICA_EXPECT_ARCH (said $(Get-WindowsArch))"
+}
+
 # The question: no terminal to ask (-NonInteractive) is No; the variable and
 # the switches answer it.
 Check (-not (Test-CanAsk)) 'a -NonInteractive host cannot be asked'

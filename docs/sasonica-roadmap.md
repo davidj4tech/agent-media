@@ -115,8 +115,12 @@ agent the phone starts. **The Mac too** (same day): `sasonica-macos-aarch64`,
 launchd agents from `sasonica install`, procinfo.py for other processes;
 checked in CI (docs/proposals/2026-09-29-single-binary.md). **And Windows**
 (same day): `sasonica-windows-x86_64.exe`, `deploy/install.ps1`, sessiond
-over loopback TCP with a token, logon tasks; checked in CI. **Next:** try both
-on real machines; signing; a sasonica.com address for install.ps1.
+over loopback TCP with a token, logon tasks; checked in CI. **Windows on
+ARM64** (David, 16 Oct 2026): the same x64 .exe and x64 cloudflared, run
+under Windows 11's x64 emulation, no ARM64 build; install.ps1 accepts ARM64
+(refuses 32-bit) and CI smoke-tests the x64 .exe on `windows-11-arm`
+(branch `win-arm64`). **Next:** try both on real machines; signing; a
+sasonica.com address for install.ps1.
 **Sasonica Shell, opt-in, in the same installer** (David, 16 Oct 2026):
 after pairing, one question, default No ("Also let an AI assistant such as
 Claude run commands on this computer? It needs a free Sasonica account.");

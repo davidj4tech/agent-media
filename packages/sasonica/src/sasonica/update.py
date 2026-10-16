@@ -45,7 +45,9 @@ def asset() -> str:
     if not arch:
         raise SystemExit(f"sasonica update: no build for {platform.machine()}")
     if os.name == "nt":
-        return f"sasonica-windows-{arch}.exe"
+        # x64 only: Windows on ARM64 runs it under emulation (David, 16 Oct
+        # 2026), and an emulated Python may still say ARM64 (WMI).
+        return "sasonica-windows-x86_64.exe"
     return f"sasonica-{'macos' if sys.platform == 'darwin' else 'linux'}-{arch}"
 
 

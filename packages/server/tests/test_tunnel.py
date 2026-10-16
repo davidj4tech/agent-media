@@ -74,6 +74,32 @@ def test_lookup_off(monkeypatch):
     assert tunnel.lookup_url() == ""
 
 
+def test_lookup_off_survives_the_env_loader(monkeypatch, tmp_path):
+    # media-tunnel's main() loads the env files first, which turns `-` into
+    # "": that must still be off, not the default lookup.
+    from agent_media_core.intake import _env
+    monkeypatch.setattr(_env, "_OFF_KEYS", set())
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.delenv("MEDIA_ENV_FILE", raising=False)
+    monkeypatch.delenv("RELAY_ENV_FILE", raising=False)
+    monkeypatch.setenv("MEDIA_LOOKUP_URL", "-")
+    saved = dict(os.environ)        # the loader fills in the shipped defaults
+    try:
+        _env.load_env_file("tunnel")
+        lookup = os.environ["MEDIA_LOOKUP_URL"]
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+    monkeypatch.setenv("MEDIA_LOOKUP_URL", lookup)
+    assert lookup == ""
+    assert tunnel.lookup_base() == ""
+    assert tunnel.publish("https://a.trycloudflare.com") == (False, "lookup off")
+    monkeypatch.setenv("MEDIA_LOOKUP_URL", "")          # unset-ish, not switched off
+    monkeypatch.setattr(_env, "_OFF_KEYS", set())
+    assert tunnel.lookup_base() == tunnel.DEFAULT_LOOKUP
+
+
 def _fake_cloudflared(tmp_path, body: str):
     """A stand-in cloudflared running `body` (Python): a script with a #!
     line, or on Windows a .cmd that runs it with this Python."""
@@ -136,13 +162,15 @@ def test_platform_assets_are_pinned():
         assert name.startswith("cloudflared-") and len(sha) == 64
     if sys.platform.startswith("linux") and os.uname().machine in ("x86_64", "aarch64"):
         assert tunnel.platform_asset() is not None
-    if sys.platform == "win32" and os.environ.get("PROCESSOR_ARCHITECTURE") == "AMD64":
+    if sys.platform == "win32" and os.environ.get("PROCESSOR_ARCHITECTURE") in ("AMD64", "ARM64"):
         assert tunnel.platform_asset()[0] == "cloudflared-windows-amd64.exe"
 
 
 @pytest.mark.parametrize("plat,machine,want", [
     ("win32", "AMD64", "cloudflared-windows-amd64.exe"),
-    ("win32", "ARM64", None),                       # Cloudflare builds none
+    # Cloudflare builds no ARM64 Windows cloudflared: the x64 one, emulated.
+    ("win32", "ARM64", "cloudflared-windows-amd64.exe"),
+    ("win32", "x86", None),
     ("linux", "x86_64", "cloudflared-linux-amd64"),
     ("linux", "aarch64", "cloudflared-linux-arm64"),
     ("darwin", "arm64", "cloudflared-darwin-arm64.tgz"),
@@ -154,9 +182,10 @@ def test_platform_asset_per_platform(monkeypatch, plat, machine, want):
     assert (got[0] if got else None) == want
 
 
-def test_windows_fetches_cloudflared_exe(monkeypatch, tmp_path):
+@pytest.mark.parametrize("machine", ["AMD64", "ARM64"])
+def test_windows_fetches_cloudflared_exe(monkeypatch, tmp_path, machine):
     monkeypatch.setattr(tunnel.sys, "platform", "win32")
-    monkeypatch.setattr(tunnel.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(tunnel.platform, "machine", lambda: machine)
     monkeypatch.setattr(tunnel.shutil, "which", lambda name: None)
     path, what = tunnel.fetch_cloudflared(tmp_path, dry_run=True)
     assert path == str(tmp_path / "cloudflared.exe")

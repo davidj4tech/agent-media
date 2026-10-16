@@ -50,6 +50,14 @@ def _mark_explicit_off() -> None:
             _OFF_KEYS.add(k)
 
 
+def switched_off(key: str) -> bool:
+    """`key` was set to `-` (off) in this process: still `-`, or already
+    turned into the empty string by load_env_file. Where empty means "use the
+    default", this tells the deliberate off from an unset value."""
+    v = os.environ.get(key)
+    return v == _OFF or (v == "" and key in _OFF_KEYS)
+
+
 def _dequote(v: str) -> str:
     """Remove one matched pair of surrounding quotes, and only that.
 

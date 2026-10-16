@@ -14,6 +14,7 @@ on:
       - packages/visual/**
       - packages/sasonica/**
       - deploy/binary/**
+      - deploy/install.ps1
       - .github/workflows/binary.yml
   workflow_dispatch:
 
@@ -117,48 +118,7 @@ jobs:
         run: deploy/binary/build.sh
 
       - name: Smoke test
-        run: |
-          b=$PWD/build/binary/sasonica-windows-x86_64.exe
-          # The runner's own profile: PyApp finds its folders through Windows
-          # (known folders), which a made-up USERPROFILE breaks.
-          "$b" version
-          "$b" commands | tr -d '\r' | grep -qx media
-          "$b" serve --bind 127.0.0.1 --port 18781 >serve.log 2>&1 &
-          "$b" sessiond >sessiond.log 2>&1 &
-          for i in $(seq 1 90); do curl -fsS http://127.0.0.1:18781/healthz >/dev/null && break; sleep 1; done
-          curl -fsS http://127.0.0.1:18781/healthz
-          # sessiond over loopback TCP: its address file, and it answers.
-          for i in $(seq 1 30); do grep -q "listening on" sessiond.log && break; sleep 1; done
-          cat sessiond.log
-          grep -q "listening on 127.0.0.1:" sessiond.log
-          "$b" install --dry-run --no-services | tee install.txt
-          kill %1 %2 || true
-          # The quick tunnel is Windows' too: install fetches Cloudflare's
-          # pinned Windows build (or finds one already there).
-          tr -d '\r' <install.txt | grep -Eq 'cloudflared: (would fetch .*/cloudflared-windows-amd64\.exe|.*(already there|on PATH))'
-          # A tunnel's URL into `pair --device`, through a stand-in cloudflared
-          # (no network): media-tunnel run reads its name off stderr, and the
-          # pairing link names it and its lookup.
-          printf '@echo INF ^|  https://ci-fake-tunnel.trycloudflare.com  ^| 1>&2\r\n@ping -n 60 127.0.0.1 >nul\r\n' >fakecf.cmd
-          MEDIA_CLOUDFLARED="$(cygpath -w "$PWD/fakecf.cmd")" MEDIA_LOOKUP_URL=- \
-            "$b" media-tunnel run >tunnel.log 2>&1 &
-          tpid=$!
-          for i in $(seq 1 60); do "$b" media-tunnel url >/dev/null 2>&1 && break; sleep 1; done
-          cat tunnel.log
-          "$b" media-tunnel url | tr -d '\r' | grep -qx 'https://ci-fake-tunnel.trycloudflare.com'
-          MEDIA_LOOKUP_URL=https://lookup.invalid/r "$b" pair --device CI | tr -d '\r' | tee pair.txt
-          grep -q 'sasonica://pair?server=https%3A%2F%2Fci-fake-tunnel.trycloudflare.com&code=' pair.txt
-          grep -q '&lookup=https%3A%2F%2Flookup.invalid%2Fr%2F[a-z2-7]\{26\}' pair.txt
-          kill $tpid || true
-          # The audio seam's windows backend, from inside the .exe: chosen,
-          # and its winrt projection (a win32-only dependency) importable.
-          "$b" media-audio --json | tee audio.json
-          grep -q '"backend": "windows"' audio.json
-          ! grep -q '"winrt": "not importable' audio.json
-          # The opt-in speech player's launcher: its pipe and mpv command line.
-          "$b" media-sink-speech --print | tee speech.txt
-          grep -q 'pipe' speech.txt
-          "$b" install --dry-run --no-services --local-speech
+        run: deploy/binary/smoke-windows.sh "$PWD/build/binary/sasonica-windows-x86_64.exe"
 
       - name: Quick tunnel through Cloudflare (NEEDS NETWORK; allowed to fail)
         # The real thing: the pinned cloudflared fetched and checked by
@@ -188,6 +148,85 @@ jobs:
           name: sasonica-windows-x86_64
           path: build/binary/sasonica-windows-x86_64.exe
           retention-days: 14
+
+  windows-arm64:
+    # Windows 11 on ARM64 runs the x64 build under its x64 emulation (Prism),
+    # with the x64 cloudflared: no ARM64 build (David, 16 Oct 2026). The .exe
+    # the job above built, the same smoke test, install.ps1's architecture
+    # check on a real ARM64 machine. Publishes nothing (and gates nothing:
+    # the release does not wait for it).
+    name: smoke (windows arm64, x64 emulated)
+    needs: build-windows
+    runs-on: windows-11-arm
+    defaults:
+      run:
+        shell: bash
+    env:
+      MEDIA_LOOKUP_URL: "-"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sasonica-windows-x86_64
+          path: build/binary
+
+      - name: Where we are
+        run: |
+          echo "PROCESSOR_ARCHITECTURE=$PROCESSOR_ARCHITECTURE PROCESSOR_ARCHITEW6432=${PROCESSOR_ARCHITEW6432:-}"
+          # Git Bash here is x64, emulated: it reads AMD64, and a PowerShell
+          # it starts says X64 for OS and process alike. The registry's
+          # system value is the machine's own.
+          powershell -NoProfile -Command '"OS " + [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture + ", Windows PowerShell " + [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture' || true
+          pwsh -NoProfile -Command '"pwsh: OS " + [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture + ", process " + [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture' || true
+          reg query 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' //v PROCESSOR_ARCHITECTURE | tee reg.txt
+          grep -q 'ARM64' reg.txt
+
+      - name: Smoke test (x64 under emulation)
+        run: deploy/binary/smoke-windows.sh "$PWD/build/binary/sasonica-windows-x86_64.exe"
+
+      - name: The x64 cloudflared is the one install fetches
+        run: |
+          b=$PWD/build/binary/sasonica-windows-x86_64.exe
+          # What the binary's own (x64, emulated) Python calls this machine.
+          py=$(find "$(cygpath -u "$LOCALAPPDATA")/pyapp" -name python.exe 2>/dev/null | head -1)
+          [ -n "$py" ] && "$py" -I -c "import platform, sys; print('binary python:', platform.machine(), sys.version)" || true
+          "$b" install --dry-run --no-services | tr -d '\r' | tee install.txt
+          if command -v cloudflared >/dev/null || [ -e "$USERPROFILE/.local/bin/cloudflared.exe" ]; then
+            echo "::warning::cloudflared already on this runner; the asset choice is checked by the unit tests only"
+            grep -Eq 'cloudflared: .*(already there|on PATH)' install.txt
+          else
+            grep -Eq 'cloudflared: would fetch .*/2026\.[0-9.]+/cloudflared-windows-amd64\.exe' install.txt
+          fi
+
+      - name: install.ps1's architecture check (Windows PowerShell and pwsh)
+        env:
+          SASONICA_EXPECT_ARCH: ARM64
+        run: |
+          repo=$(cygpath -w "$PWD")
+          powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File packages/sasonica/tests/check-install-ps1.ps1 "$repo" | tee ps51.txt
+          pwsh -NoProfile -NonInteractive -File packages/sasonica/tests/check-install-ps1.ps1 "$repo" | tee ps7.txt
+          ! grep -h '^FAIL' ps51.txt ps7.txt
+          grep -q 'ok    arch: this machine is ARM64' ps51.txt
+          grep -q 'ok    arch: this machine is ARM64' ps7.txt
+
+      - name: Quick tunnel through Cloudflare (NEEDS NETWORK; allowed to fail)
+        # The x64 cloudflared, fetched and sha256-checked by install, emulated:
+        # a real quick tunnel and /healthz through it. Best-effort, like the
+        # x64 job's. Nothing published: MEDIA_LOOKUP_URL=-.
+        continue-on-error: true
+        timeout-minutes: 6
+        run: |
+          b=$PWD/build/binary/sasonica-windows-x86_64.exe
+          "$b" install --no-services | tee install-real.txt
+          tr -d '\r' <install-real.txt | grep -q 'sha256 checked\|already there\|on PATH'
+          MEDIA_VISUAL_PUBLIC=127.0.0.1:18789 "$b" serve --bind 127.0.0.1 --port 18781 >serve-t.log 2>&1 &
+          MEDIA_VISUAL_PUBLIC=127.0.0.1:18789 "$b" media-tunnel run >tunnel-real.log 2>&1 &
+          url=$("$b" media-tunnel url --wait 90 | tr -d '\r') || { cat tunnel-real.log; exit 1; }
+          echo "tunnel: $url"
+          for i in $(seq 1 30); do curl -fsS -m 10 "$url/healthz" && break; sleep 3; done
+          curl -fsS -m 10 "$url/healthz"
+          kill %1 %2 || true
 
   publish:
     needs: [build, build-macos, build-windows]
