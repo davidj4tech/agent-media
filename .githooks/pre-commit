@@ -1,0 +1,46 @@
+#!/bin/sh
+# Shared checkout guard (#152).
+#
+# Many sessions share the main checkout (~/projects/agent-media) and commit
+# straight to main. If it is left on another branch, their commits land on
+# that branch instead. So a commit in the main checkout is refused unless
+# HEAD is main. Linked worktrees (git worktree add) are never checked:
+# feature branches belong there.
+#
+# Activate once per clone:  git config core.hooksPath .githooks
+# Bypass a single commit:   git commit --no-verify
+
+git_dir=$(git rev-parse --absolute-git-dir) || exit 0
+common_dir=$(cd "$(git rev-parse --git-common-dir)" && pwd -P) || exit 0
+git_dir=$(cd "$git_dir" && pwd -P) || exit 0
+
+# A linked worktree has its own git dir under <common>/worktrees/<name>.
+[ "$git_dir" = "$common_dir" ] || exit 0
+
+branch=$(git symbolic-ref -q HEAD)
+if [ -z "$branch" ]; then
+    # Detached during a rebase: judge by the branch being rebased.
+    for d in rebase-merge rebase-apply; do
+        if [ -f "$git_dir/$d/head-name" ]; then
+            branch=$(cat "$git_dir/$d/head-name")
+            break
+        fi
+    done
+fi
+
+[ "$branch" = "refs/heads/main" ] && exit 0
+
+top=$(git rev-parse --show-toplevel)
+shown=${branch#refs/heads/}
+cat >&2 <<EOF
+Refusing to commit: this is the shared checkout ($top) and HEAD is
+'${shown:-detached}', not main. Other sessions commit here expecting main.
+
+Put branch work in a worktree instead:
+    git worktree add ../$(basename "$top")-<topic> -b <branch>
+and return this checkout to main:
+    git switch main
+
+(If you really mean it: git commit --no-verify)
+EOF
+exit 1
