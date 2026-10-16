@@ -67,6 +67,19 @@ def test_wanted_sum_reads_sha256sums():
     assert update.wanted_sum(sums, "sasonica-linux-riscv") == ""
 
 
+def test_windows_on_arm64_updates_to_the_x64_build(monkeypatch):
+    # David, 16 Oct 2026: Windows on ARM64 runs the x64 build under emulation;
+    # an emulated Python can say AMD64 or (3.12, through WMI) ARM64.
+    import pytest
+    monkeypatch.setattr(update.os, "name", "nt")
+    for machine in ("AMD64", "ARM64"):
+        monkeypatch.setattr(update.platform, "machine", lambda m=machine: m)
+        assert update.asset() == "sasonica-windows-x86_64.exe"
+    monkeypatch.setattr(update.platform, "machine", lambda: "x86")
+    with pytest.raises(SystemExit):
+        update.asset()
+
+
 def test_prune_keeps_what_runs_and_what_is_kept(tmp_path, monkeypatch):
     root = tmp_path / "pyapp"       # its own: other fixtures write into tmp_path
     for v in ("1", "2", "3", "4"):

@@ -208,9 +208,27 @@ pairing QR). What it took:
 Checked in CI, not on a Windows machine in hand: the binary's smoke test (the
 server answers, sessiond listens on its port) and the server's tests on
 Windows, which fail only where Linux's do; tmux-pane and file-mode tests skip
-there. Not done: an ARM64 build, code signing (SmartScreen will warn on a
+there. Not done: code signing (SmartScreen will warn on a
 browser download), a short sasonica.com address for install.ps1, and the
 logon tasks and hooks exercised on a real desktop.
+
+**Windows on ARM64** (David, 16 Oct 2026): no ARM64 build. Windows 11 on
+ARM64 runs the x64 .exe under its x64 emulation (Prism), and the x64
+cloudflared with it (Cloudflare builds no ARM64 Windows cloudflared).
+install.ps1 reads the machine's own architecture (`RuntimeInformation.
+OSArchitecture`, then `PROCESSOR_ARCHITEW6432`, then
+`PROCESSOR_ARCHITECTURE`, so an emulated x64 PowerShell still counts as
+ARM64), takes the x64 file and says once that it runs emulated; 32-bit
+Windows is refused. Inside the binary, an emulated Python's
+`platform.machine()` may say AMD64 or (3.12 asks WMI for the CPU) ARM64:
+`tunnel.platform_asset()` and `sasonica update` take the x64 builds for
+both. CI's `smoke (windows arm64, x64 emulated)` job in binary.yml runs the
+x64 job's .exe through the same smoke test (deploy/binary/smoke-windows.sh)
+on GitHub's `windows-11-arm` runner, checks install picks
+cloudflared-windows-amd64.exe, runs install.ps1's architecture check in
+Windows PowerShell and pwsh, and tries a real quick tunnel (allowed to
+fail); it publishes and gates nothing. Windows 10 on ARM emulates only
+32-bit x86, so it cannot run the server.
 
 **Speaking on the Windows machine itself** (built 12 Oct 2026, opt-in):
 `sasonica install --local-speech` adds a `Sasonica\speech` logon task that

@@ -68,8 +68,10 @@ CLOUDFLARED_ASSETS = {
                            "aaeb2d7d0da3614634c7e03ab13487a1522c2e79165ed2929cfe23d5e95b326d"),
     ("darwin", "arm64"): ("cloudflared-darwin-arm64.tgz",
                           "587c2cfb1c230fe36c7fa7727da78be459dae028cabe8c001291999350f07095"),
-    # x64 only: Cloudflare builds no arm64 Windows cloudflared (and the
-    # server's own Windows build is x64 only, deploy/install.ps1).
+    # x64 only: Cloudflare builds no arm64 Windows cloudflared, and the
+    # server's own Windows build is x64 only (deploy/install.ps1). Windows on
+    # ARM64 runs both under its x64 emulation (David, 16 Oct 2026): see
+    # platform_asset().
     ("windows", "x86_64"): ("cloudflared-windows-amd64.exe",
                             "f096265ec2fcbe9bb6e2d64268db167ced3fcbb83d894bdb9e2fcdb26f2ea7e2"),
 }
@@ -224,7 +226,11 @@ def platform_asset() -> tuple[str, str] | None:
         return CLOUDFLARED_ASSETS.get(("darwin", "arm64" if machine in ("arm64", "aarch64") else machine))
     machine = {"amd64": "x86_64", "arm64": "aarch64"}.get(machine, machine)
     if sys.platform == "win32":
-        return CLOUDFLARED_ASSETS.get(("windows", machine))
+        # Windows on ARM64 takes the x64 build, run under emulation (Prism)
+        # like the server itself. The server's x64 Python can say either:
+        # 3.12's platform.machine() asks WMI for the CPU (ARM64), an older
+        # one reads PROCESSOR_ARCHITECTURE, which emulation sets to AMD64.
+        return CLOUDFLARED_ASSETS.get(("windows", "x86_64" if machine == "aarch64" else machine))
     return CLOUDFLARED_ASSETS.get(("linux", machine)) if sys.platform.startswith("linux") else None
 
 

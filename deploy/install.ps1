@@ -7,7 +7,8 @@
 #
 # The Windows twin of deploy/install.sh: the server as one file
 # (sasonica-windows-x86_64.exe, from the server-latest release, built by
-# deploy/binary/build.sh), checked against SHA256SUMS and put at
+# deploy/binary/build.sh; on Windows 11 for ARM64 the same file, run under
+# the x64 emulation, David 16 Oct 2026), checked against SHA256SUMS and put at
 # %USERPROFILE%\.local\bin\sasonica.exe; then `sasonica install` (shims for
 # every command, this machine's config, the agents' hooks, logon tasks
 # under Task Scheduler → Sasonica, a quick tunnel among them) and a pairing
@@ -124,6 +125,22 @@ function Invoke-ShellStep {
   }
 }
 
+# The machine's own architecture, not this PowerShell's: an x64 PowerShell
+# emulated on ARM64 reads AMD64 in PROCESSOR_ARCHITECTURE. OSArchitecture
+# (.NET; PowerShell 7 and Windows PowerShell 5.1 alike) is the OS's; failing
+# that, PROCESSOR_ARCHITEW6432 (set for an emulated 32-bit process), then
+# PROCESSOR_ARCHITECTURE. AMD64, ARM64 or x86. The parameters are for tests.
+function Get-WindowsArch {
+  param(
+    [string]$OS = $(try { "$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)" } catch { '' }),
+    [string]$W6432 = $env:PROCESSOR_ARCHITEW6432,
+    [string]$Proc = $env:PROCESSOR_ARCHITECTURE
+  )
+  switch ($OS) { 'X64' { return 'AMD64' } 'Arm64' { return 'ARM64' } 'X86' { return 'x86' } }
+  if ($W6432) { return $W6432 }
+  return $Proc
+}
+
 if ($Lib) { return }
 
 if ($ShellOnly -or $env:SASONICA_ONLY -eq 'shell') {
@@ -135,8 +152,14 @@ if ($ShellOnly -or $env:SASONICA_ONLY -eq 'shell') {
 $base = if ($env:SASONICA_BINARY_BASE) { $env:SASONICA_BINARY_BASE } else {
   'https://github.com/davidj4tech/agent-media/releases/download/server-latest' }
 
-if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64') {
-  Write-Error "Sasonica's server is built for x64 Windows only so far (this is $env:PROCESSOR_ARCHITECTURE)."
+$arch = Get-WindowsArch
+# One build, x64. Windows 11 on ARM64 runs it under its x64 emulation (Prism),
+# and the x64 cloudflared with it (David, 16 Oct 2026); 32-bit Windows cannot.
+if ($arch -eq 'ARM64') {
+  Write-Host "This is Windows on ARM64: Sasonica's server is built for x64 and runs under Windows' x64 emulation."
+} elseif ($arch -ne 'AMD64') {
+  Write-Error "Sasonica's server needs 64-bit Windows (x64, or ARM64 through emulation); this is $arch."
+  return
 }
 $asset = 'sasonica-windows-x86_64.exe'
 $bin = Join-Path $env:USERPROFILE '.local\bin'
