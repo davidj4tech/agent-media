@@ -250,6 +250,8 @@ class _Hub:
         self.reported_at = 0.0
         #: The last load-bearing frame, for trace(): (seq, sent at, state).
         self.traced: dict = {}
+        #: The phone's time (ms) of the newest `played` entry logged (_trace_played).
+        self.played_at = 0
 
     def device(self) -> str | None:
         with self.lock:
@@ -345,6 +347,7 @@ def report(device: str, body: dict, channel: str = "speech") -> tuple[bool, dict
             return False, {"status": 400, "error": "malformed state"}
         hub.reported_at = time.time()
         hub.lock.notify_all()
+        _trace_played(hub, body.get("extra"))
         t = hub.traced
         if t and not t.get("duration"):
             now = time.time()
@@ -363,6 +366,28 @@ def report(device: str, body: dict, channel: str = "speech") -> tuple[bool, dict
                       **({"phone": x} if isinstance(x, dict) and x else {}))
     _notify_observers(hub)
     return True, {"seq": seq(channel)}
+
+
+def _trace_played(hub: "_Hub", extra) -> None:
+    """Each clip the phone started, as it says (sasonica-app Media3Speech
+    `played`: the playlist index and the clip actually sounding there), once,
+    into frames-timing.log. A voice that went to another sentence while the
+    index — and so the follow-along — carried on left no trace before this
+    (David, 16 Oct 2026: "it jumped to audio of text further down the page").
+    Caller holds hub.lock."""
+    if not isinstance(extra, dict) or not isinstance(extra.get("played"), list):
+        return
+    last = hub.played_at
+    for p in extra["played"]:
+        if not isinstance(p, dict):
+            continue
+        at = p.get("at")
+        if not isinstance(at, (int, float)) or at <= last:
+            continue
+        hub.played_at = last = at
+        trace("played", hub, **{k: p.get(k) for k in ("i", "id", "expected")
+                                 if p.get(k) is not None},
+              phone_at=round(at / 1000.0, 3))
 
 
 def _send(ops: list[dict], hub: "_Hub") -> None:
