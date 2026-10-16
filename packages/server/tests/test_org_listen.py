@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 
 import pytest
 
@@ -228,7 +229,7 @@ def test_a_project_document_reads_and_listens(book, server, tmp_path, monkeypatc
     status, got = _call(server, "POST", "/org/listen", {"doc": str(doc)})
     assert status == 200 and got["state"] == "rendering" and got["doc"] == str(doc)
     assert _until(lambda: book.calls)
-    assert "/doc-" in book.calls[0][1]
+    assert Path(book.calls[0][1]).name.startswith("doc-")
     book.np["position_ms"] = 3500            # heading 0, 2, heading 4, then 6
     _, got = _call(server, "GET", "/org/listen")
     assert got["doc"] == str(doc) and "path" not in got and got["line"] == 6
@@ -441,6 +442,26 @@ def test_a_projects_documents_and_finding_one(tree, server, tmp_path, monkeypatc
     hits = doc_read.search(["kettle", "sings"])
     assert [h["title"] for h in hits] == ["New idea"]          # one copy, not the clone's too
     assert hits[0]["snippet"] == "The kettle sings." and hits[0]["project"] in ("app", "app-copy")
+    assert [h["title"] for h in doc_read.search(["guide"])] == ["Guide"]
+
+
+def test_finding_a_document_without_rg(tmp_path, monkeypatch):
+    """No ripgrep (GitHub's runners, a fresh Mac or Windows): the search walks
+    the documents itself and finds the same one, once."""
+    from agent_media_server import doc_read
+    proj = tmp_path / "projects"
+    for name in ("app", "app-copy"):
+        (proj / name / "docs").mkdir(parents=True)
+        (proj / name / "docs" / "new.md").write_text("# New idea\n\nThe kettle sings.\n")
+    (proj / "app" / ".git").mkdir()
+    (proj / "app" / ".git" / "kettle.md").write_text("# Hidden\n\nThe kettle sings.\n")
+    (proj / "app" / "docs" / "guide.md").write_text("# Guide\n\nNo kettles here.\n")
+    monkeypatch.setenv("MEDIA_PROJECTS_DIR", str(proj))
+    monkeypatch.setenv("MEDIA_DOC_ROOTS", str(tmp_path / "nowhere"))
+    monkeypatch.setattr(doc_read, "_rg", lambda args, cwd: None)
+    hits = doc_read.search(["kettle", "sings"])
+    assert [h["title"] for h in hits] == ["New idea"]
+    assert hits[0]["project"] in ("app", "app-copy") and hits[0]["snippet"] == "The kettle sings."
     assert [h["title"] for h in doc_read.search(["guide"])] == ["Guide"]
 
 

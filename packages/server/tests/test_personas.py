@@ -82,6 +82,15 @@ def test_the_lists_come_from_persona_render(repo):
     assert personas.listing() == {"personas": ["zara", "sam"], "roles": ["reviewer", "planner"]}
 
 
+def test_on_windows_the_python_renderer_runs_under_our_python(repo):
+    """Windows cannot exec a shebang script (WinError 193)."""
+    exe = str(personas.renderer())
+    assert personas._command() == ([sys.executable, exe] if os.name == "nt" else [exe])
+    assert personas._command(windows=True) == [sys.executable, exe]
+    personas.renderer().write_text("@echo off\r\n")      # not a Python script: as it is
+    assert personas._command(windows=True) == [exe]
+
+
 def test_no_repo_is_empty_lists_not_an_error(monkeypatch, tmp_path):
     monkeypatch.setenv("MEDIA_PERSONAS_DIR", str(tmp_path / "nowhere"))
     assert personas.listing() == {"personas": [], "roles": []}
@@ -113,7 +122,8 @@ def test_claude_gets_the_render_as_an_appended_system_prompt_file(repo, asker):
     path = flags[flags.index("--append-system-prompt-file") + 1]
     assert path.startswith(str(repo.run / "agent-media" / "personas"))
     assert "adapter=claude role=reviewer mode=public" in open(path).read()
-    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    if os.name != "nt":     # Windows has no POSIX modes: st_mode is 0o666 whatever was asked
+        assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
     # Kept, and named for its session too.
     assert (repo.run / "agent-media" / "personas" / f"{asker['session']}.md").read_text() == open(path).read()
     # The words go in as they were.

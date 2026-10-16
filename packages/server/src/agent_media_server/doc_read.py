@@ -217,14 +217,46 @@ def project_docs(project: str, path: str, bearer: str) -> tuple[bool, dict]:
     return True, {"project": project or root.name, "root": str(root), "docs": rows}
 
 
-def _rg(args: list[str], cwd: Path) -> list[str]:
+def _rg(args: list[str], cwd: Path) -> list[str] | None:
+    """rg's file names under `cwd`, relative and with forward slashes (rg on
+    Windows prints `.\\docs\\x.md`). None when there is no rg to ask."""
+    import shutil
     import subprocess
+    rg = shutil.which("rg")
+    if not rg:
+        return None
     try:
-        out = subprocess.run(["rg", *args, "-g", "*.md", "-g", "*.org", "-g", "*.txt", "."],
+        out = subprocess.run([rg, *args, "-g", "*.md", "-g", "*.org", "-g", "*.txt", "."],
                              cwd=cwd, capture_output=True, text=True, timeout=4)
     except (OSError, subprocess.SubprocessError):
         return []
-    return [ln[2:] if ln.startswith("./") else ln for ln in out.stdout.splitlines() if ln]
+    lines = (ln.replace(os.sep, "/") for ln in out.stdout.splitlines() if ln)
+    return [ln[2:] if ln.startswith("./") else ln for ln in lines]
+
+
+#: How many documents the walk without rg looks through before it stops.
+WALK_MAX = 20000
+
+
+def _walk(base: Path, terms: list[str]) -> list[str]:
+    """What `rg -l -i -F -e …` and the name match find, for a host with no rg
+    (GitHub's runners, a fresh Mac or Windows): every document under `base`
+    whose name or text holds any of `terms`, relative with forward slashes."""
+    out = []
+    for n, p in enumerate(docs.walk_docs(base)):
+        if n >= WALK_MAX:
+            break
+        name = p.name.lower()
+        if not any(t in name for t in terms):
+            try:
+                with p.open(errors="replace") as f:
+                    low = f.read(MAX_READ).lower()
+            except OSError:
+                continue
+            if not any(t in low for t in terms):
+                continue
+        out.append(p.relative_to(base).as_posix())
+    return out
 
 
 def search(terms: list[str], limit: int = 8) -> list[dict]:
@@ -235,9 +267,13 @@ def search(terms: list[str], limit: int = 8) -> list[dict]:
     if not terms or not base.is_dir():
         return []
     args = ["-l", "-i", "-F"] + [x for t in terms for x in ("-e", t)]
-    found = set(_rg(args, base))
-    found |= {f for f in _rg(["--files"], base)
-              if all(t in Path(f).name.lower() for t in terms)}
+    listed = _rg(args, base)
+    if listed is None:
+        found = set(_walk(base, terms))
+    else:
+        found = set(listed)
+        found |= {f for f in _rg(["--files"], base) or []
+                  if all(t in Path(f).name.lower() for t in terms)}
     hits = []
     for rel in found:
         p = (base / rel)
@@ -259,13 +295,14 @@ def search(terms: list[str], limit: int = 8) -> list[dict]:
             line = ("…" if at else "") + line[at:at + 160] + "…"
         hits.append((rank, -mtime, {"path": str(p), "title": title,
                                      "project": rel.split("/", 1)[0],
-                                     "kind": p.parent.name, "snippet": line}))
-    hits.sort(key=lambda h: (h[0], h[1]))
+                                     "kind": p.parent.name, "snippet": line},
+                     rel.split("/", 1)[-1]))
+    hits.sort(key=lambda h: (h[0], h[1], h[2]["path"]))
     # A clone or worktree beside the project (agent-media-audio) holds the
     # same files: one hit each, the most recently changed copy.
     out, seen = [], set()
-    for _r, _m, h in hits:
-        key = (h["title"], h["path"].split("/", len(base.parts) + 1)[-1])
+    for _r, _m, h, inside in hits:
+        key = (h["title"], inside)
         if key in seen:
             continue
         seen.add(key)

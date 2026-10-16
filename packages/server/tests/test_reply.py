@@ -610,6 +610,7 @@ def test_session_of_pane_waits_for_a_live_claude(tmp_path, monkeypatch):
     assert sessions.session_of_pane("%9", timeout=0.3) == "11111111-2222-3333-4444-555555555555"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="tmux panes: not on Windows, whose chats are headless")
 def test_open_window_targets_the_host_and_passes_flags(monkeypatch):
     calls = []
 
