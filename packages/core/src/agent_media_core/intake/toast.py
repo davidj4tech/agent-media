@@ -15,8 +15,9 @@ on: JSON files under state_dir()/toast-pending, newest last. A toast older
 than MEDIA_TOAST_TTL seconds (default 21600) is dropped; the reply stays in
 the transcript, still unheard.
 
-Opening the conversation in the app plays its newest waiting reply, if it has
-never been played (`take_for_opened`, called by the server's thread stream).
+Opening the conversation in the app plays its waiting replies that have never
+been played, oldest first (`take_for_opened`, called by the server's thread
+stream; each replay chains to the next unheard one).
 """
 
 from __future__ import annotations
@@ -312,10 +313,12 @@ def play() -> int:
 
 
 def take_for_opened(session: str) -> Optional[int]:
-    """The conversation `session` was just opened in the app: its newest
-    held Normal reply that has never been played, as a history row id to
-    replay, or None. All of the session's waiting toasts are taken, so
-    opening it again plays nothing twice; older replies keep their Play."""
+    """The conversation `session` was just opened in the app: its oldest
+    waiting held Normal reply that has never been played, as a history row id
+    to replay, or None. The replay goes on through the unheard ones after it
+    (cli's `_next_unheard`), so all of them are heard in order, not just the
+    newest. All of the session's waiting toasts are taken, so opening it
+    again plays nothing twice."""
     from ..speak_priority import HOLDS, level_of
     from ..state import StateStore
 
@@ -339,11 +342,18 @@ def take_for_opened(session: str) -> Optional[int]:
     _after_take()
     if level_of(session) not in HOLDS:
         return None
-    rid = _wait_for_row(mine[-1][1]) if mine[-1][1] else None
-    if rid is None:
-        return None
-    ex = (StateStore().history_row(rid) or {}).get("extras") or {}
-    return None if ex.get("heard") else rid
+    store = StateStore()
+    for i, (_p, key) in enumerate(mine):
+        if not key:
+            continue
+        # Only the newest may still be rendering.
+        rid = _wait_for_row(key) if i == len(mine) - 1 else _row_for(key)
+        if rid is None:
+            continue
+        ex = (store.history_row(rid) or {}).get("extras") or {}
+        if not ex.get("heard"):
+            return rid
+    return None
 
 
 def dismiss() -> int:

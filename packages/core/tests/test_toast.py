@@ -202,7 +202,8 @@ def test_the_feed_and_the_log_carry_unheard(tmp_path):
     assert [t.unheard for t in session_feed.turns("s9", store=st)] == [False, False]
 
 
-def test_opening_the_conversation_plays_its_newest_unplayed_reply(monkeypatch):
+def test_opening_the_conversation_plays_its_oldest_unplayed_reply(monkeypatch):
+    """The oldest: its replay goes on through the rest (cli._next_unheard)."""
     from agent_media_core import speak_priority
     from agent_media_core.state import StateStore
 
@@ -222,10 +223,10 @@ def test_opening_the_conversation_plays_its_newest_unplayed_reply(monkeypatch):
 
     toast.hold(_event("older"))
     toast.hold(_event("newer"))
-    row("older")
-    newer = row("newer")
+    older = row("older")
+    row("newer")
     assert toast.take_for_opened("other") is None
-    assert toast.take_for_opened("s1") == newer
+    assert toast.take_for_opened("s1") == older
     assert toast.take_for_opened("s1") is None          # nothing plays twice
 
     toast.hold(_event("heard already"))

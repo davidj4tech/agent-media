@@ -389,8 +389,9 @@ def subscribe(session: str, device: str = "") -> tuple[Watcher, Subscriber] | No
 
 
 def _play_waiting(session: str, device: str = "") -> None:
-    """The thread was opened: play its newest held Normal reply that has
-    never been played (core's toast.take_for_opened). Off the request thread:
+    """The thread was opened: play its held Normal replies that have never
+    been played, oldest first (core's toast.take_for_opened gives the first;
+    its replay chains the rest). Off the request thread:
     a reply still rendering is waited for.
 
     The replay runs detached with no timeout, not through the speech bar's

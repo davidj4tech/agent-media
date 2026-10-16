@@ -3435,6 +3435,25 @@ def _resume_point(row: dict, question: Optional[dict]) -> Optional[int]:
     return min(idx, len(smap) - 1)
 
 
+def _next_unheard(row: dict) -> Optional[int]:
+    """The id of the thread's next held reply after `row` that has not been
+    heard, when `row` is one itself — else None. Playing an unheard reply
+    goes on through the unheard ones after it, oldest first, each chained by
+    its follower (`replay-track --then-id`), so a Stop ends the run (David,
+    16 Oct 2026: "it should play all of those unread messages in order
+    rather than just the last one")."""
+    ex = row.get("extras") or {}
+    rid = row.get("id")
+    session = ex.get("source_session")
+    if rid is None or not session or not ex.get("held") or ex.get("heard"):
+        return None
+    later = [r for r in _speech_history(200, session=session)   # newest first
+             if isinstance(r.get("id"), int) and r["id"] > rid
+             and r["extras"].get("held") and not r["extras"].get("heard")
+             and _row_has_audio(r)]
+    return later[-1]["id"] if later else None
+
+
 def _question_before(row: dict) -> Optional[dict]:
     """The listener's own turn this reply answers, or None.
 
@@ -3977,18 +3996,20 @@ def cmd_replay(a) -> int:
         # traversal index — indexes shift when a new clip lands while the
         # picker is open.
         start = getattr(a, "from_sentence", None)
-        for row in _speech_history(2000):
-            if row.get("id") == a.id:
-                return (_replay_row(row) if start is None
-                        else _replay_row(row, from_sentence=start))
+        row = next((r for r in _speech_history(2000) if r.get("id") == a.id), None)
         # Named by id, a row the traversal list leaves out is still meant:
         # a held question (`kind: notif`) is dropped from < / >, and the
         # thread's open handed its id here, so nothing played on open
         # (opened-replay.log, Oct 2026: "no clip with id" for each).
-        row = StateStore().history_row(a.id)
-        if row and row.get("sink") == "speech" and row.get("source") != "listener":
-            return (_replay_row(row) if start is None
-                    else _replay_row(row, from_sentence=start))
+        if row is None:
+            row = StateStore().history_row(a.id)
+            if not (row and row.get("sink") == "speech"
+                    and row.get("source") != "listener"):
+                row = None
+        if row is not None:
+            then_id = _next_unheard(row)
+            return (_replay_row(row, then_id=then_id) if start is None
+                    else _replay_row(row, from_sentence=start, then_id=then_id))
         print(f"media replay: no clip with id {a.id}", file=sys.stderr)
         return 1
     # A thread named by the caller (the app's Replay, inside that thread):
