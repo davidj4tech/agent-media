@@ -282,3 +282,44 @@ def test_left_paused_is_the_sessions_latest_reply_only(monkeypatch):
 
     store.set_stopped_at(store.left_paused()["sid-b"]["id"], None)
     assert store.left_paused() == {}
+
+
+def test_previous_winds_the_clock_back_to_the_sentence(monkeypatch):
+    """Back to a sentence already heard keeps the start it had.
+
+    It was stamped again at the moment it came back, so the time spent on the
+    sentences skipped stayed in the timeline as a hole the player's `pos` (the
+    clip lengths summed) does not have, and the app held the bold back by the
+    difference — 54 s after a few presses of previous (16 Oct 2026). The
+    clock is wound back instead, the way a pause is taken off it.
+    """
+    monkeypatch.setattr(S, "render_text", _fake_render)
+    clock = {"t": 1_000_000.0}
+    monkeypatch.setattr(S.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(S.time, "sleep",
+                        lambda s=0, *_a, **_k: clock.__setitem__("t", clock["t"] + 3.0))
+    rows = []
+    real_set = StateStore.set_now_playing
+
+    def spy(self, sink, **kw):
+        ex = kw.get("extras") or {}
+        if ex.get("clip_starts_s"):
+            rows.append((ex.get("current_sentence_idx"), list(ex["clip_starts_s"]),
+                         float(ex["play_started_at"]), clock["t"]))
+        return real_set(self, sink, **kw)
+
+    monkeypatch.setattr(StateStore, "set_now_playing", spy)
+    back = {"playlist-pos": 1, "idle-active": False, "pause": False,
+            "mute": False, "time-pos": 0.2}
+    sink = _ScriptedSink([_playing(0)] * 3 + [_playing(1)] * 3 + [_playing(2)] * 3
+                         + [back] + [_playing(1)] * 2
+                         + [{"idle-active": True, "pause": False}])
+    _run(sink)
+
+    first = next(starts[1] for idx, starts, _o, _t in rows if idx == 1)
+    i = next(i for i, r in enumerate(rows) if r[0] == 2)
+    idx, starts, origin, now = next(r for r in rows[i:] if r[0] == 1)
+    assert starts[1] == first
+    # Where the clock puts the voice is where the player is: sentence 1's
+    # start plus its time-pos, not the time the skipped sentences took.
+    assert abs((now - origin) - (starts[1] + 0.2)) < 0.5

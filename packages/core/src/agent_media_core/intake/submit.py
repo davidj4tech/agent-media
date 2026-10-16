@@ -4860,8 +4860,21 @@ def _submit_event(event: Event,
                         # Never before the sentence ahead of it started.
                         floor = starts[min(idx, len(starts)) - 1] if idx > 0 else 0.0
                         at = max(floor, at - float(tp))
-                    del starts[idx:]
-                    starts.extend([at] * (idx + 1 - len(starts)))
+                    if (mark_clock["last"] is not None and idx < mark_clock["last"]
+                            and idx < len(starts)):
+                        # Back to a sentence already heard: it keeps the start
+                        # it had, and the clock is wound back to it — the time
+                        # spent on the sentences skipped is taken off, as a
+                        # pause is. Re-stamping it at `at` left that time as
+                        # a hole in the timeline, which `pos` (the clip
+                        # lengths summed) does not have; the app read the
+                        # difference as lag and held the bold back by it, 54 s
+                        # after a few presses of previous (16 Oct 2026).
+                        mark_clock["origin"] += max(0.0, at - starts[idx])
+                        del starts[idx + 1:]
+                    else:
+                        del starts[idx:]
+                        starts.extend([at] * (idx + 1 - len(starts)))
                     mark_clock["last"] = idx
                 elif idx == 0 and starts and len(starts) == 1:
                     # The first sentence is stamped 0 when the reply is handed
