@@ -206,7 +206,8 @@ def last_edit(path: str) -> dict | None:
     top = docs.project_root(p)
     if not top:
         return None
-    rel = str(p.resolve().relative_to(top.resolve()))
+    # Forward slashes, as git prints it (`show --name-only`) on Windows too.
+    rel = p.resolve().relative_to(top.resolve()).as_posix()
     code, out = _git(top, "log", "-1", "--format=%H%x00%s%x00%ct", "--", rel)
     if code or not out:
         return None
@@ -235,7 +236,7 @@ def undo(raw: str, sha: str, bearer: str) -> tuple[bool, dict]:
         return False, {"error": "the document has changed since; look again", "status": 409,
                        "last_edit": got}
     top = docs.project_root(p).resolve()
-    rel = str(p.resolve().relative_to(top))
+    rel = p.resolve().relative_to(top).as_posix()
     code, out = _git(top, "checkout", f"{sha}^", "--", rel)
     if code:
         return False, {"error": f"could not put back the version before ({out})", "status": 500}
