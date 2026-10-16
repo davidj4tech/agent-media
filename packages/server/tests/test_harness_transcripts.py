@@ -214,7 +214,8 @@ def test_a_pi_compaction_ends_the_turn(pi):
     pi.write({"type": "compaction", "summary": "## Goal\nEverything so far."})
     pi.say({"type": "text", "text": "Carrying on."})
     msgs = T.messages(PI)[0]
-    assert [m["role"] for m in msgs] == ["user", "assistant", "assistant"]
+    assert [m["role"] for m in msgs] == ["user", "assistant", "assistant", "assistant"]
+    assert msgs[2]["compacted"] is True and not msgs[3].get("compacted")
 
 
 # --- both, and the machinery around them ------------------------------------------

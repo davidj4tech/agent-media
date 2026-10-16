@@ -234,8 +234,13 @@ def test_compaction(script):
              isCompactSummary=True)
     s.prompt("After")
     s.text("New reply.", msgid="m2")
-    assert [texts(m) for m in msgs()] == [["Before"], ["Old reply."], ["After"],
-                                          ["New reply."]]
+    got = msgs()
+    assert [texts(m) for m in got] == [["Before"], ["Old reply."], ["Conversation compacted"],
+                                       ["After"], ["New reply."]]
+    # The compaction is a marker of its own, finished, so a phone that sent
+    # /compact (a settings command, left out) sees it done.
+    assert got[2]["compacted"] is True and got[2]["turn"] == {"running": False}
+    assert not any(m.get("compacted") for m in got[:2] + got[3:])
 
 
 def test_redacted_thinking_block(script):

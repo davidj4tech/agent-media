@@ -867,6 +867,7 @@ written, with its steps and narration. Messages are read from the same file.
 | `command` | user messages that are a slash command only: `{name, args, text}`, the line's chip (`slash.py`); settings commands are never messages |
 | `peer` | user messages another session delivered into this one (a `<cross-session-message>`): `{name}`; the text is only the message body. Not the listener's words — the app shows a small "From <name>" and never counts it as a send of its own |
 | `shell` | user messages that are a `!` command (29 Sep 2026, `shell.py`): `{command, stdout?, stderr?}`, each stream at most 8 KB; the text is `!<command>`. The output keys come once the command has finished (a pane writes it as a record of its own) |
+| `compacted` | `true` on the marker where the context was compacted (16 Oct 2026): `/compact`, or the harness's own when the context fills (Claude Code's `compact_boundary`, pi's `compaction`). Role `assistant`, never spoken, its one part the text "Conversation compacted" for a client that does not know the field. The `/compact` that asked for it is a settings command and not a message, so this is what tells a client it was done: a client that sent `/compact` retires that send on the first marker after it |
 
 **Parts.**
 - `text` — the words, **as Markdown** (Claude writes Markdown; the client

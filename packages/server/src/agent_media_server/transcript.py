@@ -18,7 +18,16 @@ hands the phone *messages*:
      "spoken": null | {"id", "key", "at", ...},     # joined in `join_speech`
      "turn": {"running": bool},
      "command": {"name", "args", "text"},           # user slash commands only
-     "shell": {"command", "stdout"?, "stderr"?}}    # a `!` command (shell.py)
+     "shell": {"command", "stdout"?, "stderr"?},    # a `!` command (shell.py)
+     "compacted": true}                             # where the context was compacted
+
+A compaction (`/compact`, or the harness's own when the context fills) is
+a message of its own: `compacted`, role "assistant", its one part the
+words "Conversation compacted" for a client that does not know the field.
+The `/compact` that asked for it is a settings command and is left out, so
+without it a phone that sent one had nothing to show it was done (David,
+16 Oct 2026: "three animated progress dots for about 10 minutes... there
+was no indicator that it had finished").
 
 Speech is joined on afterwards (`join_speech`): the spoken row's id (for
 replay), its dedup key (for its pictures) and, while it plays, the
@@ -315,6 +324,15 @@ class Builder:
         self._cur = None
         self._stop = None
 
+    def _compacted(self, rec: dict) -> None:
+        self._close()
+        self.messages.append({"id": str(rec.get("uuid") or rec.get("id") or ""),
+                              "role": "assistant",
+                              "at": epoch(rec.get("timestamp")) or 0.0,
+                              "parts": [{"type": "text", "text": "Conversation compacted"}],
+                              "spoken": None, "turn": {"running": False},
+                              "compacted": True})
+
     def _user(self, rec: dict, text: str, command: dict | None = None) -> None:
         self._close()
         # A queued prompt and its echo, or a record repeated by a resume:
@@ -356,7 +374,9 @@ class Builder:
             self._feed_user(rec)
         elif kind == "system":
             sub = rec.get("subtype")
-            if sub in _TURN_END or sub == "compact_boundary":
+            if sub == "compact_boundary":
+                self._compacted(rec)
+            elif sub in _TURN_END:
                 self._close()
         elif kind == "attachment":
             att = rec.get("attachment") or {}
@@ -717,7 +737,7 @@ class PiBuilder(_HarnessBuilder):
         if not isinstance(rec, dict):
             return
         if rec.get("type") == "compaction":
-            self._close()
+            self._compacted(rec)
             return
         if rec.get("type") != "message":
             return
@@ -1431,7 +1451,7 @@ def join_speech(msgs: list[dict], lines: list[dict]) -> None:
             by_key.setdefault(l["key"], l)
     claimed: set[int] = set()
 
-    replies = [m for m in msgs if m["role"] == "assistant"]
+    replies = [m for m in msgs if m["role"] == "assistant" and not m.get("compacted")]
     for m in replies:
         for text in _final_texts(m):
             for k in spoken_keys(text):
