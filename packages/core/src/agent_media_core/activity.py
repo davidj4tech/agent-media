@@ -39,14 +39,20 @@ _UUID = re.compile(r"^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
                    r"|[0-9]{8}_[0-9]{6}_[0-9a-f]{4,}|ses_[0-9A-Za-z]{26})$")
 #: Tools that are bookkeeping, not work anyone would want listed.
 _QUIET = {"TodoWrite", "ToolSearch", "TaskOutput", "BashOutput", "update_plan"}
-#: Codex's, pi's and opencode's names for the same tools.
+#: Codex's, pi's, opencode's and Gemini CLI's names for the same tools.
 _ALIASES = {"bash": "Bash", "shell": "Bash", "exec_command": "Bash", "local_shell": "Bash",
             # Codex's sandboxed runner: a little script whose command is
             # pulled out when it reads like one (transcript._codex_args).
             "exec": "Bash",
             "read": "Read", "edit": "Edit", "write": "Write", "grep": "Grep",
             "find": "Glob", "ls": "LS", "web_search": "WebSearch",
-            "glob": "Glob", "list": "LS", "webfetch": "WebFetch", "todowrite": "TodoWrite"}
+            "glob": "Glob", "list": "LS", "webfetch": "WebFetch", "todowrite": "TodoWrite",
+            # Gemini's (gemini-cli 0.64, docs/reference/tools.md): `replace`
+            # is its edit, and `web_fetch` takes a prompt with the URLs in it.
+            "run_shell_command": "Bash", "read_file": "Read", "write_file": "Write",
+            "replace": "Edit", "grep_search": "Grep", "list_directory": "LS",
+            "web_fetch": "WebFetch", "google_web_search": "WebSearch",
+            "write_todos": "TodoWrite", "ask_user": "AskUserQuestion"}
 
 
 def canonical_tool(name: str) -> str:
@@ -153,12 +159,17 @@ def describe(tool: str, args: dict) -> str:
     # pi's tools are lower-case, Codex's shell goes by several names and may
     # hand its command over as argv (`["bash", "-lc", "…"]`).
     tool = _ALIASES.get(tool, tool)
+    if tool in _QUIET:          # opencode's `todowrite`, Gemini's `write_todos`
+        return ""
     if tool == "Bash" and isinstance(args.get("command"), list):
         args = {**args, "command": str((args["command"] or [""])[-1])}
     if tool == "Read" and not args.get("file_path") and args.get("path"):
         args = {**args, "file_path": args["path"]}
     if tool in ("Edit", "Write") and not args.get("file_path") and args.get("path"):
         args = {**args, "file_path": args["path"]}
+    # Gemini names a directory `dir_path` (list_directory, a shell's cwd).
+    if tool == "LS" and not args.get("path") and args.get("dir_path"):
+        args = {**args, "path": args["dir_path"]}
     if tool == "apply_patch":
         files = re.findall(r"^\*\*\* (?:Update|Add|Delete) File: (.+)$",
                            str(args.get("input") or args.get("patch") or args.get("command") or ""), re.M)
@@ -187,7 +198,8 @@ def describe(tool: str, args: dict) -> str:
         gist = _command_gist(str(args.get("command") or ""))
         return _short(_plain(gist) or f"Run {gist}", 70)
     if tool == "WebFetch":
-        m = re.match(r"https?://([^/]+)", str(args.get("url") or ""))
+        m = (re.match(r"https?://([^/\s]+)", str(args.get("url") or ""))
+             or re.search(r"https?://([^/\s]+)", str(args.get("prompt") or "")))
         return f"Read {m.group(1) if m else 'a web page'}"
     if tool == "WebSearch":
         return _short(f"Search the web for {args.get('query', '')}")

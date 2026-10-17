@@ -67,6 +67,9 @@ def _clean_media_env(monkeypatch, tmp_path, request):
     monkeypatch.setenv("PI_CODING_AGENT_DIR", str(tmp_path / "pi"))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
+    # And Gemini CLI's, under GEMINI_CLI_HOME's `.gemini`.
+    monkeypatch.setenv("GEMINI_CLI_HOME", str(tmp_path / "gemini-home"))
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     from agent_media_server import context, recaps
 
     recaps._reset_for_tests()

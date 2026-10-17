@@ -40,6 +40,18 @@ state, a way back in. This is the table of those differences.
             started since the process was
             resume: opencode --session <id>; ids are `ses_` and 26 letters
             and digits, the third shape `_safe` knows
+    gemini  ~/.gemini/tmp/<slug>/chats/session-<stamp>-<id[:8]>.jsonl
+            (`GEMINI_CLI_HOME` moves the home `.gemini` is under) — not a
+            log but a fold: each line a message keyed by its `id`, a later
+            line with the same id replacing the earlier one, `$rewindTo`
+            cutting the conversation back to before an id (`gemini_fold`).
+            The full id is on the first line; `<slug>` is the folder's
+            basename, and its `.project_root` says which folder
+            live: node running gemini's bundle, which relaunches itself as a
+            child (`GEMINI_CLI_NO_RELAUNCH`); the child holds the
+            conversation and runs the hooks, and its SessionStart hook
+            writes the session down (`register_pane`), as pi's extension does
+            resume: gemini --resume <id>
 
 pi's model calls often go through Meridian, which runs Claude Code headless
 under systemd. Those `claude` processes have no tmux pane and their sessions
@@ -60,8 +72,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-CLAUDE, CODEX, PI, HERMES, OPENCODE = "claude", "codex", "pi", "hermes", "opencode"
-HARNESSES = (CLAUDE, CODEX, PI, HERMES, OPENCODE)
+CLAUDE, CODEX, PI, HERMES, OPENCODE, GEMINI = (
+    "claude", "codex", "pi", "hermes", "opencode", "gemini")
+HARNESSES = (CLAUDE, CODEX, PI, HERMES, OPENCODE, GEMINI)
 
 _UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 #: Hermes numbers its sessions by the clock instead: `20260921_102508_f74b02`.
@@ -94,6 +107,19 @@ def _pi_dir() -> Path:
 
 def _hermes_dir() -> Path:
     return Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes").expanduser()
+
+
+def _gemini_home() -> Path:
+    """The home Gemini CLI keeps `.gemini` under. `GEMINI_CLI_HOME` replaces
+    the home directory itself, not `.gemini` (its `homedir()`), so a profile
+    is a folder with a `.gemini` of its own inside."""
+    return Path(os.environ.get("GEMINI_CLI_HOME") or Path.home()).expanduser()
+
+
+def gemini_dir(home: Path | None = None) -> Path:
+    """`.gemini` under `home` (default: this process's): settings, sign-in,
+    and every project's conversations under `tmp/`."""
+    return (home or _gemini_home()) / ".gemini"
 
 
 def _xdg_data() -> Path:
@@ -256,6 +282,169 @@ def _opencode_session(session: str) -> tuple:
     return tuple(rows[0]) if rows else ()
 
 
+# --- Gemini CLI's conversation file ------------------------------------------------
+#
+# Gemini writes a conversation as a JSONL file it only ever appends to, but
+# the lines are not a log: a message is written again, whole, every time it
+# changes (its tool calls finished, its token count arrived), so the newest
+# line for an id is the message. Three kinds of line say something else:
+# `{"$rewindTo": id}` drops that message and everything after it (a rewind,
+# or a retried turn), `{"$patch": …}` changes messages in place, and
+# `{"$set": …}` changes the metadata the first line started (its `summary`,
+# the title). Read in 0.64's bundle, `createJsonlRecordAccumulator`.
+
+#: `session-2026-10-17T09-41-1a2b3c4d.jsonl` — a minute's stamp, the id's
+#: first eight characters, and a counter between them when two sessions
+#: began in the same minute with the same prefix.
+_GEMINI_FILE = re.compile(r"session-\d{4}-\d\d-\d\dT\d\d-\d\d-(?:\d+-)?([0-9a-f]{8})\.jsonl")
+
+_GEMINI_FIRST: dict[str, dict] = {}
+
+
+def _gemini_first(path: str) -> dict:
+    """A Gemini conversation file's first line — `sessionId`, `projectHash`,
+    `startTime`, `kind` — or {}. It is never rewritten in place, so each
+    file is read once. The id's eight characters in the name can be shared;
+    this is what says whose file it is."""
+    got = _GEMINI_FIRST.get(path)
+    if got is None:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                rec = json.loads(fh.readline() or "{}")
+        except (OSError, ValueError):
+            return {}
+        got = rec if isinstance(rec, dict) and isinstance(rec.get("sessionId"), str) else {}
+        _GEMINI_FIRST[path] = got
+    return got
+
+
+def _gemini_patch(msgs: dict, patch: dict) -> None:
+    got = msgs.get(patch.get("id"))
+    if not isinstance(got, dict):
+        return
+    if patch.get("content") is not None:
+        got["content"] = patch["content"]
+    for tc in patch.get("toolCalls") or []:
+        if not isinstance(tc, dict) or "result" not in tc:
+            continue
+        for mine in got.get("toolCalls") or []:
+            if isinstance(mine, dict) and mine.get("id") == tc.get("id"):
+                mine["result"] = tc["result"]
+
+
+def gemini_fold(lines) -> tuple[dict, list[dict]]:
+    """`(metadata, messages)` from a Gemini conversation's lines (bytes or
+    str, in file order): what Gemini itself makes of the file. Messages are
+    the newest line for each id, in the order the ids first appeared."""
+    meta: dict = {}
+    msgs: dict[str, dict] = {}
+    for raw in lines:
+        try:
+            rec = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        if isinstance(rec.get("$rewindTo"), str):
+            ids = list(msgs)
+            cut = ids.index(rec["$rewindTo"]) if rec["$rewindTo"] in msgs else 0
+            for gone in ids[cut:]:
+                del msgs[gone]
+        elif isinstance(rec.get("$patch"), dict):
+            p = rec["$patch"]
+            _gemini_patch(msgs, p)
+            for u in p.get("updates") or []:
+                if isinstance(u, dict):
+                    _gemini_patch(msgs, u)
+            for gone in p.get("removeIds") or []:
+                msgs.pop(gone, None)
+            order = [i for i in p.get("orderIds") or [] if i in msgs]
+            if order:
+                rest = [i for i in msgs if i not in set(order)]
+                msgs = {i: msgs[i] for i in [*rest, *order]}
+        elif isinstance(rec.get("id"), str):
+            msgs[rec["id"]] = rec
+        elif isinstance(rec.get("$set"), dict):
+            got = rec["$set"]
+            if isinstance(got.get("messages"), list):
+                msgs = {m["id"]: m for m in got["messages"]
+                        if isinstance(m, dict) and isinstance(m.get("id"), str)}
+            meta.update({k: v for k, v in got.items() if k != "messages"})
+        elif isinstance(rec.get("sessionId"), str):
+            meta.update({k: v for k, v in rec.items() if k != "messages"})
+            for m in rec.get("messages") or []:
+                if isinstance(m, dict) and isinstance(m.get("id"), str):
+                    msgs[m["id"]] = m
+    return meta, list(msgs.values())
+
+
+def gemini_project_root(project: Path) -> str:
+    """The folder a Gemini project directory (`tmp/<slug>`) is for, from the
+    `.project_root` Gemini keeps in it; "" when it has none. The slug is the
+    folder's basename with `-1`, `-2` added on a collision, so it cannot be
+    turned back into a path."""
+    try:
+        return (project / ".project_root").read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def gemini_project_dir(cwd: str, home: Path | None = None) -> Path | None:
+    """The `tmp/<slug>` Gemini keeps a folder's conversations in, or None:
+    `projects.json` maps folders to slugs (`{"projects": {path: slug}}`),
+    and each slug's `.project_root` says the same the other way round."""
+    base = gemini_dir(home)
+    cwd = (cwd or "").rstrip("/") or "/"
+    try:
+        slug = (json.loads((base / "projects.json").read_text()).get("projects") or {}).get(cwd)
+    except (OSError, ValueError, AttributeError):
+        slug = None
+    if isinstance(slug, str) and slug and "/" not in slug:
+        return base / "tmp" / slug
+    for marker in glob.glob(str(base / "tmp" / "*" / ".project_root")):
+        if gemini_project_root(Path(marker).parent).rstrip("/") == cwd:
+            return Path(marker).parent
+    return None
+
+
+def gemini_read(path: Path | str) -> tuple[dict, list[dict]]:
+    """`gemini_fold` of the file at `path`; ({}, []) when it cannot be read."""
+    try:
+        with open(path, "rb") as fh:
+            return gemini_fold(fh)
+    except OSError:
+        return {}, []
+
+
+#: What Gemini puts into a prompt that nobody typed: a hook's context (ours,
+#: the context note, among them) and the session context it opens with.
+_GEMINI_ASIDE = re.compile(r"<(hook_context|session_context)>.*?</\1>", re.S)
+
+
+def gemini_text(content) -> str:
+    """The words in a Gemini message's `content` (a string, or Gemini's
+    parts): text parts that are not thoughts, asides taken out. A tool's
+    answer (`functionResponse`) has none."""
+    if isinstance(content, (str, dict)):
+        content = [content]
+    if not isinstance(content, list):
+        return ""
+    out = []
+    for p in content:
+        if isinstance(p, str):
+            out.append(p)
+        elif isinstance(p, dict) and isinstance(p.get("text"), str) and not p.get("thought"):
+            out.append(p["text"])
+    return _GEMINI_ASIDE.sub("", "".join(out)).strip()
+
+
+def gemini_prompt(rec: dict) -> str:
+    """What the person typed, for a Gemini `user` message: what the terminal
+    showed of it (`displayContent`, set when the prompt sent differs — an
+    @file expanded) when it has that, else its content."""
+    return gemini_text(rec.get("displayContent")) or gemini_text(rec.get("content"))
+
+
 # --- where a conversation is written -------------------------------------------
 
 
@@ -280,6 +469,16 @@ def _transcript(session: str) -> Optional[tuple[str, Path, str]]:
             hits = glob.glob(str(base / pattern))
             if hits:
                 return harness, Path(max(hits, key=lambda p: os.path.getmtime(p))), profile
+    # Gemini names the file by the id's first eight characters only, which
+    # two sessions can share: the first line says which one it is. Its
+    # subagents write under `chats/<parent id>/`, one level down, and are
+    # not matched.
+    for profile, home in _profile_dirs(GEMINI, _gemini_home()):
+        hits = [h for h in glob.glob(str(gemini_dir(home) / "tmp" / "*" / "chats"
+                                         / f"session-*-{session[:8]}.jsonl"))
+                if _gemini_first(h).get("sessionId") == session]
+        if hits:
+            return GEMINI, Path(max(hits, key=lambda p: os.path.getmtime(p))), profile
     return None
 
 
@@ -296,7 +495,8 @@ def profile_of(session: str) -> str:
 
 
 def harness_of(session: str) -> str:
-    """"claude", "codex", "pi", "hermes", "opencode", or "" when none has it."""
+    """"claude", "codex", "pi", "hermes", "opencode", "gemini", or "" when
+    none has it."""
     if is_opencode(session):
         return OPENCODE if _opencode_session(session) else ""
     if is_hermes(session):
@@ -332,6 +532,8 @@ def cwd_of(session: str) -> str:
     if not found:
         return ""
     harness, path = found
+    if harness == GEMINI:
+        return gemini_project_root(path.parent.parent)
     for rec in _records(path):
         if harness == CODEX:
             cwd = (rec.get("payload") or {}).get("cwd") if rec.get("type") == "session_meta" else ""
@@ -382,6 +584,15 @@ def first_prompt(session: str) -> str:
     if not found or found[0] == CLAUDE:
         return ""
     harness, path = found
+    if harness == GEMINI:
+        # A tool's answer goes back as a `user` message too, with no words;
+        # a slash command is an instruction to Gemini, as Gemini itself
+        # decides when it lists sessions.
+        for rec in gemini_read(path)[1]:
+            text = gemini_prompt(rec) if rec.get("type") == "user" else ""
+            if text and not text.startswith(("/", "?")):
+                return " ".join(text.split())
+        return ""
     for rec in _records(path):
         if harness == CODEX:
             p = rec.get("payload") or {}
@@ -405,6 +616,9 @@ def title_of(session: str) -> str:
     session file (the last one wins, as a /name renames it). Claude's titles
     are read by session_feed, which knows its record types. opencode keeps
     one on the session row: a timestamp until it has thought of a better one.
+    Gemini writes a one-line `summary` into the file's metadata (`$set`)
+    once a conversation has had a turn or two; before that there is none,
+    and the callers fall back to `first_prompt`, as they do for the others.
     """
     if is_opencode(session):
         found = _opencode_session(session)
@@ -419,7 +633,9 @@ def title_of(session: str) -> str:
         return ""
     harness, path = found
     name = ""
-    if harness == CODEX:
+    if harness == GEMINI:
+        name = str(gemini_read(path)[0].get("summary") or "")
+    elif harness == CODEX:
         for rec in _records(_codex_dir() / "session_index.jsonl"):
             if rec.get("id") == session and rec.get("thread_name"):
                 name = str(rec["thread_name"])
@@ -509,6 +725,68 @@ def _hermes_pid(argv: list[str]) -> bool:
     if os.path.basename(argv[0]) == HERMES:
         return True
     return len(argv) > 1 and os.path.basename(argv[1]) == HERMES
+
+
+def _gemini_pid(argv: list[str]) -> bool:
+    """Whether this argv is a Gemini CLI.
+
+    An npm agent run through its `#!/usr/bin/env node` line, so the process
+    is `node` and gemini is its script (`…/bin/gemini`, or the bundle's
+    `gemini.js` it points at) — after any node options, which the relaunch
+    adds (`--max-old-space-size=…`). The pane says `node`. A single-binary
+    build is `gemini` itself.
+    """
+    if not argv:
+        return False
+    if os.path.basename(argv[0]) == GEMINI:
+        return True
+    if os.path.basename(argv[0]) not in ("node", "nodejs"):
+        return False
+    script = next((a for a in argv[1:] if not a.startswith("-")), "")
+    return os.path.basename(script) in ("gemini", "gemini.js")
+
+
+def _gemini_worker(pid: str, argv: list[str]) -> bool:
+    """Whether this is the Gemini that holds the conversation. The one typed
+    at a prompt only waits: it relaunches itself as a child with more memory
+    (and `GEMINI_CLI_NO_RELAUNCH` set), and the child is the one that writes
+    the file and runs the hooks — so the parent is never counted, or every
+    Gemini would be listed twice."""
+    return _gemini_pid(argv) and bool(_env_of(pid, "GEMINI_CLI_NO_RELAUNCH")
+                                      or _env_of(pid, "SANDBOX"))
+
+
+def _gemini_live_session(pid: str, argv: list[str]) -> str:
+    """The session a live Gemini is on when its hook has not said (one
+    started before the hook was wired): `--resume <uuid>` in its arguments,
+    else, like Hermes, the newest conversation in its folder's project
+    written since the process began. "" before it has one — Gemini writes
+    the file at start and removes it on exit if nothing was said."""
+    for i, a in enumerate(argv[1:], 1):
+        val = argv[i + 1] if i + 1 < len(argv) else ""
+        if a.startswith(("--resume=", "--session-id=")):
+            val, a = a.split("=", 1)[1], a.split("=", 1)[0]
+        if a in ("--resume", "-r", "--session-id") and re.fullmatch(_UUID, val):
+            return val
+    try:
+        cwd = os.readlink(f"/proc/{pid}/cwd")
+    except OSError:
+        return ""
+    home = _env_of(pid, "GEMINI_CLI_HOME")
+    project = gemini_project_dir(cwd, Path(home) if home else None)
+    if project is None:
+        return ""
+    since = _started_at(pid) - 5.0
+    best, best_at = "", since
+    for f in glob.glob(str(project / "chats" / "session-*.jsonl")):
+        try:
+            at = os.path.getmtime(f)
+        except OSError:
+            continue
+        sid = str(_gemini_first(f).get("sessionId") or "")
+        if at >= best_at and re.fullmatch(_UUID, sid):
+            best, best_at = sid, at
+    return best
 
 
 def _hermes_store_of(pid: str) -> Optional[Path]:
@@ -698,6 +976,40 @@ def _opencode_stored() -> list[Stored]:
             if is_opencode(str(sid or ""))]
 
 
+def _gemini_stored() -> list[Stored]:
+    """Every Gemini conversation, in every profile's home: `tmp/<slug>/chats/
+    session-*.jsonl`, a scandir per project. The name carries only eight
+    characters of the id, so each file's first line is read — once
+    (`_gemini_first`). A subagent's conversation sits a folder further down
+    (`chats/<parent id>/`) and says `kind: subagent`: part of its parent's."""
+    out: list[Stored] = []
+    for profile, home in _profile_dirs(GEMINI, _gemini_home()):
+        try:
+            projects = [e for e in os.scandir(gemini_dir(home) / "tmp") if e.is_dir()]
+        except OSError:
+            continue
+        for project in projects:
+            try:
+                entries = list(os.scandir(Path(project.path) / "chats"))
+            except OSError:
+                continue
+            for e in entries:
+                m = _GEMINI_FILE.fullmatch(e.name)
+                if not m or not e.is_file():
+                    continue
+                meta = _gemini_first(e.path)
+                sid = str(meta.get("sessionId") or "")
+                if not re.fullmatch(_UUID, sid) or not sid.startswith(m.group(1)) \
+                        or meta.get("kind") == "subagent":
+                    continue
+                try:
+                    at = e.stat().st_mtime
+                except OSError:
+                    continue
+                out.append(Stored(sid, GEMINI, at, e.path, project.name, profile))
+    return out
+
+
 _CODEX_META: dict[str, dict] = {}
 
 
@@ -784,6 +1096,7 @@ def stored(*, since: float = 0.0, limit: int = 0,
                   _scan(base / "sessions", 1, re.compile(f".*_({_UUID})\\.jsonl"), PI)]
     found += _hermes_stored()
     found += _opencode_stored()
+    found += _gemini_stored()
     from .deleted import deleted
     from .sealed import sealed
 
@@ -847,7 +1160,9 @@ def _registered() -> list[Running]:
         harness = str(row.get("harness") or "")
         # A pane id and a pid are both reused: believe the row only while the
         # process it names is the same agent, sitting in the same pane.
-        if not argv or os.path.basename(argv[0]) != harness:
+        # Gemini's process is `node` (`_gemini_pid`).
+        if not argv or not (_gemini_pid(argv) if harness == GEMINI
+                            else os.path.basename(argv[0]) == harness):
             continue
         pane = str(row.get("pane") or "")
         if _pane_of(pid) != pane:
@@ -857,19 +1172,29 @@ def _registered() -> list[Running]:
 
 
 def running() -> list[Running]:
-    """Every live codex, pi, hermes and opencode, with the session each is on.
+    """Every live codex, pi, hermes, opencode and gemini, with the session
+    each is on.
 
     Claude is not here: claude_sessions has Claude's own record of that, and
     the reply code keeps its extra fallbacks. A codex that has not been sent
-    anything yet has no session and is left out.
+    anything yet has no session and is left out. pi and Gemini are what their
+    session-start hooks registered; a Gemini that never registered (started
+    before its hooks were wired) is worked out from its own arguments and
+    files instead.
     """
-    out = [r for r in _registered() if r.harness == PI and r.session]
+    out = [r for r in _registered() if r.harness in (PI, GEMINI) and r.session]
+    registered = {r.pid for r in out}
     for d in glob.glob("/proc/[0-9]*"):
         pid = os.path.basename(d)
         argv = _argv(pid)
         if not argv:
             continue
-        if os.path.basename(argv[0]) == CODEX:
+        if _gemini_pid(argv):
+            if int(pid) not in registered and _gemini_worker(pid, argv):
+                sid = _gemini_live_session(pid, argv)
+                if sid:
+                    out.append(Running(int(pid), sid, _pane_of(pid), GEMINI))
+        elif os.path.basename(argv[0]) == CODEX:
             sid = _codex_session(pid)
             if sid:
                 out.append(Running(int(pid), sid, _pane_of(pid), CODEX))
@@ -1013,6 +1338,11 @@ class Recipe:
     #: exists inside its own prompt: pi's `/login` refuses to run from the
     #: command line ("isn't available in this environment") but works typed.
     login_keys: tuple[str, ...] = ()
+    #: `(name, value)` set for the sign-in, which runs as `env NAME=value
+    #: <agent> …`: Gemini's `NO_BROWSER=true`, without which its Google
+    #: sign-in opens a browser on this host and waits for a redirect to
+    #: localhost — from the phone, nobody is there to see either.
+    env: tuple[tuple[str, str], ...] = ()
 
 
 #: One row per harness. The install channels are the ones these agents are
@@ -1067,6 +1397,22 @@ RECIPES: dict[str, Recipe] = {
         status=("auth", "list"),
         package="opencode-ai",
     ),
+    # An npm global like Claude. Its sign-in lives inside its own prompt, as
+    # pi's does: `/auth` is typed into a gemini started for nothing else.
+    # With NO_BROWSER it prints a URL and asks for the code that page shows
+    # (codeassist.google.com/authcode) — Codex's device sign-in, in effect,
+    # so it works from whichever screen is held. `--skip-trust`: the window
+    # opens in whatever folder the host's tmux is in, and an untrusted one
+    # puts a trust question in front of the prompt the keys are typed into.
+    # Its state is read from its files (`_gemini_auth`), not asked.
+    GEMINI: Recipe(
+        install=("npm", "install", "-g", "@google/gemini-cli"),
+        update=("npm", "install", "-g", "@google/gemini-cli@latest"),
+        login=("--skip-trust",),
+        login_keys=("/auth",),
+        env=(("NO_BROWSER", "true"),),
+        package="@google/gemini-cli",
+    ),
 }
 
 
@@ -1090,9 +1436,10 @@ def login_argv(harness: str) -> list[str]:
     """The command that signs into `harness` interactively. [] when it has none."""
     r = RECIPES.get(harness)
     exe = program(harness)
-    if not r or not r.login or not exe:
+    if not r or not (r.login or r.login_keys) or not exe:
         return []
-    return [exe, *r.login]
+    env = ["env", *(f"{k}={v}" for k, v in r.env)] if r.env else []
+    return [*env, exe, *r.login]
 
 
 def logout_argv(harness: str) -> list[str]:
@@ -1201,13 +1548,16 @@ def update_check(harness: str, timeout: float = 90.0) -> tuple[bool | None, str]
 def auth_state(harness: str, timeout: float = 15.0, env: dict | None = None) -> tuple[str, str]:
     """`(state, detail)` — "in", "out" or "unknown", and a line to show.
 
-    Three of the five can be asked without opening a terminal: Claude
+    Four of the six can be answered without opening a terminal: Claude
     answers `auth status` in JSON, Codex exits non-zero when it is signed out,
-    and opencode counts its stored credentials. The other two are reported
-    honestly as unknown rather than guessed at.
+    opencode counts its stored credentials, and Gemini's are files read
+    here (`_gemini_auth`). The other two are reported honestly as unknown
+    rather than guessed at.
     """
     import subprocess
 
+    if harness == GEMINI:
+        return _gemini_auth(env)
     r = RECIPES.get(harness)
     exe = program(harness)
     if not r or not r.status or not exe:
@@ -1390,6 +1740,66 @@ def _opencode_auth(said: str) -> tuple[str, str]:
     if not m:
         return "unknown", " ".join(text.split())[:200]
     return "unknown", "no sign-in: opencode's free models only"
+
+
+def _dotenv_value(path: Path, key: str) -> str:
+    """`key`'s value in a dotenv file, or "": `KEY=value`, `export KEY=…`,
+    quoted or not, as Gemini's dotenv reads it."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return ""
+    for line in lines:
+        m = re.match(rf"\s*(?:export\s+)?{re.escape(key)}\s*=\s*(.*)$", line)
+        if m:
+            val = m.group(1).strip()
+            if val[:1] in ("'", '"') and val.endswith(val[0]) and len(val) > 1:
+                val = val[1:-1]
+            else:
+                val = val.split(" #")[0].strip()
+            return val
+    return ""
+
+
+def _gemini_auth(env: dict | None = None) -> tuple[str, str]:
+    """Gemini's sign-in, from its files — it has no status command, and
+    starting it to ask would start a session.
+
+    Either way in counts: an API key (`GEMINI_API_KEY` in the environment,
+    or in the `.env` Gemini loads — `~/.gemini/.env`, then `~/.env`), or a
+    Google sign-in, cached in `oauth_creds.json` with the refresh token that
+    keeps it alive; the account is the active one in `google_accounts.json`.
+    Vertex AI and a cloud machine's own credentials are set up outside it,
+    so those are "unknown". Anything else is "out": unlike opencode, Gemini
+    has nothing to run without a sign-in. `env`: a harness profile's
+    (`GEMINI_CLI_HOME`).
+    """
+    environ = {**os.environ, **(env or {})}
+    home = Path(environ.get("GEMINI_CLI_HOME") or Path.home()).expanduser()
+    d = gemini_dir(home)
+    if environ.get("GEMINI_API_KEY"):
+        return "in", "API key (environment)"
+    for f, shown in ((d / ".env", "~/.gemini/.env"), (home / ".env", "~/.env")):
+        if _dotenv_value(f, "GEMINI_API_KEY"):
+            return "in", f"API key ({shown})"
+    try:
+        creds = json.loads((d / "oauth_creds.json").read_text())
+    except (OSError, ValueError):
+        creds = None
+    if isinstance(creds, dict) and creds.get("refresh_token"):
+        try:
+            who = json.loads((d / "google_accounts.json").read_text()).get("active")
+        except (OSError, ValueError, AttributeError):
+            who = ""
+        return "in", str(who or "signed in with Google")
+    try:
+        chosen = str(((json.loads((d / "settings.json").read_text()).get("security") or {})
+                      .get("auth") or {}).get("selectedType") or "")
+    except (OSError, ValueError, AttributeError):
+        chosen = ""
+    if chosen in ("vertex-ai", "compute-default-credentials", "cloud-shell"):
+        return "unknown", f"{chosen}: set up outside Gemini"
+    return "out", "not signed in"
 
 
 def version_of(harness: str, timeout: float = 10.0) -> str:

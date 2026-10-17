@@ -124,6 +124,10 @@ def _no_live_speech_token(monkeypatch, tmp_path):
     # unset, a test that lists every harness's sessions would read this
     # machine's real ones.
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
+    # Gemini CLI's under GEMINI_CLI_HOME's `.gemini` (harnesses.gemini_dir),
+    # and its sign-in is read from there: never this machine's.
+    monkeypatch.setenv("GEMINI_CLI_HOME", str(tmp_path / "gemini-home"))
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
 
 
 @pytest.fixture(autouse=True)

@@ -92,3 +92,21 @@ def test_the_file_is_trimmed(monkeypatch):
     for i in range(100):
         _ev("PreToolUse", i, tool_name="Read", tool_input={"file_path": f"/x/{i}.py"})
     assert len(activity._path(SID).read_text().splitlines()) <= 40
+
+
+@pytest.mark.parametrize("tool,args,want", [
+    ("run_shell_command", {"command": "ls -la", "description": "See what is here"}, "See what is here"),
+    ("read_file", {"file_path": "/p/README.md", "offset": 0, "limit": 40}, "Read README.md"),
+    ("replace", {"file_path": "/p/a.py", "old_string": "x", "new_string": "y"}, "Edit a.py"),
+    ("write_file", {"file_path": "/p/b.py", "content": ""}, "Write b.py"),
+    ("list_directory", {"dir_path": "/p/src"}, "List src"),
+    ("grep_search", {"pattern": "TODO"}, "Search for TODO"),
+    ("glob", {"pattern": "**/*.py"}, "Find **/*.py"),
+    ("web_fetch", {"prompt": "Summarise https://example.com/a and say why"}, "Read example.com"),
+    ("google_web_search", {"query": "gemini cli hooks"}, "Search the web for gemini cli hooks"),
+    ("write_todos", {"todos": []}, ""),
+])
+def test_gemini_tools_read_like_the_others(tool, args, want):
+    """Gemini CLI's tool names and arguments (0.64), as the step list words
+    Claude Code's."""
+    assert activity.describe(tool, args) == want
