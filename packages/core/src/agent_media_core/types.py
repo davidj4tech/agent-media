@@ -21,6 +21,7 @@ class Source(str, Enum):
     PI = "pi"
     OPENCODE = "opencode"
     GEMINI = "gemini"
+    GROK = "grok"
     HA_SSE = "ha-sse"
     HA_STT = "ha-stt"
     MATRIX = "matrix"

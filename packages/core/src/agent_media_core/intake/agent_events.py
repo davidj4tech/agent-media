@@ -13,6 +13,8 @@ pi adds SessionStart: it is the only record of which pi is on which session
 
 Gemini CLI's hooks have names of their own (BeforeAgent, BeforeTool,
 AfterAgent); intake/hook_gemini.py renames them and hands them here too.
+Grok's are Claude Code's names with camelCase fields beside the snake_case
+ones; intake/hook_grok.py hands them here.
 """
 
 from __future__ import annotations

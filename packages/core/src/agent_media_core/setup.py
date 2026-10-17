@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1602,6 +1603,126 @@ def _row_gemini(args, *, check_only: bool):
     return ("installed" if changed else "ok"), str(path)
 
 
+#: Grok's hooks are all one command (intake/hook_grok.py), which reads the
+#: event from its input. Each event and its timeout — in seconds, as Grok
+#: counts them. Grok runs every hook in the foreground (it reads no
+#: `async`), so none of them waits on speech: Stop's reply is spoken from a
+#: detached child, and its timeout is only the time to start it.
+GROK_HOOK_COMMAND = "media-hook-grok"
+GROK_HOOKS = (("SessionStart", 5), ("UserPromptSubmit", 5), ("PreToolUse", 5),
+              ("PostToolUse", 5), ("Stop", 10))
+
+_GROK_COMPAT_HEADER = re.compile(r"^\s*\[\s*compat\s*\.\s*claude\s*\]\s*(?:#.*)?$")
+_GROK_COMPAT_NOTE = ("# Grok runs imported Claude hooks in the foreground (it ignores async),\n"
+                     "# so the speech Stop hook stalled every turn; agent-media gives Grok\n"
+                     "# its own (~/.grok/hooks/agent-media.json).\n")
+
+
+def grok_config_path() -> Path:
+    """Grok's own settings, `~/.grok/config.toml` (under `GROK_HOME`)."""
+    from agent_media_core import harnesses
+
+    return harnesses.grok_dir() / "config.toml"
+
+
+def grok_hooks_path() -> Path:
+    """The hook file of agent-media's own in Grok's home: Grok loads every
+    `hooks/*.json` there, and trusts them all."""
+    from agent_media_core import harnesses
+
+    return harnesses.grok_dir() / "hooks" / "agent-media.json"
+
+
+def _grok_claude_hooks(text: str):
+    """`[compat.claude] hooks` in a Grok config.toml's text: True, False, or
+    None when it is not set (Grok's default then is on). Raises ValueError
+    for a file that is not TOML."""
+    import tomllib
+
+    got = ((tomllib.loads(text).get("compat") or {}).get("claude") or {}).get("hooks")
+    return got if isinstance(got, bool) else None
+
+
+def _grok_claude_hooks_off(text: str) -> tuple[str, bool]:
+    """`text` with `[compat.claude] hooks = false`, and whether it changed.
+
+    Every other line is kept as it was, comments too: the value is put in
+    place in an existing `[compat.claude]` table, or the table added at the
+    end. A config that spells it some other way (a dotted key, an inline
+    table) is not rewritten — ValueError, so the row says to set it by hand."""
+    if _grok_claude_hooks(text) is False:
+        return text, False
+    lines = text.splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        if not _GROK_COMPAT_HEADER.match(line.rstrip("\n")):
+            continue
+        j = i + 1
+        while j < len(lines) and not lines[j].lstrip().startswith("["):
+            if re.match(r"\s*hooks\s*=", lines[j]):
+                lines[j] = "hooks = false\n"
+                break
+            j += 1
+        else:
+            lines.insert(i + 1, "hooks = false\n")
+        break
+    else:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        lines += (["\n"] if lines else []) + ["[compat.claude]\n", _GROK_COMPAT_NOTE,
+                                              "hooks = false\n"]
+    out = "".join(lines)
+    if _grok_claude_hooks(out) is not False:
+        raise ValueError("compat.claude.hooks is set in a way this cannot rewrite")
+    return out, True
+
+
+def _row_grok(args, *, check_only: bool):
+    """Grok's hooks: its replies spoken, its turns and steps recorded, which
+    pane it is in, and the context warnings — five events, one command, in
+    a hook file of its own (`grok_hooks_path`), timeouts in seconds.
+
+    And Grok's import of Claude Code's hooks turned off (`[compat.claude]
+    hooks = false` in its config.toml, everything else in the file kept): it
+    runs them in the foreground, ignoring `async`, so the 120 s speech Stop
+    hook held every turn, and agent-mail, catch-up and rtk fired inside
+    Grok. On is the hazard, so the row turns it off whichever way it was
+    set. Grok's other Claude imports (skills, rules, MCP servers) are left."""
+    if shutil.which("grok") is None:
+        return "absent", "grok is not installed here"
+    config, hooks = grok_config_path(), grok_hooks_path()
+    try:
+        old = config.read_text() if config.exists() else ""
+        new, config_changed = _grok_claude_hooks_off(old)
+    except (OSError, ValueError, UnicodeDecodeError) as e:
+        return "failed", f"{config}: set [compat.claude] hooks = false by hand ({e})"
+    settings = _load_json(hooks)
+    have = _gemini_hook_events(settings, GROK_HOOK_COMMAND)
+    if check_only:
+        ok = not config_changed and all(e in have for e, _t in GROK_HOOKS)
+        return ("ok" if ok else "missing"), str(hooks)
+    if config_changed:
+        if args.dry_run:
+            print(f"# would set [compat.claude] hooks = false in {config}")
+        else:
+            config.parent.mkdir(parents=True, exist_ok=True)
+            if old:
+                shutil.copy2(str(config), str(config) + ".bak")
+            tmp = config.with_suffix(".toml.tmp")
+            tmp.write_text(new)
+            tmp.replace(config)
+    # The expanded path, not `$HOME/…`: Grok takes a command with a `/` in
+    # it for a path, and this file is this machine's alone.
+    command = os.path.expandvars(hook_command(GROK_HOOK_COMMAND))
+    merged, changed = settings, False
+    for event, timeout in GROK_HOOKS:
+        merged, did = _merge_hook_entry(merged, event, command, GROK_HOOK_COMMAND,
+                                        timeout, False)
+        changed = changed or did
+    if changed:
+        _write_settings(hooks, merged, dry_run=args.dry_run)
+    return ("installed" if changed or config_changed else "ok"), str(hooks)
+
+
 CODEX_HOOK_COMMAND = "media-hook-codex"
 
 
@@ -1799,6 +1920,8 @@ PROFILE_ROWS = (
      "extra", _row_codex),
     ("gemini", "Gemini CLI's replies spoken, its turns recorded and its context "
      "watched (its hooks)", "extra", _row_gemini),
+    ("grok", "Grok's replies spoken, its turns recorded and its context watched "
+     "(its hooks; Claude's hooks not imported)", "extra", _row_grok),
 )
 
 

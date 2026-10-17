@@ -3,6 +3,8 @@ import argparse
 import json
 import os
 
+import pytest
+
 from agent_media_core import setup
 
 
@@ -926,6 +928,57 @@ def test_gemini_the_old_context_hook_is_replaced_not_doubled(tmp_path, monkeypat
 def test_gemini_settings_follow_its_home(tmp_path, monkeypatch):
     monkeypatch.setenv("GEMINI_CLI_HOME", str(tmp_path / "g"))
     assert setup.gemini_settings_path() == tmp_path / "g" / ".gemini" / "settings.json"
+
+
+def test_grok_gets_its_hooks_and_claudes_are_turned_off(tmp_path, monkeypatch):
+    """Five events, one command, seconds; [compat.claude] hooks = false added
+    to its config.toml with every other line kept. GROK_HOME is the
+    conftest's throwaway one."""
+    _only_hook_rows(monkeypatch)
+    monkeypatch.setattr(setup.shutil, "which", lambda name: f"/usr/bin/{name}")
+    home = tmp_path / "grok"
+    monkeypatch.setenv("GROK_HOME", str(home))
+    home.mkdir()
+    before = ('[cli]\ninstaller = "internal"\n\n# my marketplace\n'
+              '[[marketplace.sources]]\nname = "xAI Official"\n')
+    (home / "config.toml").write_text(before)
+    assert setup._row_grok(_profile_args(tmp_path), check_only=True)[0] == "missing"
+    assert setup.cmd_profile(_profile_args(tmp_path, only="grok")) == 0
+    text = (home / "config.toml").read_text()
+    assert text.startswith(before) and "[compat.claude]\n" in text and "hooks = false\n" in text
+    assert setup._grok_claude_hooks(text) is False
+    data = json.loads((home / "hooks" / "agent-media.json").read_text())
+    for event, timeout in setup.GROK_HOOKS:
+        mine = [h for g in data["hooks"][event] for h in g["hooks"]
+                if setup.GROK_HOOK_COMMAND in h["command"]]
+        assert len(mine) == 1 and mine[0]["timeout"] == timeout
+        assert "$HOME" not in mine[0]["command"]
+    assert setup._row_grok(_profile_args(tmp_path), check_only=True)[0] == "ok"
+    snapshot = ((home / "config.toml").read_text(),
+                (home / "hooks" / "agent-media.json").read_text())
+    assert setup.cmd_profile(_profile_args(tmp_path, only="grok")) == 0
+    assert snapshot == ((home / "config.toml").read_text(),
+                        (home / "hooks" / "agent-media.json").read_text())
+
+
+@pytest.mark.parametrize("before,after", [
+    # On by hand: turned off, in place.
+    ("[compat.claude]\nhooks = true\nskills = true\n\n[ui]\nx = 1\n",
+     "[compat.claude]\nhooks = false\nskills = true\n\n[ui]\nx = 1\n"),
+    # The table without the key: the key goes under its header.
+    ("[compat.claude]\nskills = false\n", "[compat.claude]\nhooks = false\nskills = false\n"),
+    # Off already (red5's, set by hand 17 Oct 2026): left exactly as it is.
+    ("[compat.claude]\n# mine\nhooks = false\n", "[compat.claude]\n# mine\nhooks = false\n"),
+])
+def test_grok_compat_is_set_in_place(before, after):
+    assert setup._grok_claude_hooks_off(before)[0] == after
+
+
+def test_grok_compat_spelled_otherwise_is_left_for_a_person():
+    with pytest.raises(ValueError):
+        setup._grok_claude_hooks_off("compat.claude.hooks = true\n")
+    with pytest.raises(ValueError):
+        setup._grok_claude_hooks_off("not = [toml\n")
 
 
 def test_codex_gets_notify_and_the_prompt_hook(tmp_path, monkeypatch):

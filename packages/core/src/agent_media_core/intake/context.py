@@ -10,8 +10,10 @@ Two entry points share one state file per session:
 * ``media-hook-context`` — Claude Code's UserPromptSubmit hook. Codex's is
   ``media-hook-codex event``, which calls ``note_for`` (a new hooks.json
   entry would stop Codex for a review); Gemini CLI's is its BeforeAgent
-  hook, ``media-hook-gemini``, which does the same; and pi's extension calls
-  this with its own numbers. It takes the last turn's
+  hook, ``media-hook-gemini``, which does the same; Grok's is its
+  PostToolUse hook, ``media-hook-grok`` (Grok reads context from no other
+  event), with numbers it reads itself (``grok_usage``); and pi's extension
+  calls this with its own numbers. It takes the last turn's
   usage from the transcript and, when that crosses a band
   (50, 70, 85%), adds a note to the session's context so it can work leaner
   and, near the limit, write a handoff note before auto-compaction runs (a
@@ -23,7 +25,8 @@ status line, so for it the window is guessed: ``WINDOWS`` by model id, and a
 session already past 200k is taken to have 1M, since it could not have got
 there otherwise. ``CLAUDE_CONTEXT_WINDOW`` (tokens) overrides both. Codex
 writes its window into its transcript; Gemini's is counted to the point
-where it compresses its history (``gemini_compression_threshold``).
+where it compresses its history (``gemini_compression_threshold``), and
+Grok's to where it compacts (``grok_compaction_point``).
 
 Neither prints anything on anything unexpected, and both exit 0: a prompt
 must never be blocked, nor a status line broken, by this.
@@ -99,11 +102,106 @@ def gemini_compression_threshold() -> float:
         return 0.5
 
 
-def _tail(transcript: str) -> list[bytes]:
+#: Grok's window and where it compacts, when its model list does not say
+#: (grok-4.7 in 1.0.62's models_cache.json: 256k, 80%).
+GROK_WINDOW = 256_000
+GROK_COMPACT_PERCENT = 80
+
+
+def grok_compaction_point(model: str = "", window: int = 0) -> int:
+    """The tokens at which Grok compacts a conversation: a share
+    (`auto_compact_threshold_percent`) of the model's `context_window`. Its
+    warnings are counted against that point, since that is where history is
+    lost.
+
+    Both come from Grok's own model list (`models_cache.json`, `models.<id>.
+    info`) unless its config.toml sets them — `[model.<id>]`, then
+    `[session]` for the share. `window` is one the session already
+    reported."""
+    import tomllib
+
+    from .. import harnesses
+
+    base = harnesses.grok_dir()
+    try:
+        models = json.loads((base / "models_cache.json").read_text()).get("models") or {}
+    except (OSError, ValueError, AttributeError):
+        models = {}
+    if not isinstance(models, dict):
+        models = {}
+    entry = models.get(model) or (next(iter(models.values())) if len(models) == 1 else {})
+    info = (entry.get("info") if isinstance(entry, dict) else None) or {}
+    try:
+        cfg = tomllib.loads((base / "config.toml").read_text())
+    except (OSError, ValueError):
+        cfg = {}
+    mine = ((cfg.get("model") or {}).get(model) or {}) if model else {}
+    pct = (mine.get("auto_compact_threshold_percent")
+           or (cfg.get("session") or {}).get("auto_compact_threshold_percent")
+           or info.get("auto_compact_threshold_percent") or GROK_COMPACT_PERCENT)
+    win = window or mine.get("context_window") or info.get("context_window") or GROK_WINDOW
+    try:
+        return int(int(win) * float(pct) / 100)
+    except (TypeError, ValueError):
+        return int(GROK_WINDOW * GROK_COMPACT_PERCENT / 100)
+
+
+def grok_usage(transcript: str) -> tuple[int, int] | None:
+    """`(tokens in the context, the point Grok compacts at)` for the Grok
+    session whose `updates.jsonl` is `transcript`, or None.
+
+    Not confirmed on a real session (none on disk yet): the count is read
+    from the newest ACP `usage_update` in the log (`used`, of `size`), else
+    from a `usage` with Anthropic-shaped input counts (its headless output's
+    shape), else from the folder's `signals.json` (`context_tokens`, the
+    name its status line gives the same number). The model is the one
+    `summary.json` says."""
+    from .. import harnesses
+
+    folder = Path(transcript).parent
+    model = str(harnesses.grok_summary(folder).get("current_model_id") or "")
+    used = size = 0
+    try:
+        lines = _tail(transcript, 400_000)
+    except OSError:
+        lines = []
+    for raw in reversed(lines):
+        if b'"used"' not in raw and b'"usage"' not in raw:
+            continue
+        try:
+            rec = json.loads(raw)
+        except ValueError:
+            continue
+        u = harnesses._grok_update(rec) or {}
+        if u.get("sessionUpdate") == "usage_update" and isinstance(u.get("used"), int):
+            used, size = u["used"], int(u.get("size") or 0)
+            break
+        got = u.get("usage") if isinstance(u.get("usage"), dict) else None
+        if got and got.get("input_tokens") is not None:
+            used = sum(int(got.get(k) or 0) for k in ("input_tokens", "cache_read_input_tokens",
+                                                        "cache_creation_input_tokens"))
+            break
+    if not used:
+        try:
+            sig = json.loads((folder / "signals.json").read_text())
+        except (OSError, ValueError):
+            sig = {}
+        for d in (sig, *(v for v in (sig.values() if isinstance(sig, dict) else ())
+                         if isinstance(v, dict))):
+            got = d.get("context_tokens", d.get("contextTokens")) if isinstance(d, dict) else None
+            if isinstance(got, int) and got > 0:
+                used = got
+                break
+    if not used:
+        return None
+    return used, grok_compaction_point(model, size)
+
+
+def _tail(transcript: str, most: int = 2_000_000) -> list[bytes]:
     with open(transcript, "rb") as f:
         f.seek(0, 2)
         size = f.tell()
-        f.seek(max(0, size - 2_000_000))
+        f.seek(max(0, size - most))
         return f.read().splitlines()
 
 
@@ -173,9 +271,9 @@ def note_for(hook: dict) -> str:
     """What to tell the session now, as the harness wants it printed, or "".
 
     A harness hook (``hook_event_name``: Claude Code's and Codex's
-    UserPromptSubmit, Gemini CLI's BeforeAgent) gets the JSON all three read
-    as context for the model — Gemini shows plain stdout to the person
-    instead, and Codex is not known to read it at all. pi's extension asks
+    UserPromptSubmit, Gemini CLI's BeforeAgent, Grok's PostToolUse) gets the
+    JSON all four read as context for the model — Gemini shows plain stdout
+    to the person instead, and Codex is not known to read it at all. pi's extension asks
     without an event name, and takes the text as it is."""
     sid = hook.get("session_id") or "x"
     d = state_dir()
