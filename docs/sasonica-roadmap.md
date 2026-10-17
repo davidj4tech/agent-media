@@ -412,6 +412,12 @@ clone. Open: in the default layout a
 worktree's thread is filed under its branch name (the folder's basename),
 not its project.
 
+**Roles: admin, member, guest** (David, 18 Oct 2026) — proposal:
+`docs/proposals/2026-10-18-roles.md` (a role on the device row; members'
+chats permission-checked, approvals to an admin). Step 0, project roots
+(the new-project folder shown and chosen, Settings → Project folders),
+built the same day.
+
 **Sasonica's own speech player.** Media3 (David, 23 Sep 2026: the reason
 MediaPlayer was chosen — the companion had no Gradle build — is gone). Built:
 `com.sasonica.next.speech` — `MpvServer`, `Json` and `ClipCache` carried over
