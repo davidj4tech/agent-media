@@ -11,9 +11,18 @@ a project at /etc.
 A listed root whose folder has gone (deleted, an unmounted disk) stays
 listed, marked `"missing": true` — judged at each answer, so it is simply
 present again when the folder comes back — and a new project is never made
-in it (`chosen`: 409 "that folder is gone"); nothing here recreates it.
-Removing it still works. `default` stays the stored first one even when it
+in it (`chosen`: 409 "that folder is gone"); a new project never recreates
+it. Removing it still works, and so does recreating it — explicitly. `default` stays the stored first one even when it
 is missing: the app starts on the first present root and names it outright.
+
+A folder that does not exist yet may be made from Settings, never silently:
+`add` without `create` answers 404 with `would_create` (what `mkdir -p`
+would make, top first), with `create` it makes them; `recreate` remakes a
+listed root that has gone. Both go through `_plan`: the nearest existing
+ancestor must resolve to a directory under home (no file in the way, no link
+out of it), the target may not be home itself or under the state dir, and at
+most MAX_NEW levels are made. Folders get mkdir's own mode (0777 less the
+umask), as `mkdir -p` would.
 
 This is tidiness, not a boundary: any paired device may start an agent that
 runs without permission checks, wherever it runs. The boundary is the role
@@ -126,14 +135,18 @@ def _resolve(path: str) -> str:
         return path
 
 
+def _absolute(raw: str) -> Path:
+    """`raw` with `~` expanded; a relative path is taken from home."""
+    p = Path(os.path.expanduser(raw))
+    return p if p.is_absolute() else _home() / p
+
+
 def _judge(raw: str) -> tuple[str, dict]:
     """`(resolved path, {})` for a folder that may be a root, else `("", error)`."""
     raw = (raw or "").strip()
     if not raw:
         return "", {"error": "no path", "status": 400}
-    p = Path(os.path.expanduser(raw))
-    if not p.is_absolute():
-        p = _home() / p
+    p = _absolute(raw)
     try:
         resolved = p.resolve(strict=True)
     except (OSError, RuntimeError):
@@ -144,6 +157,62 @@ def _judge(raw: str) -> tuple[str, dict]:
     if resolved != home and home not in resolved.parents:
         return "", {"error": f"{raw!r} is not under the home folder", "status": 400}
     return str(resolved), {}
+
+
+MAX_NEW = 4
+
+
+def _plan(raw: str) -> tuple[Path | None, list[Path], dict]:
+    """For a path that does not exist: `(target, [folders to make, top first], {})`,
+    else `(None, [], error)`. Judged from the nearest existing ancestor, after
+    resolving it, so a link cannot carry the new folders out of home."""
+    raw = (raw or "").strip()
+    if not raw:
+        return None, [], {"error": "no path", "status": 400}
+    p = _absolute(raw)
+    tail: list[str] = []
+    base = p
+    while not os.path.lexists(base):
+        if base.parent == base:
+            return None, [], {"error": f"{raw!r} has no existing folder above it", "status": 400}
+        tail.insert(0, base.name)
+        base = base.parent
+    if any(part in ("", ".", "..") for part in tail):
+        return None, [], {"error": f"{raw!r}: no '..' in the folders to be made", "status": 400}
+    try:
+        resolved = base.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None, [], {"error": f"{label(str(base))} is a broken link", "status": 400}
+    if not resolved.is_dir():
+        return None, [], {"error": f"{label(str(base))} is in the way: it is not a folder", "status": 400}
+    home = _home()
+    if resolved != home and home not in resolved.parents:
+        return None, [], {"error": f"{raw!r} is not under the home folder", "status": 400}
+    target = resolved.joinpath(*tail)
+    if target == home:
+        return None, [], {"error": "the home folder itself cannot be a project folder", "status": 400}
+    from agent_media_core import harness_profiles
+
+    state = Path(os.path.realpath(harness_profiles.state_dir()))
+    if target == state or state in target.parents:
+        return None, [], {"error": f"{raw!r} is inside the server's own state folder", "status": 400}
+    if len(tail) > MAX_NEW:
+        return None, [], {"error": f"{raw!r} would make {len(tail)} new folders; at most {MAX_NEW}",
+                          "status": 400}
+    return target, [resolved.joinpath(*tail[:i + 1]) for i in range(len(tail))], {}
+
+
+def _make(new: list[Path]) -> dict:
+    """mkdir each, top first — `{}`, or an error (a race put something in the way)."""
+    for d in new:
+        try:
+            os.mkdir(d)
+        except FileExistsError:
+            if not d.is_dir() or d.is_symlink():
+                return {"error": f"{label(str(d))} appeared and is in the way", "status": 409}
+        except OSError as e:
+            return {"error": f"could not make {label(str(d))}: {e.strerror or e}", "status": 400}
+    return {}
 
 
 def _answer() -> dict:
@@ -157,10 +226,29 @@ def get(bearer: str) -> tuple[bool, dict]:
     return True, _answer()
 
 
-def add(path: str, bearer: str) -> tuple[bool, dict]:
+def add(path: str, bearer: str, create: bool = False) -> tuple[bool, dict]:
+    """Add a root. One that does not exist: without `create` 404 with
+    `would_create` (labels, top first) when it could be made, with it made
+    first (`made` in the answer)."""
     user, err = auth.may_admin(bearer)
     if not user:
         return False, err
+    made: list[str] = []
+    raw = (path or "").strip()
+    if raw and not os.path.lexists(_absolute(raw)):
+        target, new, why = _plan(raw)
+        if target is None:
+            return False, why
+        if find(str(target)):
+            return False, {"error": f"{label(str(target))} is already listed", "status": 409}
+        if not create:
+            return False, {"error": f"{raw!r} does not exist", "status": 404,
+                           "would_create": [label(str(d)) for d in new]}
+        why = _make(new)
+        if why:
+            return False, why
+        made = [label(str(d)) for d in new]
+        path = str(target)
     resolved, why = _judge(path)
     if not resolved:
         return False, why
@@ -168,7 +256,28 @@ def add(path: str, bearer: str) -> tuple[bool, dict]:
     if find(resolved):
         return False, {"error": f"{label(resolved)} is already listed", "status": 409}
     _save(roots + [resolved])
-    return True, _answer()
+    return True, {**_answer(), "made": made}
+
+
+def recreate(path: str, bearer: str) -> tuple[bool, dict]:
+    """Remake a listed root whose folder has gone (mkdir -p, judged as `add`'s
+    create) — the explicit act itself, so no would_create step. `made` lists
+    what it made; [] when the folder is there already."""
+    user, err = auth.may_admin(bearer)
+    if not user:
+        return False, err
+    hit = find(path)
+    if not hit:
+        return False, {"error": f"{path!r} is not a project folder here", "status": 404}
+    if present(hit):
+        return True, {**_answer(), "made": []}
+    target, new, why = _plan(hit)
+    if target is None:
+        return False, why
+    why = _make(new)
+    if why:
+        return False, why
+    return True, {**_answer(), "made": [label(str(d)) for d in new]}
 
 
 def remove(path: str, bearer: str) -> tuple[bool, dict]:

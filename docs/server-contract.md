@@ -3640,21 +3640,40 @@ A root whose folder has gone (18 Oct 2026) stays listed with
 `"missing": true` — checked at each request (exists and is a directory), so
 it is `false` again once the folder is back. A new project in it — named as
 `root`, or the default when the default is missing — is refused 409 `"that
-folder is gone"` (with `"root"`) before anything is made: the server never
-creates a root, the built-in `~/projects` included. There is no fallback to
+folder is gone"` (with `"root"`) before anything is made: a new project never
+creates a root, the built-in `~/projects` included (only Settings does, below). There is no fallback to
 another root and `default` stays the stored first one; the app starts its
 form on the first root that is not missing and sends it as `root`. A
 missing root can still be removed (and made default, though nothing is made
 in it until it returns).
 
+A folder that is not there yet (18 Oct 2026) can be made — from Settings,
+explicitly, never during a new project. `POST /projects/roots` for a path
+that does not exist answers 404 with `"would_create"`: the folders `mkdir
+-p` would make, top first, as labels (`["~/work", "~/work/clients"]`); sent
+again with `"create": true` it makes them, then adds the root, and the
+answer's `"made"` lists them (`[]` when nothing was made). `POST
+/projects/roots/recreate {"path"}` remakes a listed root whose folder has
+gone — it is itself the explicit act, so there is no would_create step —
+and answers `"made"` the same way (`[]` if the folder is there; not listed
+→ 404). Both are judged from the nearest existing ancestor, after resolving
+it: it must be a directory under home (a file in the way, a broken link, or
+a link that leads out of home → 400); no `..` among the folders to be made;
+not home itself nor inside the server's state dir (400); at most 4 new
+levels (400). A refused path never gets `would_create`. The folders get
+mkdir's own mode (0777 less the umask), as `mkdir -p` would.
+
 ```
 GET  /projects/roots → {"ok": true, "roots": [{"path": "/home/d/projects", "label": "~/projects", "default": true, "missing": false}, …]}
-POST /projects/roots {"path": "~/work"}           → the same, with it added last
+POST /projects/roots {"path": "~/work"}           → the same, with it added last, plus "made": []
+POST /projects/roots {"path": "~/new/x"}          → 404 {"ok": false, "error", "would_create": ["~/new", "~/new/x"]}
+POST /projects/roots {"path": "~/new/x", "create": true} → the roots, plus "made": ["~/new", "~/new/x"]
 POST /projects/roots/remove {"path"}              → the same, without it
 POST /projects/roots/default {"path"}             → the same, with it first
+POST /projects/roots/recreate {"path"}            → the roots, plus "made": [what it made]
 ```
 
-The three POSTs are gated by `auth.may_admin`, which today admits every
+The four POSTs are gated by `auth.may_admin`, which today admits every
 device and owner exactly as the gate does; roles will narrow it to admin
 devices (docs/proposals/2026-10-18-roles.md). The list is tidiness, not a
 boundary: a device that may chat may already start an agent that runs

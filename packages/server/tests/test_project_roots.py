@@ -66,7 +66,7 @@ def test_a_root_must_be_an_existing_folder_under_home_and_new(home, tmp_path):
     outside.mkdir()
     (home / "escape").symlink_to(outside)
     (home / "link").symlink_to(home / "projects")
-    for bad in ("", "~/nope", "~/file", str(outside), "~/escape", "/etc", "~/../outside"):
+    for bad in ("", "~/file", str(outside), "~/escape", "/etc", "~/../outside"):
         ok, d = project_roots.add(bad, "tok")
         assert not ok and d["status"] == 400, bad
     for dup in ("~/projects", "~/link", str(home / "projects") + "/"):
@@ -181,3 +181,89 @@ def test_a_missing_root_can_still_be_removed(home):
     work.rmdir()
     ok, d = project_roots.remove("~/work", "tok")
     assert ok and [r["label"] for r in d["roots"]] == ["~/projects"]
+
+
+def test_a_folder_not_there_answers_would_create_and_is_made_only_on_create(home):
+    ok, d = project_roots.add("~/work/clients", "tok")
+    assert not ok and d["status"] == 404 and d["would_create"] == ["~/work", "~/work/clients"]
+    assert not (home / "work").exists()
+    ok, d = project_roots.add("~/work/clients", "tok", create=True)
+    assert ok and d["made"] == ["~/work", "~/work/clients"]
+    assert (home / "work" / "clients").is_dir()
+    assert [r["label"] for r in d["roots"]] == ["~/projects", "~/work/clients"]
+    # mkdir's own mode: 0777 less the umask.
+    umask = os.umask(0)
+    os.umask(umask)
+    assert os.stat(home / "work").st_mode & 0o777 == 0o777 & ~umask
+    # Already there: added as before, nothing made; listed already: 409 either way.
+    (home / "code").mkdir()
+    ok, d = project_roots.add("~/code", "tok", create=True)
+    assert ok and d["made"] == []
+    (home / "work" / "clients").rmdir()
+    ok, d = project_roots.add("~/work/clients", "tok")
+    assert not ok and d["status"] == 409 and "would_create" not in d
+
+
+def test_create_refuses_a_link_out_of_home_a_file_in_the_way_and_too_deep(home, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (home / "escape").symlink_to(outside)
+    (home / "file").write_text("x")
+    (home / "broken").symlink_to(tmp_path / "nowhere")
+    (home / "inside").symlink_to(home / "projects")
+    for bad in ("~/escape/new", "~/escape/a/b", "~/file/new", "~/broken/new", str(tmp_path / "elsewhere"),
+                "~/nope/../../x", "~/a/b/c/d/e", "~/.local/state/agent-media/x",
+                "~/.local/state/agent-media"):
+        for create in (False, True):
+            ok, d = project_roots.add(bad, "tok", create=create)
+            assert not ok and d["status"] == 400 and "would_create" not in d, (bad, create)
+    assert not list(outside.iterdir()) and not (home / "a").exists() and not (home / "nope").exists()
+    assert not (home / ".local").exists()
+    # A link inside home is followed: the folder is made where it points.
+    ok, d = project_roots.add("~/inside/sub", "tok", create=True)
+    assert ok and d["made"] == ["~/projects/sub"] and (home / "projects" / "sub").is_dir()
+    ok, d = project_roots.add("~/a/b/c/d", "tok", create=True)
+    assert ok and d["made"] == ["~/a", "~/a/b", "~/a/b/c", "~/a/b/c/d"]
+
+
+def test_create_is_gated_through_may_admin(home, monkeypatch):
+    monkeypatch.setattr(auth, "may_admin", lambda b: (None, {"status": 403}))
+    for create in (False, True):
+        ok, d = project_roots.add("~/work", "tok", create=create)
+        assert not ok and d["status"] == 403
+    ok, d = project_roots.recreate("~/projects", "tok")
+    assert not ok and d["status"] == 403
+    assert not (home / "work").exists()
+
+
+def test_a_missing_root_is_recreated_parents_included(home):
+    (home / "work" / "clients").mkdir(parents=True)
+    assert project_roots.add("~/work/clients", "tok")[0]
+    (home / "work" / "clients").rmdir()
+    (home / "work").rmdir()
+    assert project_roots.listing()[1]["missing"] is True
+    ok, d = project_roots.recreate("~/work/clients", "tok")
+    assert ok and d["made"] == ["~/work", "~/work/clients"] and d["roots"][1]["missing"] is False
+    ok, d = project_roots.recreate("~/work/clients", "tok")
+    assert ok and d["made"] == []
+    ok, d = project_roots.recreate("~/elsewhere", "tok")
+    assert not ok and d["status"] == 404 and not (home / "elsewhere").exists()
+    # Its place taken by a file: refused, the file left alone.
+    (home / "work" / "clients").rmdir()
+    (home / "work" / "clients").write_text("x")
+    ok, d = project_roots.recreate("~/work/clients", "tok")
+    assert not ok and d["status"] == 400 and (home / "work" / "clients").read_text() == "x"
+
+
+def test_recreate_judges_the_stored_path_as_create_does(home, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = home / "link"
+    link.symlink_to(home / "projects")
+    (home / "projects" / "w").mkdir()
+    assert project_roots.add("~/link/w", "tok")[0]   # stored resolved: ~/projects/w
+    (home / "projects" / "w").rmdir()
+    (home / "projects").rmdir()
+    (home / "projects").symlink_to(outside)           # the parent now leads out of home
+    ok, d = project_roots.recreate(str(home / "projects" / "w"), "tok")
+    assert not ok and d["status"] == 400 and not (outside / "w").exists()

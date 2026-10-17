@@ -56,8 +56,8 @@ device gets its token):
                   a chat can start as; POST /presets {Preset} adds
                   or replaces one, POST /presets/remove {"name"} (presets.py)
   GET  /projects/roots → the folders a new project may go in; POST
-                  /projects/roots {"path"} adds, …/remove and …/default
-                  (project_roots.py, §6.24)
+                  /projects/roots {"path", "create"?} adds (or makes),
+                  …/remove, …/default and …/recreate (project_roots.py, §6.24)
   GET  /personas/scope → each persona's agents and projects, the trusted
                   models, and the three layers they come from; POST
                   sets the user layer (persona_scope.py)
@@ -246,7 +246,7 @@ CORS_PATHS = frozenset({
     "/harnesses/keys", "/harnesses/apikey", "/harnesses/close", "/harnesses/logout",
     "/harnesses/updates", "/harnesses/profiles", "/harnesses/profiles/remove",
     "/presets", "/presets/remove", "/personas/scope",
-    "/projects/roots", "/projects/roots/remove", "/projects/roots/default",
+    "/projects/roots", "/projects/roots/remove", "/projects/roots/default", "/projects/roots/recreate",
     "/setup", "/setup/run", "/shell", "/shell/signins", "/shell/signin", "/enrol", "/me", "/me/signout", "/me/account",
     "/share", "/upload", "/dashboard",
     "/sessions/events", "/search", "/contacts",
@@ -1715,13 +1715,19 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
 
         ok, detail = persona_scope.put(_read_json(h) or {}, _bearer(h))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
-    elif path in ("/projects/roots", "/projects/roots/remove", "/projects/roots/default"):
+    elif path in ("/projects/roots", "/projects/roots/remove", "/projects/roots/default",
+                  "/projects/roots/recreate"):
         from . import project_roots
 
         body = _read_json(h) or {}
-        act = {"/projects/roots": project_roots.add, "/projects/roots/remove": project_roots.remove,
-               "/projects/roots/default": project_roots.make_default}[path]
-        ok, detail = act(str(body.get("path") or ""), _bearer(h))
+        if path == "/projects/roots":
+            ok, detail = project_roots.add(str(body.get("path") or ""), _bearer(h),
+                                           create=body.get("create") is True)
+        else:
+            act = {"/projects/roots/remove": project_roots.remove,
+                   "/projects/roots/default": project_roots.make_default,
+                   "/projects/roots/recreate": project_roots.recreate}[path]
+            ok, detail = act(str(body.get("path") or ""), _bearer(h))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path in ("/presets", "/presets/remove"):
         from . import presets
