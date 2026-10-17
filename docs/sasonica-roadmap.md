@@ -1203,6 +1203,22 @@ ahead.
     is the direct call, which the server can make itself; `llm` added only
     another route to models opencode and pi already reach.
 
+27. **An agent can post into another thread** (David, 17 Oct 2026: "add it
+    to the roadmap"). Handing work to an existing conversation — not a fresh
+    one — has no route now that sessions run headless. `agent-mail-deliver`
+    types into a tmux pane, and with no pane in the folder it starts a *new*
+    session; `agent-handoff` always starts a fresh chat; and the one way into
+    an idle Sasonica thread, `/reply`, wants a device's or an ABS bearer, which
+    an agent should not borrow to speak as David. Met when the Paseo-trial
+    session tried to give the compaction thread (`a1af5423`, the one that did
+    Gemini) agent mail #110, the Grok CLI as the seventh agent, and David had
+    to paste the nudge himself. Wanted: a local, host-only way for an agent
+    on the box to put a message into a named thread (by session id), marked
+    as from that agent rather than from David — reviving the thread
+    headless if it has ended, queued behind a turn in progress, refusing over
+    a draft like the pane path does — and `agent-mail-deliver --to <session>`
+    using it.
+
 ## Loose ends
 
 - **A reply with a figure had no follow-along at all** (David, 23 Sep 2026)
