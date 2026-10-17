@@ -164,7 +164,7 @@ device gets its token):
   GET  /search?q=[&limit=&before=&tools=1&memory=0] → every thread's messages,
                   titles, recaps and projects, and long-term memory when this
                   host has agent-memory (search.py, §6.14)
-  GET  /contacts?q=[&limit=] → people from Google Contacts, or those a
+  GET  /contacts?q=[&limit=] → people from the phone's contacts, or those a
                   name, number or email being typed matches (contacts.py, §6.25)
   GET  /contacts/<id> → one person's card: names, phones, emails,
                   addresses, notes, sources, and the rooms that are theirs
@@ -682,7 +682,7 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         else:
             _json(h, detail.pop("status", 400), {"ok": False, **detail})
     elif path == "/contacts" or CONTACT.fullmatch(path):
-        # People, from Google Contacts (contacts.py, §6.25): the list or
+        # People, from the phone's contacts (contacts.py, §6.25): the list or
         # matches as you type, and one person's card with their rooms.
         _contacts(h, path, query)
     elif path == "/targets":

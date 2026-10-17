@@ -1,30 +1,37 @@
 """Contacts: people, not rooms (docs/proposals/2026-10-17-contacts.md).
 
-Step 1, Google read-only: an OAuth sign-in to the People API
-(`contacts.readonly`), a sync of David's Google Contacts into a SQLite store
-in the state dir (`contacts.db`), and the match of Matrix rooms to the people
-in them, so `/targets`' Matrix rows can carry `contact: {id, name}` (§6.1).
-Step 2's read-only card is `GET /contacts/<id>` (`card`).
+Step 1, read-only: David's contacts in a SQLite store in the state dir
+(`contacts.db`), and the match of Matrix rooms to the people in them, so
+`/targets`' Matrix rows can carry `contact: {id, name}` (§6.1). Step 2's
+read-only card is `GET /contacts/<id>` (`card`).
 
-* **The store.** One row per contact: its names, phones (E.164, default
-  region AU, `MEDIA_CONTACTS_REGION`), emails, addresses, notes, and its
-  `sources` (`[{kind: "google", id: "people/c123", etag}]`). A contact's id
-  is a uuid made from its first source (`contact_id`), so it survives a
-  resync. Manual joins and splits of a room and a contact are kept in
+* **Sources.** `android`, the default (David, 17 Oct 2026: "I'm pretty
+  unfamiliar with Google cloud. can you run it with ADB?"): the phone's
+  contacts provider over `agent-phone-adb shell` (contacts_android.py),
+  which already merges the com.google and com.whatsapp raw contacts into
+  one aggregate per person. Read whole every `MEDIA_CONTACTS_INTERVAL_S`
+  (900); a read the same as the last writes nothing; the phone off Wi-Fi
+  keeps the last good copy and says why (`android_last_error`). `google`,
+  optional and only once signed in: the People API (`contacts.readonly`)
+  with a sync token. Where both know a person (by number, else address)
+  Google's fields win; `MEDIA_CONTACTS_SOURCES` picks the sources.
+* **The store.** Each source's `records`, and the merged `contacts`: names,
+  phones (E.164, default region AU, `MEDIA_CONTACTS_REGION`), emails,
+  addresses, organisations, notes, and `sources` (`[{kind: "android", id:
+  <lookup key>, raw: [raw contact ids], accounts, version}, {kind:
+  "google", id: "people/c123", etag}]`). A contact's id is a uuid made from
+  its phone lookup key (`android:<lookup>`), else its Google resource
+  name. Manual joins and splits of a room and a contact are kept in
   `overrides` and win over the matcher (no route writes them yet).
-* **Sign-in.** Google's installed-app flow with PKCE and a loopback redirect,
-  made for a phone: `python -m agent_media_server.contacts login` prints the
-  consent URL and takes either the loopback hit or the redirect's address
-  pasted back (on a phone the 127.0.0.1 page never loads; its address bar
-  holds the code). The client is Google's Desktop JSON at
+* **Google sign-in** (optional). The installed-app flow with PKCE and a
+  loopback redirect, made for a phone: `python -m agent_media_server.contacts
+  login` prints the consent URL and takes either the loopback hit or the
+  redirect's address pasted back. The client is Google's Desktop JSON at
   `~/.config/agent-media/google-oauth-client.json` (or
   `MEDIA_GOOGLE_OAUTH_CLIENT`: a path, or the JSON itself); the refresh
   token is kept next to `secrets.env`, owner-only, in
   `~/.config/agent-media/google-contacts-token.json`.
-* **The sync.** `people/me/connections`, paged, with a sync token for the
-  changes since; an expired token (410) is a full resync. Every
-  `MEDIA_CONTACTS_INTERVAL_S` (300) from the canvas while signed in;
-  `MEDIA_CONTACTS=0` leaves it off.
+* `MEDIA_CONTACTS=0` leaves the background sync off.
 
 Contacts are personal data: they stay on this host, and nothing here sends
 them anywhere but back to a signed-in device.
@@ -62,8 +69,9 @@ AUTH_URI = "https://accounts.google.com/o/oauth2/auth"
 TOKEN_URI = "https://oauth2.googleapis.com/token"
 #: People a page of `connections`, the API's most.
 PAGE_SIZE = 1000
-#: How often the canvas syncs, while signed in.
-INTERVAL_S = 300.0
+#: How often the canvas syncs. The phone is read whole each time (a few
+#: thousand rows over ssh and adb), so not often.
+INTERVAL_S = 900.0
 #: Rows `GET /contacts` answers by default, and at most.
 LIMIT = 200
 LIMIT_MAX = 5000
@@ -195,14 +203,16 @@ _EMAIL = re.compile(r"[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+")
 
 # --- the store ------------------------------------------------------------------
 
+# `records` is what each source said, one row per source contact; `contacts`
+# (with `phones` and `emails` to match by) is the merged book, rebuilt from
+# the records after every change (`_rebuild`).
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
+CREATE TABLE IF NOT EXISTS records (
+  kind TEXT NOT NULL, sid TEXT NOT NULL, card TEXT NOT NULL, meta TEXT NOT NULL,
+  PRIMARY KEY (kind, sid));
 CREATE TABLE IF NOT EXISTS contacts (
   id TEXT PRIMARY KEY, name TEXT NOT NULL, card TEXT NOT NULL, updated REAL);
-CREATE TABLE IF NOT EXISTS sources (
-  kind TEXT NOT NULL, sid TEXT NOT NULL, contact TEXT NOT NULL, etag TEXT,
-  PRIMARY KEY (kind, sid));
-CREATE INDEX IF NOT EXISTS sources_contact ON sources(contact);
 CREATE TABLE IF NOT EXISTS phones (contact TEXT NOT NULL, e164 TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS phones_e164 ON phones(e164);
 CREATE INDEX IF NOT EXISTS phones_contact ON phones(contact);
@@ -214,6 +224,9 @@ CREATE TABLE IF NOT EXISTS overrides (
   kind TEXT NOT NULL CHECK (kind IN ('join', 'split')), at REAL,
   PRIMARY KEY (room, contact));
 """
+#: Bump when what a row holds changes: the store is emptied (but for the
+#: overrides) and read again.
+SCHEMA_VERSION = "2"
 
 _WRITE = threading.Lock()
 _SYNC_LOCK = threading.Lock()
@@ -221,7 +234,7 @@ _SYNC_LOCK = threading.Lock()
 
 def _connect(create: bool = True) -> sqlite3.Connection | None:
     """A connection to the store; None when it does not exist and `create`
-    is false (a server never signed in has no contacts.db, and a read must
+    is false (a server that never synced has no contacts.db, and a read must
     not make one)."""
     path = db_path()
     if not create and not path.exists():
@@ -230,7 +243,13 @@ def _connect(create: bool = True) -> sqlite3.Connection | None:
     conn = sqlite3.connect(str(path), timeout=10.0, isolation_level=None)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
+    have = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "meta" in have and conn.execute(
+            "SELECT v FROM meta WHERE k='schema'").fetchone() != (SCHEMA_VERSION,):
+        for t in have - {"overrides"}:
+            conn.execute(f"DROP TABLE IF EXISTS {t}")
     conn.executescript(_SCHEMA)
+    conn.execute("INSERT OR REPLACE INTO meta (k, v) VALUES ('schema', ?)", (SCHEMA_VERSION,))
     try:
         os.chmod(path, 0o600)
     except OSError:
@@ -259,31 +278,88 @@ def contact_id(kind: str, sid: str) -> str:
     return str(uuid.uuid5(_NS, f"{kind}:{sid}"))
 
 
-def _put(conn: sqlite3.Connection, cid: str, card: dict, src: dict) -> None:
-    """One contact in, replacing what it held."""
-    conn.execute("INSERT OR REPLACE INTO contacts (id, name, card, updated) VALUES (?, ?, ?, ?)",
-                 (cid, card["name"], json.dumps(card), time.time()))
-    conn.execute("INSERT OR REPLACE INTO sources (kind, sid, contact, etag) VALUES (?, ?, ?, ?)",
-                 (src["kind"], src["id"], cid, src.get("etag") or ""))
-    conn.execute("DELETE FROM phones WHERE contact=?", (cid,))
-    conn.execute("DELETE FROM emails WHERE contact=?", (cid,))
-    for num in {p["value"] for p in card["phones"] if p.get("value")}:
-        conn.execute("INSERT INTO phones (contact, e164) VALUES (?, ?)", (cid, num))
-    for em in {e["value"].lower() for e in card["emails"] if e.get("value")}:
-        conn.execute("INSERT INTO emails (contact, email) VALUES (?, ?)", (cid, em))
+def _source(kind: str, sid: str, meta: dict) -> dict:
+    if kind == "android":
+        return {"kind": "android", "id": sid, "raw": meta.get("raw") or [],
+                "accounts": meta.get("accounts") or [], "version": meta.get("version") or 0}
+    return {"kind": kind, "id": sid, "etag": meta.get("etag") or ""}
 
 
-def _drop(conn: sqlite3.Connection, kind: str, sid: str) -> bool:
-    got = conn.execute("SELECT contact FROM sources WHERE kind=? AND sid=?", (kind, sid)).fetchone()
-    if not got:
-        return False
-    cid = got[0]
-    conn.execute("DELETE FROM sources WHERE kind=? AND sid=?", (kind, sid))
-    if not conn.execute("SELECT 1 FROM sources WHERE contact=?", (cid,)).fetchone():
-        for t in ("contacts", "phones", "emails"):
-            conn.execute(f"DELETE FROM {t} WHERE {'id' if t == 'contacts' else 'contact'}=?",
-                         (cid,))
-    return True
+def _keys(card: dict) -> tuple[set, set]:
+    return ({p["value"] for p in card.get("phones") or [] if p.get("value")},
+            {e["value"].lower() for e in card.get("emails") or [] if e.get("value")})
+
+
+#: The card's list fields. Google's value wins where it has one (the
+#: proposal's "Google wins"); the phone's fills the rest.
+_FIELDS = ("names", "phones", "emails", "addresses", "organizations")
+
+
+def _merge(google: dict, phone: dict) -> dict:
+    out = {f: list(google.get(f) or []) or list(phone.get(f) or []) for f in _FIELDS}
+    out["notes"] = google.get("notes") or phone.get("notes") or ""
+    gname = google.get("name") or ""
+    out["name"] = gname if gname and gname != "(no name)" else (phone.get("name") or gname)
+    return out
+
+
+def _rebuild(conn: sqlite3.Connection) -> None:
+    """The merged book from the records: one contact per phone contact (its
+    id from its lookup key); a Google contact sharing a number, else an
+    address, with exactly one of them joins it, else stands as its own."""
+    recs = conn.execute("SELECT kind, sid, card, meta FROM records ORDER BY kind, sid").fetchall()
+    book: dict[str, dict] = {}
+    by_phone: dict[str, set] = {}
+    by_email: dict[str, set] = {}
+    for kind, sid, card, meta in recs:
+        if kind != "android":
+            continue
+        cid = contact_id("android", sid)
+        c = json.loads(card)
+        book[cid] = {"card": c, "sources": [_source(kind, sid, json.loads(meta))]}
+        phones, emails = _keys(c)
+        for p in phones:
+            by_phone.setdefault(p, set()).add(cid)
+        for e in emails:
+            by_email.setdefault(e, set()).add(cid)
+    for kind, sid, card, meta in recs:
+        if kind == "android":
+            continue
+        c = json.loads(card)
+        phones, emails = _keys(c)
+        hits: set = set()
+        for p in phones:
+            hits |= by_phone.get(p, set())
+        if not hits:
+            for e in emails:
+                hits |= by_email.get(e, set())
+        # One Google contact per phone contact.
+        hits = {h for h in hits if not any(s["kind"] == kind for s in book[h]["sources"])}
+        src = _source(kind, sid, json.loads(meta))
+        if len(hits) == 1:
+            cid = next(iter(hits))
+            book[cid] = {"card": _merge(c, book[cid]["card"]),
+                         "sources": [src] + book[cid]["sources"]}
+        else:
+            book[contact_id(kind, sid)] = {"card": c, "sources": [src]}
+    old = {cid: (raw, upd) for cid, raw, upd in conn.execute(
+        "SELECT id, card, updated FROM contacts")}
+    for t in ("contacts", "phones", "emails"):
+        conn.execute(f"DELETE FROM {t}")
+    now = time.time()
+    for cid, entry in book.items():
+        c = {**entry["card"], "sources": entry["sources"]}
+        raw = json.dumps(c, sort_keys=True)
+        was = old.get(cid)
+        conn.execute("INSERT INTO contacts (id, name, card, updated) VALUES (?, ?, ?, ?)",
+                     (cid, c.get("name") or "(no name)", raw,
+                      was[1] if was and was[0] == raw else now))
+        phones, emails = _keys(c)
+        conn.executemany("INSERT INTO phones (contact, e164) VALUES (?, ?)",
+                         [(cid, p) for p in sorted(phones)])
+        conn.executemany("INSERT INTO emails (contact, email) VALUES (?, ?)",
+                         [(cid, e) for e in sorted(emails)])
+    _bump(conn)
 
 
 def set_override(room: str, contact: str, kind: str) -> None:
@@ -352,7 +428,7 @@ def card_of(person: dict, default_region: str = "AU") -> dict:
         or next((e["value"] for e in emails), "") \
         or next((p["raw"] for p in phones if p["raw"]), "") or "(no name)"
     return {"name": name, "names": names, "phones": phones, "emails": emails,
-            "addresses": addresses, "notes": notes}
+            "addresses": addresses, "organizations": [], "notes": notes}
 
 
 # --- HTTP -----------------------------------------------------------------------
@@ -542,8 +618,8 @@ class _Expired(Exception):
 
 
 def _fetch(sync_token: str | None) -> tuple[list[dict], str | None]:
-    """Every connection (or every change since `sync_token`), and the token
-    for next time."""
+    """Every Google connection (or every change since `sync_token`), and the
+    token for next time."""
     people: list[dict] = []
     page: str | None = None
     retried = False
@@ -572,59 +648,150 @@ def _fetch(sync_token: str | None) -> tuple[list[dict], str | None]:
             return people, body.get("nextSyncToken")
 
 
-def sync(full: bool = False) -> dict:
-    """Bring the store up to date with Google. A sync token makes it the
-    changes only; none, or an expired one, makes it everything."""
+def _failed(kind: str, e: Exception) -> None:
+    """A source that could not be read: said, and the last good copy kept."""
+    conn = _connect()
+    try:
+        _set_meta(conn, f"{kind}_last_error", str(e) or type(e).__name__)
+        _set_meta(conn, f"{kind}_failed_at", str(round(time.time(), 3)))
+    finally:
+        conn.close()
+
+
+def sync_google(full: bool = False) -> dict:
+    """Bring Google's records up to date. A sync token makes it the changes
+    only; none, or an expired one, makes it everything."""
     with _SYNC_LOCK:
         conn = _connect()
         try:
             token = None if full else _meta(conn, "google_sync_token")
-            try:
-                try:
-                    people, next_token = _fetch(token)
-                except _Expired:
-                    log.info("contacts: sync token expired, full resync")
-                    token = None
-                    people, next_token = _fetch(None)
-            except (NotSignedIn, SyncError, OSError, urllib.error.URLError) as e:
-                _set_meta(conn, "last_error", str(e))
-                raise
-            reg = region()
-            changed = deleted = 0
-            with _WRITE:
-                conn.execute("BEGIN IMMEDIATE")
-                try:
-                    seen = set()
-                    for p in people:
-                        rn = p.get("resourceName") or ""
-                        if not rn:
-                            continue
-                        if (p.get("metadata") or {}).get("deleted"):
-                            deleted += _drop(conn, "google", rn)
-                            continue
-                        seen.add(rn)
-                        _put(conn, contact_id("google", rn), card_of(p, reg),
-                             {"kind": "google", "id": rn, "etag": p.get("etag") or ""})
-                        changed += 1
-                    if token is None:
-                        # Everything was read: what is not in it is gone.
-                        for (sid,) in conn.execute(
-                                "SELECT sid FROM sources WHERE kind='google'").fetchall():
-                            if sid not in seen:
-                                deleted += _drop(conn, "google", sid)
-                    _set_meta(conn, "google_sync_token", next_token)
-                    _set_meta(conn, "synced_at", str(round(time.time(), 3)))
-                    _set_meta(conn, "last_error", None)
-                    _bump(conn)
-                    conn.execute("COMMIT")
-                except BaseException:
-                    conn.execute("ROLLBACK")
-                    raise
-            total = conn.execute("SELECT COUNT(*) FROM contacts").fetchone()[0]
-            return {"full": token is None, "changed": changed, "deleted": deleted,
-                    "contacts": total}
         finally:
             conn.close()
+        try:
+            try:
+                people, next_token = _fetch(token)
+            except _Expired:
+                log.info("contacts: sync token expired, full resync")
+                token = None
+                people, next_token = _fetch(None)
+        except (NotSignedIn, SyncError, OSError, urllib.error.URLError) as e:
+            _failed("google", e)
+            raise
+        reg = region()
+        changed = deleted = 0
+        with _WRITE:
+            conn = _connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                seen = set()
+                for p in people:
+                    rn = p.get("resourceName") or ""
+                    if not rn:
+                        continue
+                    if (p.get("metadata") or {}).get("deleted"):
+                        deleted += conn.execute("DELETE FROM records WHERE kind='google' "
+                                                "AND sid=?", (rn,)).rowcount
+                        continue
+                    seen.add(rn)
+                    conn.execute("INSERT OR REPLACE INTO records (kind, sid, card, meta) "
+                                 "VALUES ('google', ?, ?, ?)",
+                                 (rn, json.dumps(card_of(p, reg)),
+                                  json.dumps({"etag": p.get("etag") or ""})))
+                    changed += 1
+                if token is None:
+                    # Everything was read: what is not in it is gone.
+                    for (sid,) in conn.execute(
+                            "SELECT sid FROM records WHERE kind='google'").fetchall():
+                        if sid not in seen:
+                            conn.execute("DELETE FROM records WHERE kind='google' AND sid=?",
+                                         (sid,))
+                            deleted += 1
+                _set_meta(conn, "google_sync_token", next_token)
+                _set_meta(conn, "google_synced_at", str(round(time.time(), 3)))
+                _set_meta(conn, "google_last_error", None)
+                if changed or deleted:
+                    _rebuild(conn)
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+            finally:
+                total = conn.execute("SELECT COUNT(*) FROM contacts").fetchone()[0]
+                conn.close()
+        return {"source": "google", "full": token is None, "changed": changed,
+                "deleted": deleted, "contacts": total}
+
+
+def sync_android() -> dict:
+    """Read every contact on the phone (contacts_android.py). Unreachable —
+    off Wi-Fi, adb down — raises, and the last good copy stays. A read the
+    same as the last one writes nothing."""
+    from . import contacts_android
+
+    with _SYNC_LOCK:
+        try:
+            recs, digest = contacts_android.read(region())
+        except contacts_android.Unreachable as e:
+            _failed("android", e)
+            raise
+        with _WRITE:
+            conn = _connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                same = _meta(conn, "android_hash") == digest
+                before = {sid for (sid,) in conn.execute(
+                    "SELECT sid FROM records WHERE kind='android'")}
+                if not same:
+                    conn.execute("DELETE FROM records WHERE kind='android'")
+                    conn.executemany(
+                        "INSERT INTO records (kind, sid, card, meta) VALUES ('android', ?, ?, ?)",
+                        [(sid, json.dumps(r["card"]), json.dumps(r["meta"]))
+                         for sid, r in recs.items()])
+                    _rebuild(conn)
+                    _set_meta(conn, "android_hash", digest)
+                _set_meta(conn, "android_synced_at", str(round(time.time(), 3)))
+                _set_meta(conn, "android_last_error", None)
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+            finally:
+                total = conn.execute("SELECT COUNT(*) FROM contacts").fetchone()[0]
+                conn.close()
+        return {"source": "android", "unchanged": same, "read": len(recs),
+                "gone": len(before - set(recs)) if not same else 0, "contacts": total}
+
+
+def sources() -> list[str]:
+    """The sources this host reads: `MEDIA_CONTACTS_SOURCES` (comma
+    separated), else the phone when this host has the adb tool, and Google
+    only when it is signed in."""
+    from . import contacts_android
+
+    raw = (os.environ.get("MEDIA_CONTACTS_SOURCES") or "").strip()
+    if raw:
+        want = [s.strip() for s in raw.split(",") if s.strip()]
+    else:
+        want = ["android", "google"]
+    out = []
+    for s in want:
+        if s == "android" and contacts_android.available():
+            out.append(s)
+        elif s == "google" and signed_in():
+            out.append(s)
+    return out
+
+
+def sync(full: bool = False) -> dict:
+    """Every source this host reads, each on its own: one that fails is said
+    (`errors`) and the others still sync."""
+    done, errors = [], {}
+    for s in sources():
+        try:
+            done.append(sync_android() if s == "android" else sync_google(full=full))
+        except Exception as e:  # noqa: BLE001 — one source down is not all of them
+            errors[s] = str(e) or type(e).__name__
+    return {"synced": done, "errors": errors}
 
 
 # --- reading the store ----------------------------------------------------------
@@ -659,6 +826,17 @@ def _matches(q: str, name: str, card: dict) -> int:
     return 0
 
 
+def _source_states(conn: sqlite3.Connection | None) -> list[dict]:
+    out = []
+    for kind in ("android", "google"):
+        synced = _meta(conn, f"{kind}_synced_at") if conn is not None else None
+        err = _meta(conn, f"{kind}_last_error") if conn is not None else None
+        if synced or err or kind in sources():
+            out.append({"kind": kind, "synced_at": float(synced) if synced else None,
+                        "error": err})
+    return out
+
+
 def listing(q: str = "", limit: int | str | None = None) -> dict:
     """`GET /contacts`: everyone, or those `q` matches as it is typed (name,
     a phone's digits as written or dialled at home, an email)."""
@@ -668,20 +846,21 @@ def listing(q: str = "", limit: int | str | None = None) -> dict:
         n = LIMIT
     conn = _connect(create=False)
     rows: list[tuple[int, str, dict]] = []
-    synced = None
-    if conn is not None:
-        try:
+    try:
+        if conn is not None:
             for cid, name, raw in conn.execute("SELECT id, name, card FROM contacts"):
                 card = json.loads(raw)
                 score = _matches(q, name, card) if q else 2
                 if score:
                     rows.append((score, fold(name), _row(cid, name, card)))
-            synced = _meta(conn, "synced_at")
-        finally:
+        states = _source_states(conn)
+    finally:
+        if conn is not None:
             conn.close()
     rows.sort(key=lambda r: (-r[0], r[1]))
+    synced = [s["synced_at"] for s in states if s["synced_at"]]
     return {"contacts": [r[2] for r in rows[:n]], "total": len(rows),
-            "signed_in": signed_in(), "synced_at": float(synced) if synced else None}
+            "synced_at": max(synced) if synced else None, "sources": states}
 
 
 def card(cid: str) -> dict | None:
@@ -692,18 +871,16 @@ def card(cid: str) -> dict | None:
         return None
     try:
         got = conn.execute("SELECT name, card, updated FROM contacts WHERE id=?", (cid,)).fetchone()
-        if not got:
-            return None
-        srcs = [{"kind": k, "id": s, "etag": e or ""} for k, s, e in conn.execute(
-            "SELECT kind, sid, etag FROM sources WHERE contact=? ORDER BY kind, sid", (cid,))]
     finally:
         conn.close()
+    if not got:
+        return None
     c = json.loads(got[1])
     return {"id": cid, "name": got[0], "names": c.get("names") or [],
             "phones": c.get("phones") or [], "emails": c.get("emails") or [],
-            "addresses": c.get("addresses") or [], "notes": c.get("notes") or "",
-            "sources": srcs, "updated": round(got[2], 3) if got[2] else None,
-            "rooms": rooms_of(cid)}
+            "addresses": c.get("addresses") or [], "organizations": c.get("organizations") or [],
+            "notes": c.get("notes") or "", "sources": c.get("sources") or [],
+            "updated": round(got[2], 3) if got[2] else None, "rooms": rooms_of(cid)}
 
 
 # --- rooms to people ------------------------------------------------------------
@@ -928,8 +1105,9 @@ _STARTED = threading.Event()
 
 
 def start() -> None:
-    """The canvas's sync loop, once per process: idle until signed in, off
-    with `MEDIA_CONTACTS=0`."""
+    """The canvas's sync loop, once per process: the phone every
+    `MEDIA_CONTACTS_INTERVAL_S` (900), Google too when signed in; idle on a
+    host with neither; off with `MEDIA_CONTACTS=0`."""
     if _STARTED.is_set() or (os.environ.get("MEDIA_CONTACTS") or "1").strip() == "0":
         return
     _STARTED.set()
@@ -943,15 +1121,16 @@ def _run() -> None:
         interval = INTERVAL_S
     time.sleep(15)
     while True:
-        if signed_in():
-            try:
-                got = sync()
-                if got["full"] or got["changed"] or got["deleted"]:
-                    print(f"contacts: {got['changed']} changed, {got['deleted']} gone, "
-                          f"{got['contacts']} in all{' (full)' if got['full'] else ''}",
-                          file=sys.stderr)
-            except Exception as e:  # noqa: BLE001 — never take the canvas down
-                print(f"contacts: sync failed ({e})", file=sys.stderr)
+        try:
+            got = sync()
+            for s in got["synced"]:
+                if s.get("changed") or s.get("deleted") or s.get("unchanged") is False:
+                    print(f"contacts: {s['source']}: {s['contacts']} contacts", file=sys.stderr)
+            for s, e in got["errors"].items():
+                # The phone off Wi-Fi is the usual one: the last copy serves.
+                print(f"contacts: {s} unread ({e})", file=sys.stderr)
+        except Exception as e:  # noqa: BLE001 — never take the canvas down
+            print(f"contacts: sync failed ({e})", file=sys.stderr)
         time.sleep(max(30.0, interval))
 
 
@@ -1047,65 +1226,95 @@ def cmd_login(a) -> int:
             break
     finally:
         login.close()
-    return cmd_sync(argparse.Namespace(full=True))
+    return cmd_sync(argparse.Namespace(full=True, source="google"))
 
 
 def status() -> dict:
+    from . import contacts_android
+
     conn = _connect(create=False)
-    count, synced, err, has_sync = 0, None, None, False
-    if conn is not None:
-        try:
+    count, per = 0, {}
+    try:
+        if conn is not None:
             count = conn.execute("SELECT COUNT(*) FROM contacts").fetchone()[0]
-            synced = _meta(conn, "synced_at")
-            err = _meta(conn, "last_error")
-            has_sync = bool(_meta(conn, "google_sync_token"))
-        finally:
+            for kind in ("android", "google"):
+                n = conn.execute("SELECT COUNT(*) FROM records WHERE kind=?", (kind,)).fetchone()[0]
+                synced = _meta(conn, f"{kind}_synced_at")
+                failed = _meta(conn, f"{kind}_failed_at")
+                per[kind] = {"records": n, "synced_at": float(synced) if synced else None,
+                             "failed_at": float(failed) if failed else None,
+                             "last_error": _meta(conn, f"{kind}_last_error")}
+            per.setdefault("google", {})["sync_token"] = bool(_meta(conn, "google_sync_token"))
+    finally:
+        if conn is not None:
             conn.close()
     tok = load_token()
-    return {"client": str(client_path()) if not os.environ.get("MEDIA_GOOGLE_OAUTH_CLIENT")
-            else "MEDIA_GOOGLE_OAUTH_CLIENT",
-            "client_found": load_client() is not None,
-            "token": str(token_path()), "signed_in": tok is not None,
-            "signed_in_at": tok.get("obtained_at") if tok else None,
-            "store": str(db_path()), "contacts": count,
-            "synced_at": float(synced) if synced else None, "sync_token": has_sync,
-            "last_error": err,
+    return {"store": str(db_path()), "contacts": count, "sources": sources(),
+            "android": {"command": " ".join(contacts_android.command()),
+                        "available": contacts_android.available(), **per.get("android", {})},
+            "google": {"client": str(client_path()) if not os.environ.get("MEDIA_GOOGLE_OAUTH_CLIENT")
+                       else "MEDIA_GOOGLE_OAUTH_CLIENT",
+                       "client_found": load_client() is not None,
+                       "token": str(token_path()), "signed_in": tok is not None,
+                       "signed_in_at": tok.get("obtained_at") if tok else None,
+                       **per.get("google", {})},
             "background": (os.environ.get("MEDIA_CONTACTS") or "1").strip() != "0"}
+
+
+def _when(v):
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(v)) if isinstance(v, float) else v
 
 
 def cmd_status(_a) -> int:
     s = status()
-    for k, v in s.items():
-        if k in ("synced_at", "signed_in_at") and v:
-            v = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(v))
-        print(f"{k:13} {v}")
-    return 0 if s["signed_in"] else 1
+    for k in ("store", "contacts", "sources", "background"):
+        print(f"{k:13} {s[k]}")
+    for src in ("android", "google"):
+        for k, v in s[src].items():
+            print(f"{src + '.' + k:24} {_when(v) if k.endswith('_at') else v}")
+    return 0 if s["sources"] else 1
 
 
 def cmd_sync(a) -> int:
-    try:
+    which = getattr(a, "source", "") or ""
+    if which:
+        try:
+            got = {"synced": [sync_android() if which == "android"
+                              else sync_google(full=bool(getattr(a, "full", False)))],
+                   "errors": {}}
+        except Exception as e:  # noqa: BLE001 — said, with its source
+            got = {"synced": [], "errors": {which: str(e)}}
+    else:
         got = sync(full=bool(getattr(a, "full", False)))
-    except NotSignedIn as e:
-        print(str(e), file=sys.stderr)
-        return 2
-    except (SyncError, OSError, urllib.error.URLError) as e:
-        print(f"sync failed: {e}", file=sys.stderr)
-        return 1
-    print(f"{'full' if got['full'] else 'changes'}: {got['changed']} changed, "
-          f"{got['deleted']} gone, {got['contacts']} contacts")
-    return 0
+        if not got["synced"] and not got["errors"]:
+            print("no source to read: no phone tool here, and not signed in to Google",
+                  file=sys.stderr)
+            return 2
+    for s in got["synced"]:
+        if s["source"] == "android":
+            print(f"android: {'unchanged' if s['unchanged'] else 'read'} {s['read']} "
+                  f"contact(s) from the phone, {s['contacts']} contacts")
+        else:
+            print(f"google {'full' if s['full'] else 'changes'}: {s['changed']} changed, "
+                  f"{s['deleted']} gone, {s['contacts']} contacts")
+    for src, e in got["errors"].items():
+        print(f"{src}: sync failed: {e}", file=sys.stderr)
+    return 1 if got["errors"] else 0
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m agent_media_server.contacts",
-                                 description="Google Contacts for agent-media (read-only).")
+                                 description="Contacts for agent-media (read-only): the "
+                                             "phone's over adb, and Google's if signed in.")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("login", help="sign in to Google (works from a phone)")
     p.add_argument("--port", type=int, default=0, help="loopback port (default: any free one)")
     p.set_defaults(fn=cmd_login)
-    sub.add_parser("status", help="signed in? synced?").set_defaults(fn=cmd_status)
+    sub.add_parser("status", help="what is read, and when it last was").set_defaults(fn=cmd_status)
     p = sub.add_parser("sync", help="sync now")
-    p.add_argument("--full", action="store_true", help="everything, not the changes")
+    p.add_argument("--source", choices=("android", "google"), default="",
+                   help="only this one (default: every source this host reads)")
+    p.add_argument("--full", action="store_true", help="Google: everything, not the changes")
     p.set_defaults(fn=cmd_sync)
     a = ap.parse_args(argv)
     return a.fn(a)

@@ -370,10 +370,10 @@ Everything a message can be pointed at.
   Play, normal plays only while the room is open. A message with speech
   has `spoken: {id, key: "", at}` (plus `unheard: true` while held), and
   the app's Play replays it by id. **Contact** (17 Oct 2026, §6.25):
-  `"contact": {"id", "name"}`, the one person the room is with, from Google
-  Contacts — so Messages can group a person's rooms without asking again.
-  **Absent** when no contact matches (a group, a stranger, a server not
-  signed in to Google): treat absent as "a room, as before". `id` is the one
+  `"contact": {"id", "name"}`, the one person the room is with, from the
+  phone's contacts — so Messages can group a person's rooms without asking
+  again. **Absent** when no contact matches (a group, a stranger, a server
+  that has never read the phone): treat absent as "a room, as before". `id` is the one
   `GET /contacts/<id>` takes.
 
 Clients: S (`utils/sasonicaTargets.js`, drawer and ask page), on open.
@@ -3707,24 +3707,44 @@ and `persona_via`.
 ### 6.25 Contacts — gated (17 Oct 2026)
 
 People, not rooms (`docs/proposals/2026-10-17-contacts.md`, steps 1 and
-2, read-only). The server keeps a copy of David's Google Contacts in
-`<state_dir>/contacts.db` (`agent_media_server/contacts.py`), synced from
-the People API (`contacts.readonly`) every `MEDIA_CONTACTS_INTERVAL_S`
-(300 s) while it is signed in, with a sync token for the changes since (an
-expired one, 410, is a full resync); `MEDIA_CONTACTS=0` leaves it off.
-Pinned by `packages/server/tests/test_contacts.py`. Both routes are
-`auth.gate`d, as every thread route is.
+2, read-only). The server keeps a copy of David's contacts in
+`<state_dir>/contacts.db` (`agent_media_server/contacts.py`). Pinned by
+`packages/server/tests/test_contacts.py`. Both routes are `auth.gate`d, as
+every thread route is.
 
-**Signing in** (host only; there is no route for it). `python -m
-agent_media_server.contacts login` prints Google's consent URL (PKCE, a
-loopback redirect to `http://127.0.0.1:<port>`) and finishes on either the
-loopback hit or the redirect's address pasted back — on a phone that page
-never loads, and its address bar holds the code. The OAuth client is
-Google's Desktop-app JSON at `~/.config/agent-media/google-oauth-client.json`
-(or `MEDIA_GOOGLE_OAUTH_CLIENT`, a path or the JSON itself); the refresh
-token is kept 0600 at `~/.config/agent-media/google-contacts-token.json`,
-next to `secrets.env`. `… contacts status` says what is there; `… contacts
-sync [--full]` syncs now.
+**Where they come from.** Two sources, each kept as it came (`records`) and
+merged into the book:
+
+- **`android`, the default** (17 Oct 2026; David: "I'm pretty unfamiliar
+  with Google cloud. can you run it with ADB?"): the phone's contacts
+  provider, read as shell uid over `agent-phone-adb shell`
+  (`contacts_android.py`; `MEDIA_CONTACTS_ADB` replaces the command). The
+  provider already holds his Google Contacts (the `com.google` raw contacts
+  Android syncs) merged with WhatsApp's into one person each, so that
+  person is one contact here, identified by the provider's lookup key. Read
+  whole every `MEDIA_CONTACTS_INTERVAL_S` (900 s); a read the same as the
+  last writes nothing. adb answers only while the phone is on Wi-Fi: a read
+  that fails keeps the last good copy and says why (`sources[].error`), and
+  the next interval tries again. `content query` escapes nothing, so each
+  free-text column is read in a query of its own as the row's last column,
+  and a line is a new row only when it carries the next row number.
+- **`google`, optional:** the People API (`contacts.readonly`), only once
+  this host is signed in — `python -m agent_media_server.contacts login`
+  (PKCE, a loopback redirect to `http://127.0.0.1:<port>`, and the
+  redirect's address pasted back works too: on a phone that page never
+  loads). The OAuth client is Google's Desktop-app JSON at
+  `~/.config/agent-media/google-oauth-client.json` (or
+  `MEDIA_GOOGLE_OAUTH_CLIENT`, a path or the JSON itself); the refresh
+  token is kept 0600 at `~/.config/agent-media/google-contacts-token.json`,
+  next to `secrets.env`. Synced with a sync token (an expired one, 410, is
+  a full resync). Where a Google contact shares a number (else an address)
+  with exactly one phone contact they are one person, and **Google wins**:
+  each field is Google's when Google has one, the phone's otherwise.
+
+`MEDIA_CONTACTS_SOURCES` (comma separated) picks the sources;
+`MEDIA_CONTACTS=0` leaves the background sync off. `… contacts status`
+says what is read and when it last was; `… contacts sync [--source
+android|google]` syncs now.
 
 #### `GET /contacts?q=[&limit=]` — gated (`auth.gate`)
 
@@ -3736,20 +3756,24 @@ when accepted.
  "contacts": [
    {"id": "3f0c…-uuid", "name": "Lionel Smith",
     "phones": ["+61412345678"], "emails": ["lionel@example.com"]}],
- "total": 1, "signed_in": true, "synced_at": 1792200000.5}
+ "total": 1, "synced_at": 1792200000.5,
+ "sources": [{"kind": "android", "synced_at": 1792200000.5, "error": null}]}
 ```
 
 - **`q`** matches a name (any of the contact's names; case and accents
   ignored) at its start or a word's start first, then anywhere in it; a
   phone's digits as stored (`+61412…`), as dialled at home (`0412…`) or as
-  written in Google; or part of an email. No `q`: everyone.
+  written on the phone; or part of an email. No `q`: everyone.
 - **`contacts`**: at most `limit` (default 200, at most 5000), best match
   then name order. `phones` are E.164 (default region AU,
   `MEDIA_CONTACTS_REGION`); a number that cannot be placed (no area code,
   letters) is left out here and kept on the card. `total` is every match.
-- **`signed_in`** is whether this host has the client and a token;
-  **`synced_at`** the last good sync (epoch s), `null` before one. A server
-  never signed in answers `"contacts": []`, `"total": 0`.
+- **`sources`**: each source this host reads or has read: `synced_at` its
+  last good read (epoch s, `null` before one), `error` why the last try
+  failed (`"… adb: no devices/emulators found"` with the phone off Wi-Fi),
+  else `null`. The app can say "as of <time>" from it. **`synced_at`** is
+  the newest of them. A server with no source answers `"contacts": []`,
+  `"total": 0`, `"sources": []`.
 
 #### `GET /contacts/<id>` — gated (`auth.gate`)
 
@@ -3763,22 +3787,36 @@ hold (and for any path that is not a uuid, as an unknown route).
    "names": [{"display": "Lionel Smith", "given": "Lionel", "family": "Smith"}],
    "phones": [{"value": "+61412345678", "raw": "0412 345 678", "type": "Mobile"}],
    "emails": [{"value": "lionel@example.com", "type": "Home"}],
-   "addresses": [{"formatted": "1 Main Rd, Donvale VIC 3111", "type": "Home"}],
+   "addresses": [{"formatted": "1 Main Rd\nDonvale VIC 3111", "type": "Home"}],
+   "organizations": [{"company": "Acme", "title": "Boss"}],
    "notes": "",
-   "sources": [{"kind": "google", "id": "people/c123", "etag": "%EgUBAi43PRoEAQIFByIM…"}],
+   "sources": [{"kind": "android", "id": "3789r11-4F2B4D.3789r12-4F2B4D",
+                "raw": [11, 12], "accounts": ["com.google", "com.whatsapp"], "version": 6}],
    "updated": 1792200000.5,
    "rooms": [{"session": "a1b2…-uuid", "room": "!abc:ryer.org", "title": "Lionel Smith",
               "network": {"id": "gmessages", "name": "Google Messages"},
               "at": 1792199000.0}]}}
 ```
 
-- Primary values come first in each list. `phones[].value` is E.164 or
-  `null` (then `raw` is all there is); `raw` and `type` are Google's
-  (`formattedType`). `notes` is Google's biography. `sources` is where the
-  card came from: one `google` source today; the CRM joins it in step 3.
+- One entry per value: the phone's copies of a number (Google's and
+  WhatsApp's raw contacts both hold it) are one phone. `phones[].value` is
+  E.164 or `null` (then `raw` is all there is); `raw` is as written, `type`
+  the label ("Mobile", "Work", a custom one). `notes` are the phone's notes
+  (Google's biography for a Google contact), blank-line separated.
+  `addresses[].formatted` may hold newlines.
+- **`sources`**: where the card came from. `android`: `id` the provider's
+  lookup key (the contact's id is a uuid made from it), `raw` its raw
+  contact ids, `accounts` their account types, `version` the sum of their
+  versions (it moves on any edit). `google`, when signed in: `{"kind":
+  "google", "id": "people/c123", "etag"}`, first when it won.
+- **`updated`**: when the card last changed here (epoch s).
 - **`rooms`**: the Matrix rooms (§6.1 "Matrix rows") that are this
   person's, newest message first: `session` is the room's thread id, so
   every session route takes it; `at` its last message, or `null`.
+- **Edits are not here yet.** When they come (the proposal's step 4) they
+  will go through the phone's provider — a content update on the person's
+  `com.google` raw contact, which Android then syncs to Google — with the
+  raw contact's version as the guard against a newer change.
 
 **Which room is whose.** Each member of a room other than the owner, the
 agent (`MATRIX_SAM_ID`) and the bridge bots is matched by phone (E.164),
