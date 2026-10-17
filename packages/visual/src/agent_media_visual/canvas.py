@@ -2193,6 +2193,10 @@ def main() -> None:
     # intake reading from it; idle unless a token and a room are configured.
     from agent_media_server import matrix as _matrix
     _matrix.start()
+    # Google Contacts into contacts.db (agent_media_server.contacts), every
+    # MEDIA_CONTACTS_INTERVAL_S while signed in; MEDIA_CONTACTS=0 leaves it off.
+    from agent_media_server import contacts as _contacts
+    _contacts.start()
     # One spoken catch-up when David is free again (agent_media_core.catchup,
     # roadmap item 14): watches free.answer(); MEDIA_CATCHUP=0 leaves it off.
     from agent_media_core import catchup as _catchup

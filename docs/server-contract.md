@@ -369,7 +369,12 @@ Everything a message can be pointed at.
   follow it as an agent's reply does: quiet keeps them unplayed with a
   Play, normal plays only while the room is open. A message with speech
   has `spoken: {id, key: "", at}` (plus `unheard: true` while held), and
-  the app's Play replays it by id.
+  the app's Play replays it by id. **Contact** (17 Oct 2026, §6.25):
+  `"contact": {"id", "name"}`, the one person the room is with, from Google
+  Contacts — so Messages can group a person's rooms without asking again.
+  **Absent** when no contact matches (a group, a stranger, a server not
+  signed in to Google): treat absent as "a room, as before". `id` is the one
+  `GET /contacts/<id>` takes.
 
 Clients: S (`utils/sasonicaTargets.js`, drawer and ask page), on open.
 
@@ -3698,6 +3703,101 @@ A headless Claude whose sessiond predates this (its `ping` lacks
 `<random>.md` with a second name `<session>.md` once the id is known, and
 kept: a resume may be handed it again. The answer carries `persona`, `role`
 and `persona_via`.
+
+### 6.25 Contacts — gated (17 Oct 2026)
+
+People, not rooms (`docs/proposals/2026-10-17-contacts.md`, steps 1 and
+2, read-only). The server keeps a copy of David's Google Contacts in
+`<state_dir>/contacts.db` (`agent_media_server/contacts.py`), synced from
+the People API (`contacts.readonly`) every `MEDIA_CONTACTS_INTERVAL_S`
+(300 s) while it is signed in, with a sync token for the changes since (an
+expired one, 410, is a full resync); `MEDIA_CONTACTS=0` leaves it off.
+Pinned by `packages/server/tests/test_contacts.py`. Both routes are
+`auth.gate`d, as every thread route is.
+
+**Signing in** (host only; there is no route for it). `python -m
+agent_media_server.contacts login` prints Google's consent URL (PKCE, a
+loopback redirect to `http://127.0.0.1:<port>`) and finishes on either the
+loopback hit or the redirect's address pasted back — on a phone that page
+never loads, and its address bar holds the code. The OAuth client is
+Google's Desktop-app JSON at `~/.config/agent-media/google-oauth-client.json`
+(or `MEDIA_GOOGLE_OAUTH_CLIENT`, a path or the JSON itself); the refresh
+token is kept 0600 at `~/.config/agent-media/google-contacts-token.json`,
+next to `secrets.env`. `… contacts status` says what is there; `… contacts
+sync [--full]` syncs now.
+
+#### `GET /contacts?q=[&limit=]` — gated (`auth.gate`)
+
+Everyone, by name; or, with `q`, those it matches as it is typed. Gzipped
+when accepted.
+
+```json
+{"ok": true,
+ "contacts": [
+   {"id": "3f0c…-uuid", "name": "Lionel Smith",
+    "phones": ["+61412345678"], "emails": ["lionel@example.com"]}],
+ "total": 1, "signed_in": true, "synced_at": 1792200000.5}
+```
+
+- **`q`** matches a name (any of the contact's names; case and accents
+  ignored) at its start or a word's start first, then anywhere in it; a
+  phone's digits as stored (`+61412…`), as dialled at home (`0412…`) or as
+  written in Google; or part of an email. No `q`: everyone.
+- **`contacts`**: at most `limit` (default 200, at most 5000), best match
+  then name order. `phones` are E.164 (default region AU,
+  `MEDIA_CONTACTS_REGION`); a number that cannot be placed (no area code,
+  letters) is left out here and kept on the card. `total` is every match.
+- **`signed_in`** is whether this host has the client and a token;
+  **`synced_at`** the last good sync (epoch s), `null` before one. A server
+  never signed in answers `"contacts": []`, `"total": 0`.
+
+#### `GET /contacts/<id>` — gated (`auth.gate`)
+
+One person's card. 404 `"no such contact"` for an id the store does not
+hold (and for any path that is not a uuid, as an unknown route).
+
+```json
+{"ok": true,
+ "contact": {
+   "id": "3f0c…-uuid", "name": "Lionel Smith",
+   "names": [{"display": "Lionel Smith", "given": "Lionel", "family": "Smith"}],
+   "phones": [{"value": "+61412345678", "raw": "0412 345 678", "type": "Mobile"}],
+   "emails": [{"value": "lionel@example.com", "type": "Home"}],
+   "addresses": [{"formatted": "1 Main Rd, Donvale VIC 3111", "type": "Home"}],
+   "notes": "",
+   "sources": [{"kind": "google", "id": "people/c123", "etag": "%EgUBAi43PRoEAQIFByIM…"}],
+   "updated": 1792200000.5,
+   "rooms": [{"session": "a1b2…-uuid", "room": "!abc:ryer.org", "title": "Lionel Smith",
+              "network": {"id": "gmessages", "name": "Google Messages"},
+              "at": 1792199000.0}]}}
+```
+
+- Primary values come first in each list. `phones[].value` is E.164 or
+  `null` (then `raw` is all there is); `raw` and `type` are Google's
+  (`formattedType`). `notes` is Google's biography. `sources` is where the
+  card came from: one `google` source today; the CRM joins it in step 3.
+- **`rooms`**: the Matrix rooms (§6.1 "Matrix rows") that are this
+  person's, newest message first: `session` is the room's thread id, so
+  every session route takes it; `at` its last message, or `null`.
+
+**Which room is whose.** Each member of a room other than the owner, the
+agent (`MATRIX_SAM_ID`) and the bridge bots is matched by phone (E.164),
+else email, else — a bridge's name for its puppet being the phone's own
+contact name — a name only one contact has. A room is a contact's when its
+members match exactly one; a group of several people is no one's, and so is
+a number two contacts share. The puppets: mautrix-gmessages' are
+`@gmessages_<login>.<participant>:<server>` (no number in the id) named
+`{{or .FullName .PhoneNumber}}`; Signal's `@signal_<uuid>` (older ones the
+escaped number, `@signal_=2b61…`); WhatsApp's `@whatsapp_61412…`. A number
+comes from an id that is one and from a displayname that is one.
+`MEDIA_CONTACTS_SELF` (David's own numbers and addresses, comma separated)
+are never matched: texts sent from the phone itself arrive as his number's
+puppet. A manual **join** (this room is this person's) or **split** (it is
+not) is kept in the store and wins over the matcher; no route writes them
+yet.
+
+Contacts are personal data: they stay on this host and go only to a
+signed-in device that asks; nothing here speaks them.
 
 ## 7. `/events` (v0) — canvas-wide, not the app's stream
 

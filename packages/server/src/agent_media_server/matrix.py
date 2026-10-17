@@ -393,7 +393,21 @@ def rows(flags: set | frozenset = frozenset()) -> list[dict]:
                         "harness": "matrix", "source": "matrix", "room": r.id,
                         "network": r.network,
                         "drivable": bool(owner_token())})
+            contact = _contact_of(r)
+            if contact:
+                # The person the room is with (contacts.py): absent when none.
+                out[-1]["contact"] = contact
     return out
+
+
+def _contact_of(r: Room) -> dict | None:
+    from . import contacts
+
+    try:
+        return contacts.for_room(r)
+    except Exception as e:  # noqa: BLE001 — a row without a person, not no rows
+        log.warning("matrix %s: contact match failed: %s", r.id, e)
+        return None
 
 
 def _join_speech(thread: str, messages: list[dict]) -> None:

@@ -164,6 +164,10 @@ device gets its token):
   GET  /search?q=[&limit=&before=&tools=1&memory=0] → every thread's messages,
                   titles, recaps and projects, and long-term memory when this
                   host has agent-memory (search.py, §6.14)
+  GET  /contacts?q=[&limit=] → people from Google Contacts, or those a
+                  name, number or email being typed matches (contacts.py, §6.25)
+  GET  /contacts/<id> → one person's card: names, phones, emails,
+                  addresses, notes, sources, and the rooms that are theirs
   POST /alerts    {"id", "level", "kind"?, "title"?, "detail"?, "fix"?,
                    "host"?, "step"?, "confirm"?, "every_s"?} → a watcher
                   says what is true now; the store answers what changed and
@@ -241,7 +245,7 @@ CORS_PATHS = frozenset({
     "/presets", "/presets/remove", "/personas/scope",
     "/setup", "/setup/run", "/shell", "/shell/signins", "/shell/signin", "/enrol", "/me", "/me/signout", "/me/account",
     "/share", "/upload", "/dashboard",
-    "/sessions/events", "/search",
+    "/sessions/events", "/search", "/contacts",
     "/mic/ask", "/mic/cancel",
     "/phone/ask", "/phone/answer", "/phone/cancel",
     "/notes", "/notes/clear",
@@ -296,6 +300,8 @@ THREAD_AGENTS = re.compile(r"/threads/([^/]+)/agents")
 AGENT_LOG = re.compile(r"/threads/([^/]+)/agents/([^/]+)/log")
 # Stopping one, or sending it a message (§6.12a, agent_actions.py).
 AGENT_ACT = re.compile(r"/threads/([^/]+)/agents/([^/]+)/(stop|message)")
+# One contact's card (contacts.py, §6.25).
+CONTACT = re.compile(r"/contacts/([0-9a-f-]{36})")
 
 
 def cors_path(path: str) -> bool:
@@ -303,7 +309,7 @@ def cors_path(path: str) -> bool:
     (any method): `CORS_PATHS`, a thread's event stream, or its agents."""
     return path in CORS_PATHS or any(r.fullmatch(path)
                                      for r in (THREAD_EVENTS, THREAD_AGENTS, AGENT_LOG,
-                                                        AGENT_ACT))
+                                                        AGENT_ACT, CONTACT))
 
 
 # Long enough that a chat page's polling is not preceded by a preflight every
@@ -493,6 +499,28 @@ def _options(h: BaseHTTPRequestHandler, path: str) -> bool:
     return True
 
 
+def _contacts(h: BaseHTTPRequestHandler, path: str, query: str) -> None:
+    """`GET /contacts?q=&limit=` and `GET /contacts/<id>` (§6.25): a paired
+    device or a signed-in account, as for every thread route."""
+    from . import contacts
+
+    user, err = auth.gate(_bearer(h))
+    if not user:
+        _json(h, err.pop("status", 403), {"ok": False, **err})
+        return
+    one = CONTACT.fullmatch(path)
+    if one:
+        got = contacts.card(one.group(1))
+        if got is None:
+            _json(h, 404, {"ok": False, "error": "no such contact"})
+        else:
+            _json(h, 200, {"ok": True, "contact": got})
+        return
+    qs = parse_qs(query)
+    arg = lambda k: (qs.get(k) or [""])[0]  # noqa: E731
+    _json_z(h, 200, {"ok": True, **contacts.listing(arg("q"), arg("limit"))})
+
+
 def _sealed(h: BaseHTTPRequestHandler, session: str) -> bool:
     """Answer 423 for a sealed thread's content: there is none to read until
     it is unsealed (seal.py). True when it answered."""
@@ -653,6 +681,10 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
             _json_z(h, 200, {"ok": True, **detail})
         else:
             _json(h, detail.pop("status", 400), {"ok": False, **detail})
+    elif path == "/contacts" or CONTACT.fullmatch(path):
+        # People, from Google Contacts (contacts.py, §6.25): the list or
+        # matches as you type, and one person's card with their rooms.
+        _contacts(h, path, query)
     elif path == "/targets":
         # Everything a message can be pointed at — running sessions and
         # the directories a fresh one can open in — so the app renders a
