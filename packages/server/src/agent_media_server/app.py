@@ -55,6 +55,9 @@ device gets its token):
   GET  /presets   → saved ways to start a chat, and the `personas`/`roles`
                   a chat can start as; POST /presets {Preset} adds
                   or replaces one, POST /presets/remove {"name"} (presets.py)
+  GET  /personas/scope → each persona's agents and projects, the trusted
+                  models, and the three layers they come from; POST
+                  sets the user layer (persona_scope.py)
   GET  /conversations   → live sessions and recent conversations, by title
                   (the picker)
   GET  /targets   → what a message can be pointed at: those same sessions,
@@ -235,7 +238,7 @@ CORS_PATHS = frozenset({
     "/harnesses", "/harnesses/run", "/harnesses/screen",
     "/harnesses/keys", "/harnesses/apikey", "/harnesses/close", "/harnesses/logout",
     "/harnesses/updates", "/harnesses/profiles", "/harnesses/profiles/remove",
-    "/presets", "/presets/remove",
+    "/presets", "/presets/remove", "/personas/scope",
     "/setup", "/setup/run", "/shell", "/shell/signins", "/shell/signin", "/enrol", "/me", "/me/signout", "/me/account",
     "/share", "/upload", "/dashboard",
     "/sessions/events", "/search",
@@ -664,6 +667,15 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
 
         ok, detail = dashboard.dashboard(_bearer(h))
         _json_z(h, 200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
+    elif path == "/personas/scope":
+        # Where each persona is offered, layered (persona_scope.py, §6.24).
+        from . import persona_scope, personas
+
+        user, err = auth.gate(_bearer(h))
+        if not user:
+            _json(h, err.pop("status", 403), {"ok": False, **err})
+        else:
+            _json(h, 200, {"ok": True, **persona_scope.resolve(personas.described())})
     elif path == "/presets":
         # Saved ways to start a chat (presets.py, §6.24).
         from . import presets
@@ -1654,6 +1666,11 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         if not ok:
             print(f"answer: refused ({detail.get('error')}) for "
                   f"{str(body.get('session'))[:8]}", file=sys.stderr, flush=True)
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/personas/scope":
+        from . import persona_scope
+
+        ok, detail = persona_scope.put(_read_json(h) or {}, _bearer(h))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path in ("/presets", "/presets/remove"):
         from . import presets

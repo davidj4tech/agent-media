@@ -3610,7 +3610,12 @@ in `<state_dir>/presets.json`. "Profile" stays the harness login (§6.6).
 
 ```
 GET  /presets → {"presets": [Preset…], "agents_md_default": "<the template a new project gets without a preset>",
-                 "personas": ["zara", …], "roles": ["reviewer", …], "private": ["zara", …]}
+                 "personas": ["zara", …], "roles": ["reviewer", …], "private": ["zara", …],
+                 "scope": {"zara": {"agents": ["pi"] | null, "projects": ["agent-media"] | null, "private": true}, …},
+                 "trusted_models": ["venice/*", …], "private_mode": false}
+GET  /personas/scope → {"scope", "trusted_models", "layers": {"default", "local", "user"}}
+POST /personas/scope {"id", "agents"?: [...] | null, "projects"?: [...] | null} | {"trusted_models": [...] | null}
+                 → the same as GET, after setting the user layer (null clears a field)
 POST /presets Preset → {"ok": true, "preset": Preset}       // added, or replaced by name
 POST /presets/remove {"name"} → {"ok": true} | 404
 
@@ -3634,7 +3639,22 @@ are what `persona-render --list` names in `MEDIA_PERSONAS_DIR` (default
 persona chips. `private` (17 Oct 2026) is the personas with private material
 in the repo — a `private/<id>.sops.md` or `private/<id>-….sops.md`, judged by
 name alone; the app keeps them off the card until its lock is opened. They
-are still in `personas`, so an older app shows them all. `/ask`'s `persona` and `role` (either, or both) start a
+are still in `personas`, so an older app shows them all.
+
+**Scope** (17 Oct 2026, docs/proposals/2026-10-17-persona-scope.md) — per
+id, `agents` (the only agents that take it; `null` every one) and
+`projects` (folder names it belongs to: the app lists it first there;
+`null` none), merged from three layers, later winning field by field: the
+id's front matter (`persona-render --list --json`), the host's
+`~/.config/agent-media/personas.toml` (`MEDIA_PERSONAS_CONFIG`), and the
+user's, set by `POST /personas/scope`. `/ask` or a preset naming a persona or
+role its scope keeps from the agent → 400 (a preset with no agent is not
+judged). `trusted_models` are glob patterns on `/ask`'s model id (default
+`venice/*`, `ollama/*`, `local/*`; no model is never trusted): a private
+persona on a trusted model renders `--mode private` — once `private_mode`
+is true, which waits on the private thread (keeping it out of search, the
+shelf, recaps and the memory store, sealed when it ends). Until then every
+render is public. `/ask`'s `persona` and `role` (either, or both) start a
 fresh session as `persona-render <persona or role> --adapter <agent>
 [--role <role>] --mode public` — always public, never `sops`. Unknown id →
 400; a render that fails or takes over 20 s → 502 with its last line, before

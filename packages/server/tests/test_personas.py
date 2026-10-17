@@ -12,13 +12,22 @@ import uuid
 
 import pytest
 
-from agent_media_server import auth_abs, driver, personas, presets, routing, send, sessions
+from agent_media_server import auth_abs, driver, persona_scope, personas, presets, routing, send, sessions
 
 FAKE_RENDER = r'''#!{python}
 import json, os, sys
 args = sys.argv[1:]
 with open(os.environ["FAKE_RENDER_LOG"], "a") as fh:
     fh.write(json.dumps(args) + "\n")
+if args == ["--list", "--json"] and os.environ.get("FAKE_JSON"):
+    print(json.dumps({{"personas": [
+        {{"id": "zara", "kind": "persona", "adapters": ["pi", "claude"], "projects": None, "private": True}},
+        {{"id": "sam", "kind": "persona", "adapters": None, "projects": ["agent-media"], "private": False}}],
+        "roles": [
+        {{"id": "reviewer", "kind": "role", "adapters": ["claude", "codex"], "projects": None, "private": False}},
+        {{"id": "planner", "kind": "role", "adapters": None, "projects": None, "private": False}}],
+        "adapters": ["claude", "pi"]}}))
+    sys.exit(0)
 if args == ["--list"]:
     print("personas:\n  zara\n  sam\nroles:\n  reviewer\n  planner\nadapters:\n  claude\n  pi")
     sys.exit(0)
@@ -45,6 +54,7 @@ def repo(monkeypatch, tmp_path):
     log = tmp_path / "render.log"
     monkeypatch.setenv("MEDIA_PERSONAS_DIR", str(root))
     monkeypatch.setenv("FAKE_RENDER_LOG", str(log))
+    monkeypatch.setenv("MEDIA_PERSONAS_CONFIG", str(tmp_path / "personas.toml"))
     run = tmp_path / "run"
     run.mkdir()
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(run))
@@ -173,7 +183,7 @@ def test_no_repo_means_any_persona_is_unknown(asker, monkeypatch, tmp_path):
 
 
 def test_a_failed_render_is_502_with_its_last_line(repo, asker, monkeypatch):
-    monkeypatch.setattr(personas, "listing", lambda: {"personas": ["broken"], "roles": []})
+    monkeypatch.setattr(personas, "described", lambda: [{"id": "broken", "kind": "persona", "adapters": None, "projects": None, "private": False}])
     ok, d = send.ask("hi", "tok", persona="broken")
     assert not ok and d["status"] == 502
     assert d["error"].endswith("ValueError: zara.md has no front matter")
@@ -219,3 +229,75 @@ def test_ask_routed_takes_persona_for_a_fresh_chat_only(monkeypatch):
     assert ok and (seen[0]["persona"], seen[0]["role"]) == ("zara", "planner")
     routing.ask_routed("hi", "tok", target="new")
     assert "persona" not in seen[1] and "role" not in seen[1]
+
+
+# Scope (persona_scope.py, docs/proposals/2026-10-17-persona-scope.md): a
+# renderer with --json names each id's agents, projects and private
+# material; the host's personas.toml and the user's persona-scope.json
+# override it field by field.
+
+@pytest.fixture
+def described(repo, monkeypatch):
+    monkeypatch.setenv("FAKE_JSON", "1")
+    return repo
+
+
+def test_an_older_renderer_without_json_still_lists(repo):
+    rows = personas.described()
+    assert [(d["id"], d["kind"], d["adapters"]) for d in rows] == [
+        ("zara", "persona", None), ("sam", "persona", None),
+        ("reviewer", "role", None), ("planner", "role", None)]
+
+
+def test_json_listing_carries_the_front_matter_scope(described, monkeypatch):
+    monkeypatch.setattr(auth_abs, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
+    ok, d = presets.listing("tok")
+    assert d["personas"] == ["zara", "sam"] and d["private"] == ["zara"]
+    assert d["scope"]["zara"] == {"agents": ["pi", "claude"], "projects": None, "private": True}
+    assert d["scope"]["sam"]["projects"] == ["agent-media"]
+    assert d["trusted_models"] == persona_scope.DEFAULT_TRUSTED
+    assert d["private_mode"] is False
+
+
+def test_local_then_user_layers_override_field_by_field(described, tmp_path, monkeypatch):
+    (tmp_path / "personas.toml").write_text(
+        'trusted_models = ["venice/*"]\n[persona.zara]\nagents = ["pi"]\nprojects = ["toys"]\n')
+    got = persona_scope.resolve(personas.described())
+    assert got["scope"]["zara"] == {"agents": ["pi"], "projects": ["toys"], "private": True}
+    assert got["trusted_models"] == ["venice/*"]
+    monkeypatch.setattr(auth_abs, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
+    ok, d = persona_scope.put({"id": "zara", "agents": ["pi", "codex"], "trusted_models": ["venice/*", "ollama/*"]}, "tok")
+    assert ok, d
+    assert d["scope"]["zara"] == {"agents": ["pi", "codex"], "projects": ["toys"], "private": True}
+    assert d["layers"]["local"]["persona"]["zara"]["agents"] == ["pi"]       # each layer is kept
+    ok, d = persona_scope.put({"id": "zara", "agents": None}, "tok")          # cleared: back to local
+    assert d["scope"]["zara"]["agents"] == ["pi"]
+    assert not persona_scope.put({"id": "nobody", "agents": []}, "tok")[0]
+
+
+def test_an_agent_the_scope_leaves_out_is_refused(described, asker):
+    ok, d = send.ask("hi", "tok", agent="codex", persona="zara")
+    assert not ok and d["status"] == 400 and "not offered for codex" in d["error"]
+    ok, d = send.ask("hi", "tok", agent="claude", role="reviewer")
+    assert ok, d
+
+
+def test_presets_check_the_agent_too(described, monkeypatch):
+    monkeypatch.setattr(auth_abs, "abs_identity", lambda b: ({"username": "d", "type": "root"}, 200))
+    assert not presets.put({"name": "X", "agent": "codex", "persona": "zara"}, "tok")[0]
+    assert presets.put({"name": "Y", "agent": "", "persona": "zara"}, "tok")[0]   # the host's default: not judged
+
+
+def test_trusted_models_match_by_pattern():
+    assert persona_scope.trusted("venice/z-ai-glm-5-3", ["venice/*"])
+    assert not persona_scope.trusted("sonnet", ["venice/*"])
+    assert not persona_scope.trusted("", ["*"])                # no model is the agent's own default
+
+
+def test_private_mode_waits_for_the_privacy_work(described, monkeypatch):
+    rows = personas.described()
+    assert personas.mode_for("zara", "venice/x", rows) == "public"      # PRIVATE_MODE_READY off
+    monkeypatch.setattr(personas, "PRIVATE_MODE_READY", True)
+    assert personas.mode_for("zara", "venice/x", rows) == "private"
+    assert personas.mode_for("zara", "sonnet", rows) == "public"
+    assert personas.mode_for("sam", "venice/x", rows) == "public"       # nothing private to render

@@ -2,11 +2,13 @@
 docs/proposals/2026-10-15-personas-in-presets.md).
 
 The personas live in `~/agent-personas` (`MEDIA_PERSONAS_DIR`), and its
-`bin/persona-render` is the only thing here that reads them: `--list` names
-them, and `<id> --adapter <agent> [--role <role>] --mode public` turns one
-into a prompt for that harness. Always public — this module never asks for
-`summary` or `private`, so it never reaches `sops`. A host without the repo
-has empty lists and no persona chips; that is not an error.
+`bin/persona-render` is the only thing here that reads them: `--list --json`
+describes them, and `<id> --adapter <agent> [--role <role>] --mode public`
+turns one into a prompt for that harness. Where each is offered, and which
+models are trusted with a private one, is persona_scope.py's. Public only
+while PRIVATE_MODE_READY is off: then this module never asks for `summary`
+or `private`, so it never reaches `sops`. A host without the repo has empty
+lists and no persona chips; that is not an error.
 
 A render is delivered by the harness's own means (`via`): Claude and pi take
 it as an appended system prompt from a file; codex, opencode and Hermes get
@@ -17,6 +19,7 @@ handed it again — so it is named per session once the session is known.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -26,6 +29,11 @@ from pathlib import Path
 #: How long a render or a listing may take.
 RENDER_TIMEOUT_S = 20.0
 LIST_TIMEOUT_S = 10.0
+
+#: Private renders stay off until a private thread is kept out of search,
+#: the shelf, the org bridge and the memory sync, and sealed when it ends
+#: (docs/proposals/2026-10-15-personas-in-presets.md steps 3–4).
+PRIVATE_MODE_READY = False
 
 #: Harnesses that take a system prompt from a file, and the flag that does it.
 #: pi's `--append-system-prompt` reads a path as the file's contents.
@@ -76,13 +84,9 @@ def private_ids(ids: list[str]) -> list[str]:
             if any(n.startswith((f"{i}.", f"{i}-")) for n in names)]
 
 
-def listing() -> dict:
-    """`{"personas": [...], "roles": [...], "private": [...]}` from
-    `persona-render --list`, `private` the personas `private_ids` names; all
-    empty when the repo (or its renderer) is not there or fails."""
-    out: dict[str, list[str]] = {"personas": [], "roles": [], "private": []}
-    if not renderer().is_file():
-        return out
+def _text_listing() -> dict[str, list[str]]:
+    """Ids from the plain `--list`, for a renderer older than `--json`."""
+    out: dict[str, list[str]] = {"personas": [], "roles": []}
     try:
         r = _run(["--list"], LIST_TIMEOUT_S)
     except (OSError, subprocess.SubprocessError):
@@ -96,29 +100,85 @@ def listing() -> dict:
         if not line[:1].isspace() and line.rstrip().endswith(":"):
             section = line.strip()[:-1]
             continue
-        if section in ("personas", "roles"):
+        if section in out:
             out[section].append(line.strip())
-    out["private"] = private_ids(out["personas"])
     return out
 
 
-def check(persona: str, role: str, lists: dict | None = None) -> str:
+def described() -> list[dict]:
+    """Every persona and role as `persona-render --list --json` gives it:
+    `{"id", "kind", "adapters", "projects", "private"}`. A renderer older
+    than `--json` gives ids only: no limits, and `private` by file name
+    (`private_ids`). Empty without the repo or when the renderer fails."""
+    if not renderer().is_file():
+        return []
+    try:
+        r = _run(["--list", "--json"], LIST_TIMEOUT_S)
+        data = json.loads(r.stdout) if r.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        data = None
+    if isinstance(data, dict):
+        return [{"id": str(d.get("id")), "kind": kind[:-1], "adapters": d.get("adapters"),
+                 "projects": d.get("projects"), "private": d.get("private") is True}
+                for kind in ("personas", "roles") for d in data.get(kind) or []
+                if isinstance(d, dict) and d.get("id")]
+    lists = _text_listing()
+    private = set(private_ids(lists["personas"]))
+    return [{"id": i, "kind": kind[:-1], "adapters": None, "projects": None, "private": i in private}
+            for kind in ("personas", "roles") for i in lists[kind]]
+
+
+def listing(rows: list[dict] | None = None) -> dict:
+    """`{"personas": [...], "roles": [...], "private": [...]}`, `private` the
+    personas with private material; all empty without the repo."""
+    rows = described() if rows is None else rows
+    return {"personas": [d["id"] for d in rows if d["kind"] == "persona"],
+            "roles": [d["id"] for d in rows if d["kind"] == "role"],
+            "private": [d["id"] for d in rows if d["kind"] == "persona" and d["private"]]}
+
+
+def check(persona: str, role: str, lists: dict | None = None, agent: str = "",
+          rows: list[dict] | None = None) -> str:
     """Why `persona`/`role` cannot be used, or "" — an id the listing does not
-    name (which is every id on a host without the repo)."""
+    name (which is every id on a host without the repo), or, given `agent`,
+    one its scope keeps from that agent (persona_scope.py)."""
     if not persona and not role:
         return ""
-    lists = lists if lists is not None else listing()
+    if lists is None:
+        rows = described() if rows is None else rows
+        lists = listing(rows)
     if persona and persona not in lists["personas"]:
         return f"unknown persona {persona!r}"
     if role and role not in lists["roles"]:
         return f"unknown role {role!r}"
+    if agent and rows is not None:
+        from . import persona_scope
+
+        scope = persona_scope.resolve(rows)["scope"]
+        for pid in (persona, role):
+            if pid and not persona_scope.takes(scope, pid, agent):
+                return f"{pid} is not offered for {agent}"
     return ""
 
 
-def render(persona: str, role: str, agent: str) -> tuple[bool, str]:
-    """The public render for `agent`: `(True, text)` or `(False, why)`.
-    A role on its own is rendered as its own id (`persona-render reviewer`)."""
-    args = [persona or role, "--adapter", agent, "--mode", "public"]
+def mode_for(persona: str, model: str, rows: list[dict]) -> str:
+    """The render mode for `persona` on `model`: "private" for a persona with
+    private material on a trusted model once PRIVATE_MODE_READY, else
+    "public"."""
+    from . import persona_scope
+
+    if not persona or not PRIVATE_MODE_READY:
+        return "public"
+    resolved = persona_scope.resolve(rows)
+    row = resolved["scope"].get(persona) or {}
+    return "private" if row.get("private") and persona_scope.trusted(model, resolved["trusted_models"]) else "public"
+
+
+def render(persona: str, role: str, agent: str, mode: str = "public") -> tuple[bool, str]:
+    """The render for `agent` in `mode` (`mode_for`): `(True, text)` or
+    `(False, why)`. A role on its own is rendered as its own id
+    (`persona-render reviewer`)."""
+    args = [persona or role, "--adapter", agent, "--mode", mode]
     if persona and role:
         args += ["--role", role]
     try:

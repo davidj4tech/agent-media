@@ -733,10 +733,12 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
     if persona or role:
         from . import personas
 
-        why = personas.check(persona, role)
+        rows = personas.described()
+        why = personas.check(persona, role, agent=agent, rows=rows)
         if why:
             return False, {"error": why, "status": 400}
-        made_it, rendered = personas.render(persona, role, agent)
+        made_it, rendered = personas.render(persona, role, agent,
+                                            personas.mode_for(persona, model, rows))
         if not made_it:
             return False, {"error": f"could not render the persona: {rendered}", "status": 502}
     where = (cwd or "").strip()
