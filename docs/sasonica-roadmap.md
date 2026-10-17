@@ -1223,8 +1223,9 @@ ahead.
     sort"). A box that narrows rooms by name or last message; Show Active,
     Unread, Archived, Everything or one service; Sort Most recent, Unread
     first, Name A–Z or By service. ⌕ searches inside the texts, which needs
-    the rooms in the search index (§6.14, branch `feat/search-matrix-rooms`).
-    **Built 17 Oct 2026**, on branches; not yet merged.
+    the rooms in the search index (§6.14, `96c26b2`). **DONE 17 Oct 2026**
+    (sasonica-app `c970862`), deployed to all three web builds and the
+    canvas.
 29. **Contacts: people, not rooms** (David, 17 Oct 2026). One row per
     person across their SMS and Signal rooms, a contact card, texting a
     contact, and edits written back. The sources are Google Contacts and the
