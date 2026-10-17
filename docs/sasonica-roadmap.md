@@ -1192,12 +1192,16 @@ ahead.
     `gemini --acp`; 4 model picker, API key, profiles. Installed on red5
     (0.64.0), not signed in; its context hook is in (`e53eae2`). Sign-in from
     the phone is the open question (`NO_BROWSER=true` gives a code to paste).
-26. **Simon Willison's `llm` as a light agent** (David, 17 Oct 2026,
-    considering). A "just ask" agent, not a coding one: its SQLite log
-    (conversations, responses, model, tokens) gives threads for free, and a
-    phone turn is one `llm -c --cid …` command — no pane, no sign-in. No
-    hooks, so speech comes from the server reading the reply. `llm` 0.36 is
-    on red5 with no plugins. After Gemini.
+26. **Quick question** (David, 17 Oct 2026). A chat that skips the coding
+    agent: the question goes straight to a fast model (Haiku, Gemini Flash)
+    through red5's LiteLLM gateway — the route the speech summaries already
+    take (`intake/_summary.py`) — so the reply starts in about a second
+    instead of after an agent's system prompt, tool list and loop. Spoken
+    like any reply, kept as a thread, and handed to a full agent (with the
+    conversation so far) when it turns into real work. Replaces the idea of
+    Simon Willison's `llm` as a light agent, parked the same day: its speed
+    is the direct call, which the server can make itself; `llm` added only
+    another route to models opencode and pi already reach.
 
 ## Loose ends
 
