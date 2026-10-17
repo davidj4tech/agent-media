@@ -128,6 +128,10 @@ def _no_live_speech_token(monkeypatch, tmp_path):
     # and its sign-in is read from there: never this machine's.
     monkeypatch.setenv("GEMINI_CLI_HOME", str(tmp_path / "gemini-home"))
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    # Grok's whole home moves with GROK_HOME (harnesses.grok_dir): its
+    # sessions, sign-in and settings are never this machine's.
+    monkeypatch.setenv("GROK_HOME", str(tmp_path / "grok-home"))
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
 
 
 @pytest.fixture(autouse=True)

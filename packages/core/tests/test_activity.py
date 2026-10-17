@@ -110,3 +110,23 @@ def test_gemini_tools_read_like_the_others(tool, args, want):
     """Gemini CLI's tool names and arguments (0.64), as the step list words
     Claude Code's."""
     assert activity.describe(tool, args) == want
+
+
+@pytest.mark.parametrize("tool,args,want", [
+    ("run_terminal_command", {"command": "pytest -q"}, "Run the tests"),
+    ("run_terminal_cmd", {"command": "pytest -q"}, "Run the tests"),
+    ("read_file", {"path": "/p/README.md"}, "Read README.md"),
+    ("search_replace", {"file_path": "/p/a.py", "old_string": "x", "new_string": "y"}, "Edit a.py"),
+    ("hashline_edit", {"path": "/p/a.py"}, "Edit a.py"),
+    ("write", {"path": "/p/b.py", "contents": "x"}, "Write b.py"),
+    ("list_dir", {"path": "/p/src"}, "List src"),
+    ("grep", {"pattern": "TODO"}, "Search for TODO"),
+    ("todo_write", {"todos": []}, ""),
+    ("get_command_or_subagent_output", {"id": "t1"}, ""),
+    ("spawn_subagent", {"description": "Explore the parser"}, "Explore the parser"),
+])
+def test_grok_tools_read_like_the_others(tool, args, want):
+    """Grok's tool names (1.0.62's docs; arguments as its headless examples
+    show them, not yet off a real session), as the step list words Claude
+    Code's."""
+    assert activity.describe(tool, args) == want

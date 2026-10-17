@@ -1,0 +1,18 @@
+{"sessionId": "0199f0a1-2b3c-7d4e-8f50-6172839405a6", "timestamp": "2026-10-17T00:00:01.000Z", "update": {"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "Run the fast tests"}, "messageId": "u1"}}
+{"sessionId": "0199f0a1-2b3c-7d4e-8f50-6172839405a6", "timestamp": "2026-10-17T00:00:02.000Z", "update": {"sessionUpdate": "available_commands_update", "availableCommands": []}}
+{"sessionId": "0199f0a1-2b3c-7d4e-8f50-6172839405a6", "timestamp": "2026-10-17T00:00:03.000Z", "update": {"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "Looking for "}}}
+{"sessionId": "0199f0a1-2b3c-7d4e-8f50-6172839405a6", "timestamp": "2026-10-17T00:00:03.000Z", "update": {"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "the test command"}}}
+{"sessionId": "0199f0a1-2b3c-7d4e-8f50-6172839405a6", "timestamp": "2026-10-17T00:00:04.000Z", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "I'll run "}}}
+{"sessionId": "0199f0a1-2b3c-7d4e-8f50-6172839405a6", "timestamp": "2026-10-17T00:00:04.000Z", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "them."}}}
+{"sessionId": "0199f0a1-2b3c-7d4e-8f50-6172839405a6", "timestamp": "2026-10-17T00:00:05.000Z", "update": {"sessionUpdate": "tool_call", "toolCallId": "call_1", "title": "Run pytest -q -m fast", "kind": "execute", "status": "pending", "toolName": "run_terminal_command", "rawInput": {"command": "pytest -q -m fast"}, "content": [], "locations": []}}
+{"sessionId": "0199f0a1-2b3c-7d4e-8f50-6172839405a6", "timestamp": "2026-10-17T00:00:06.000Z", "update": {"sessionUpdate": "tool_call_update", "toolCallId": "call_1", "status": "in_progress"}}
+{"sessionId": "0199f0a1-2b3c-7d4e-8f50-6172839405a6", "timestamp": "2026-10-17T00:00:09.000Z", "update": {"sessionUpdate": "tool_call_update", "toolCallId": "call_1", "status": "completed", "rawOutput": {"exit_code": 0, "output": "12 passed in 0.4s"}}}
+{"sessionId": "0199f0a1-2b3c-7d4e-8f50-6172839405a6", "timestamp": "2026-10-17T00:00:10.000Z", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Done: **12 passed**."}}}
+{"sessionId": "0199f0a1-2b3c-7d4e-8f50-6172839405a6", "timestamp": "2026-10-17T00:00:10.000Z", "update": {"sessionUpdate": "usage_update", "used": 61000, "size": 256000}}
+{"sessionId": "0199f0a1-2b3c-7d4e-8f50-6172839405a6", "timestamp": "2026-10-17T00:01:00.000Z", "update": {"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "Now read the README<system-reminder>Context is 50% full</system-reminder>"}, "messageId": "u2"}}
+{"sessionId": "0199f0a1-2b3c-7d4e-8f50-6172839405a6", "timestamp": "2026-10-17T00:01:01.000Z", "update": {"sessionUpdate": "tool_call", "toolCallId": "call_2", "title": "Read README.md", "kind": "read", "status": "pending", "_meta": {"toolName": "read_file"}, "rawInput": {"path": "/home/x/proj/README.md"}}}
+{"sessionId": "0199f0a1-2b3c-7d4e-8f50-6172839405a6", "timestamp": "2026-10-17T00:01:02.000Z", "update": {"sessionUpdate": "tool_call_update", "toolCallId": "call_2", "status": "completed", "content": [{"type": "content", "content": {"type": "text", "text": "# Proj\nhi\n"}}]}}
+{"sessionId": "0199f0a1-2b3c-7d4e-8f50-6172839405a6", "timestamp": "2026-10-17T00:01:03.000Z", "update": {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "It says hi."}}}
+{"sessionId": "0199f0a1-2b3c-7d4e-8f50-6172839405a6", "timestamp": "2026-10-17T00:01:03.000Z", "update": {"sessionUpdate": "session_info_update", "title": "Run the fast tests"}}
+not json
+{"jsonrpc": "2.0", "method": "x.ai/session_notification", "params": {}}

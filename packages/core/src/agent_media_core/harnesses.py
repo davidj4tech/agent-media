@@ -52,6 +52,17 @@ state, a way back in. This is the table of those differences.
             conversation and runs the hooks, and its SessionStart hook
             writes the session down (`register_pane`), as pi's extension does
             resume: gemini --resume <id>
+    grok    ~/.grok/sessions/<cwd, url-encoded>/<id>/updates.jsonl (`GROK_HOME`
+            moves the whole home; a folder whose encoded name is too long is
+            a slug and a hash, with a `.cwd` file saying which) — a log of
+            ACP `session/update` events, chunks of words and tool calls that
+            are joined back into messages (`grok_fold`); `summary.json`
+            beside it has the cwd, the title and the model. Read from Grok
+            1.0.62's docs, not yet off a session on disk
+            live: one static binary, `grok`; its SessionStart hook writes the
+            session down (`register_pane`), as Gemini's does
+            resume: grok --resume <id>; a fresh one takes its id up front
+            with --session-id, as pi's does
 
 pi's model calls often go through Meridian, which runs Claude Code headless
 under systemd. Those `claude` processes have no tmux pane and their sessions
@@ -72,9 +83,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-CLAUDE, CODEX, PI, HERMES, OPENCODE, GEMINI = (
-    "claude", "codex", "pi", "hermes", "opencode", "gemini")
-HARNESSES = (CLAUDE, CODEX, PI, HERMES, OPENCODE, GEMINI)
+CLAUDE, CODEX, PI, HERMES, OPENCODE, GEMINI, GROK = (
+    "claude", "codex", "pi", "hermes", "opencode", "gemini", "grok")
+HARNESSES = (CLAUDE, CODEX, PI, HERMES, OPENCODE, GEMINI, GROK)
 
 _UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 #: Hermes numbers its sessions by the clock instead: `20260921_102508_f74b02`.
@@ -120,6 +131,13 @@ def gemini_dir(home: Path | None = None) -> Path:
     """`.gemini` under `home` (default: this process's): settings, sign-in,
     and every project's conversations under `tmp/`."""
     return (home or _gemini_home()) / ".gemini"
+
+
+def grok_dir() -> Path:
+    """Grok's home: settings (`config.toml`), sign-in (`auth.json`), its
+    model list and every conversation under `sessions/`. `GROK_HOME` moves
+    all of it, so a profile is a home of its own."""
+    return Path(os.environ.get("GROK_HOME") or Path.home() / ".grok").expanduser()
 
 
 def _xdg_data() -> Path:
@@ -445,6 +463,222 @@ def gemini_prompt(rec: dict) -> str:
     return gemini_text(rec.get("displayContent")) or gemini_text(rec.get("content"))
 
 
+# --- Grok's conversation folder ------------------------------------------------------
+#
+# Grok 1.0.62 keeps a conversation as a folder, `sessions/<cwd>/<id>/`:
+# `summary.json` (its id and cwd under `info`, `generated_title`,
+# `current_model_id`, timestamps), and `updates.jsonl`, which its docs call
+# the authoritative log — one ACP `session/update` event a line, the same
+# events `grok agent stdio` streams: `user_message_chunk`,
+# `agent_message_chunk` and `agent_thought_chunk` (a `content` block each),
+# `tool_call` (`toolCallId`, `title`, `kind`, `status`, `rawInput`) and
+# `tool_call_update` (`status`, `rawOutput`, `content`), and xAI's own kinds.
+#
+# No Grok session existed on disk when this was written (17 Oct 2026), so
+# how a line wraps its event is not known: the whole JSON-RPC notification
+# (`params.update`), the notification's params (`update`), or the update
+# itself are all taken. Nor is whether words are kept as the chunks they
+# streamed in or joined: chunks in a row are joined either way, and a new
+# `messageId` (ACP's, when Grok sends one) starts a new message. xAI's
+# rewind marker is not understood yet — its fields are unknown — so a
+# rewound turn still reads as said.
+
+#: What Grok puts into a user message that nobody typed: a harness reminder
+#: (a hook's context among them), and the tag the model's copy wraps the
+#: prompt in.
+_GROK_ASIDE = re.compile(r"<(system-reminder|system_reminder)>.*?</\1>", re.S)
+_GROK_QUERY = re.compile(r"^\s*<user_query>(.*?)</user_query>\s*$", re.S)
+
+
+def _grok_update(rec) -> dict | None:
+    """The ACP update a line of `updates.jsonl` carries, however it is
+    wrapped (see above), or None."""
+    if not isinstance(rec, dict):
+        return None
+    params = rec.get("params") if isinstance(rec.get("params"), dict) else {}
+    for got in (rec.get("update"), params.get("update"), rec):
+        if isinstance(got, dict) and isinstance(got.get("sessionUpdate"), str):
+            return got
+    return None
+
+
+def grok_text(content) -> str:
+    """The words in an ACP content block, or a list of them: `text` blocks,
+    and a tool's `content` blocks that hold one. A diff, an image or a
+    terminal has none."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, dict):
+        content = [content]
+    if not isinstance(content, list):
+        return ""
+    out = []
+    for b in content:
+        if isinstance(b, str):
+            out.append(b)
+        elif isinstance(b, dict):
+            if b.get("type") == "text" and isinstance(b.get("text"), str):
+                out.append(b["text"])
+            elif b.get("type") == "content":
+                out.append(grok_text(b.get("content")))
+    return "".join(out)
+
+
+def grok_prompt(text: str) -> str:
+    """What the person typed, from a user message's words: a reminder Grok
+    added taken out, and the `<user_query>` the model's copy wraps it in."""
+    m = _GROK_QUERY.match(text or "")
+    return _GROK_ASIDE.sub("", m.group(1) if m else (text or "")).strip()
+
+
+def _grok_at(rec: dict, u: dict):
+    """When a line was written, if it says: the line's own stamp, the
+    update's, or ACP's `_meta`."""
+    for d in (rec, u, u.get("_meta") if isinstance(u.get("_meta"), dict) else {}):
+        for k in ("timestamp", "createdAt", "created_at", "at"):
+            if d.get(k) is not None:
+                return d[k]
+    return None
+
+
+def _grok_tool_name(u: dict) -> str:
+    """The tool's own name (`run_terminal_command`), which Grok adds to an
+    ACP tool call as `toolName` (its streaming-json does; `_meta` is where
+    ACP keeps such additions) — else its title, which is for people."""
+    meta = u.get("_meta") if isinstance(u.get("_meta"), dict) else {}
+    for d in (u, meta, *(v for v in meta.values() if isinstance(v, dict))):
+        if isinstance(d.get("toolName"), str) and d["toolName"]:
+            return d["toolName"]
+    return str(u.get("title") or u.get("kind") or "")
+
+
+def grok_fold(lines) -> tuple[dict, list[dict]]:
+    """`(info, messages)` from `updates.jsonl` lines (bytes or str, in file
+    order). A message is `{"type": "user", "text", "id", "timestamp"}`, or
+    `{"type": "assistant", "parts", "id", "timestamp"}` — everything the
+    agent did between two prompts, in order: `text` and `thought` parts
+    (chunks in a row joined), and `tool` parts (`id`, `name`, `title`,
+    `kind`, `input`, `status`, `output`), each updated in place by the
+    `tool_call_update`s naming it. `info` keeps what the session-level
+    updates said (a `title`, the current mode)."""
+    info: dict = {}
+    msgs: list[dict] = []
+    tools: dict[str, dict] = {}
+    for n, raw in enumerate(lines, 1):
+        try:
+            rec = json.loads(raw)
+        except ValueError:
+            continue
+        u = _grok_update(rec)
+        if u is None:
+            continue
+        kind = u["sessionUpdate"]
+        at = _grok_at(rec, u)
+        mid = str(u.get("messageId") or "")
+        cur = msgs[-1] if msgs else None
+        if kind == "user_message_chunk":
+            text = grok_text(u.get("content"))
+            if cur and cur["type"] == "user" and (not mid or mid == cur["mid"]):
+                cur["text"] += text
+            else:
+                msgs.append({"type": "user", "id": mid or f"grok:{n}", "mid": mid,
+                             "timestamp": at, "text": text})
+            continue
+        if kind in ("agent_message_chunk", "agent_thought_chunk", "tool_call"):
+            if not cur or cur["type"] != "assistant":
+                cur = {"type": "assistant", "id": mid or f"grok:{n}", "mid": mid,
+                       "timestamp": at, "parts": []}
+                msgs.append(cur)
+            parts = cur["parts"]
+            if kind == "tool_call":
+                tid = str(u.get("toolCallId") or "")
+                part = tools.get(tid) if tid else None
+                if part is None:
+                    part = {"type": "tool", "id": tid, "name": _grok_tool_name(u),
+                            "title": str(u.get("title") or ""), "kind": str(u.get("kind") or ""),
+                            "input": u.get("rawInput"), "status": str(u.get("status") or "pending"),
+                            "output": None}
+                    parts.append(part)
+                    if tid:
+                        tools[tid] = part
+                continue
+            kind_of = "text" if kind == "agent_message_chunk" else "thought"
+            text = grok_text(u.get("content"))
+            last = parts[-1] if parts else None
+            if last and last["type"] == kind_of and (not mid or last.get("mid", mid) == mid):
+                last["text"] += text
+            else:
+                parts.append({"type": kind_of, "text": text, "mid": mid})
+            continue
+        if kind == "tool_call_update":
+            part = tools.get(str(u.get("toolCallId") or ""))
+            if part is None:
+                continue
+            for k, field in (("status", "status"), ("rawInput", "input"), ("title", "title")):
+                if u.get(k) is not None:
+                    part[field] = u[k] if field != "status" else str(u[k])
+            if u.get("toolName"):
+                part["name"] = str(u["toolName"])
+            if u.get("rawOutput") is not None:
+                part["output"] = u["rawOutput"]
+            elif u.get("content"):
+                said = grok_text(u.get("content"))
+                if said:
+                    part["output"] = said
+            continue
+        if kind == "session_info_update" and u.get("title"):
+            info["title"] = str(u["title"])
+        elif kind == "current_mode_update" and u.get("currentModeId"):
+            info["mode"] = str(u["currentModeId"])
+    for m in msgs:
+        m.pop("mid", None)
+        for p in m.get("parts") or []:
+            p.pop("mid", None)
+    return info, msgs
+
+
+def grok_read(path: Path | str) -> tuple[dict, list[dict]]:
+    """`grok_fold` of the `updates.jsonl` at `path`; ({}, []) when it
+    cannot be read."""
+    try:
+        with open(path, "rb") as fh:
+            return grok_fold(fh)
+    except OSError:
+        return {}, []
+
+
+def grok_summary(folder: Path | str) -> dict:
+    """A Grok session folder's `summary.json`, or {}. Small, and rewritten
+    as the session goes on, so read each time."""
+    try:
+        got = json.loads((Path(folder) / "summary.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return got if isinstance(got, dict) else {}
+
+
+def grok_group_cwd(group: Path) -> str:
+    """The folder a Grok session group (`sessions/<name>`) is for: the
+    `.cwd` file Grok writes when the encoded path was too long for a name,
+    else the name url-decoded."""
+    from urllib.parse import unquote
+
+    try:
+        return (group / ".cwd").read_text(encoding="utf-8").strip()
+    except OSError:
+        pass
+    got = unquote(group.name)
+    return got if got.startswith("/") else ""
+
+
+def grok_cwd(folder: Path) -> str:
+    """The folder a Grok session ran in: its summary's `info.cwd`, else its
+    group's (`grok_group_cwd`)."""
+    info = grok_summary(folder).get("info")
+    cwd = info.get("cwd") if isinstance(info, dict) else None
+    return str(cwd) if isinstance(cwd, str) and cwd else grok_group_cwd(Path(folder).parent)
+
+
 # --- where a conversation is written -------------------------------------------
 
 
@@ -479,6 +713,14 @@ def _transcript(session: str) -> Optional[tuple[str, Path, str]]:
                 if _gemini_first(h).get("sessionId") == session]
         if hits:
             return GEMINI, Path(max(hits, key=lambda p: os.path.getmtime(p))), profile
+    # Grok keeps a folder per conversation, named by its id, under its
+    # cwd's group; its log is `updates.jsonl` in there, named before it is
+    # written (a folder with only its summary has said nothing yet).
+    for profile, base in _profile_dirs(GROK, grok_dir()):
+        hits = [Path(h) for h in glob.glob(str(base / "sessions" / "*" / session))
+                if (Path(h) / "summary.json").exists() or (Path(h) / "updates.jsonl").exists()]
+        if hits:
+            return GROK, max(hits, key=lambda p: os.path.getmtime(p)) / "updates.jsonl", profile
     return None
 
 
@@ -495,8 +737,8 @@ def profile_of(session: str) -> str:
 
 
 def harness_of(session: str) -> str:
-    """"claude", "codex", "pi", "hermes", "opencode", "gemini", or "" when
-    none has it."""
+    """"claude", "codex", "pi", "hermes", "opencode", "gemini", "grok", or ""
+    when none has it."""
     if is_opencode(session):
         return OPENCODE if _opencode_session(session) else ""
     if is_hermes(session):
@@ -534,6 +776,8 @@ def cwd_of(session: str) -> str:
     harness, path = found
     if harness == GEMINI:
         return gemini_project_root(path.parent.parent)
+    if harness == GROK:
+        return grok_cwd(path.parent)
     for rec in _records(path):
         if harness == CODEX:
             cwd = (rec.get("payload") or {}).get("cwd") if rec.get("type") == "session_meta" else ""
@@ -593,6 +837,13 @@ def first_prompt(session: str) -> str:
             if text and not text.startswith(("/", "?")):
                 return " ".join(text.split())
         return ""
+    if harness == GROK:
+        # A slash command is an instruction to Grok, not a question.
+        for m in grok_read(path)[1]:
+            text = grok_prompt(m["text"]) if m["type"] == "user" else ""
+            if text and not text.startswith("/"):
+                return " ".join(text.split())
+        return ""
     for rec in _records(path):
         if harness == CODEX:
             p = rec.get("payload") or {}
@@ -619,6 +870,9 @@ def title_of(session: str) -> str:
     Gemini writes a one-line `summary` into the file's metadata (`$set`)
     once a conversation has had a turn or two; before that there is none,
     and the callers fall back to `first_prompt`, as they do for the others.
+    Grok keeps its title in the folder's `summary.json`: the one a /rename
+    gave it, else `generated_title`, made from the first prompt and remade
+    at a couple of early turns.
     """
     if is_opencode(session):
         found = _opencode_session(session)
@@ -635,6 +889,9 @@ def title_of(session: str) -> str:
     name = ""
     if harness == GEMINI:
         name = str(gemini_read(path)[0].get("summary") or "")
+    elif harness == GROK:
+        summary = grok_summary(path.parent)
+        name = str(summary.get("title") or summary.get("generated_title") or "")
     elif harness == CODEX:
         for rec in _records(_codex_dir() / "session_index.jsonl"):
             if rec.get("id") == session and rec.get("thread_name"):
@@ -785,6 +1042,86 @@ def _gemini_live_session(pid: str, argv: list[str]) -> str:
             continue
         sid = str(_gemini_first(f).get("sessionId") or "")
         if at >= best_at and re.fullmatch(_UUID, sid):
+            best, best_at = sid, at
+    return best
+
+
+#: `grok <subcommand>` runs that are not a conversation in a pane (1.0.62's
+#: `grok --help`): `agent stdio` is a headless one, the rest are tools.
+_GROK_TOOLS = frozenset({
+    "agent", "clone", "completions", "cursor-worker", "doctor", "du", "disk-usage",
+    "export", "help", "inspect", "leader", "login", "logout", "mcp", "memory",
+    "models", "plugin", "sessions", "setup", "trace", "update", "usage",
+    "version", "v", "worktree", "wrap"})
+
+
+def _grok_pid(argv: list[str]) -> bool:
+    """Whether this argv is a Grok holding a conversation.
+
+    One static binary: `grok` on PATH is a link to `~/.grok/bin/grok`, itself
+    a link to the download (`grok-linux-x86_64`), and argv[0] is whichever
+    name it was started by. `grok <subcommand>` is a tool run, not a
+    session; the first word that is not an option says which.
+    """
+    if not argv:
+        return False
+    name = os.path.basename(argv[0])
+    if name != GROK and not name.startswith("grok-linux-") and not name.startswith("grok-darwin-"):
+        return False
+    first = next((a for a in argv[1:] if not a.startswith("-")), "")
+    return first not in _GROK_TOOLS
+
+
+def grok_group(cwd: str, base: Path | None = None) -> Path | None:
+    """The `sessions/<name>` folder Grok keeps `cwd`'s conversations in, or
+    None. Found by what each group says it is for (`grok_group_cwd`), not by
+    encoding the path: which characters Grok's encoding keeps is not known."""
+    cwd = (cwd or "").rstrip("/") or "/"
+    try:
+        groups = [Path(e.path) for e in os.scandir((base or grok_dir()) / "sessions")
+                  if e.is_dir()]
+    except OSError:
+        return None
+    for g in groups:
+        if (grok_group_cwd(g).rstrip("/") or "/") == cwd:
+            return g
+    return None
+
+
+def _grok_live_session(pid: str, argv: list[str]) -> str:
+    """The session a live Grok is on when its hook has not said (one started
+    before the hook was wired): `--resume <uuid>` or `--session-id <uuid>` in
+    its arguments, else, like Gemini, the newest conversation in its
+    folder's group written since the process began."""
+    cwd = ""
+    for i, a in enumerate(argv[1:], 1):
+        val = argv[i + 1] if i + 1 < len(argv) else ""
+        if "=" in a and a.startswith("--"):
+            a, val = a.split("=", 1)
+        if a in ("--resume", "-r", "--session-id", "-s") and re.fullmatch(_UUID, val):
+            return val
+        if a == "--cwd":
+            cwd = val
+    if not cwd:
+        try:
+            cwd = os.readlink(f"/proc/{pid}/cwd")
+        except OSError:
+            return ""
+    home = _env_of(pid, "GROK_HOME")
+    group = grok_group(cwd, Path(home).expanduser() if home else None)
+    if group is None:
+        return ""
+    best, best_at = "", _started_at(pid) - 5.0
+    for d in glob.glob(str(group / "*")):
+        sid = os.path.basename(d)
+        if not re.fullmatch(_UUID, sid):
+            continue
+        try:
+            at = max(os.path.getmtime(f) for f in (Path(d) / "updates.jsonl", Path(d) / "summary.json")
+                     if f.exists())
+        except (OSError, ValueError):
+            continue
+        if at >= best_at:
             best, best_at = sid, at
     return best
 
@@ -1010,6 +1347,67 @@ def _gemini_stored() -> list[Stored]:
     return out
 
 
+def _grok_children(folder: str) -> set[str]:
+    """The sessions a Grok conversation's subagents ran as: its `subagents/`
+    holds a `meta.json` for each, and the child's own folder sits in the
+    sessions tree beside its parent's. Which key names the child is not
+    known yet (no session on disk to read), so any uuid under a key with
+    `session` in it counts, and so does a uuid a folder or file is named."""
+    out: set[str] = set()
+    try:
+        entries = list(os.scandir(Path(folder) / "subagents"))
+    except OSError:
+        return out
+    for e in entries:
+        stem = e.name.removesuffix(".json")
+        if re.fullmatch(_UUID, stem):
+            out.add(stem)
+        meta = Path(e.path) / "meta.json" if e.is_dir() else Path(e.path)
+        try:
+            got = json.loads(meta.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(got, dict):
+            out |= {v for k, v in got.items() if "session" in k.lower()
+                    and isinstance(v, str) and re.fullmatch(_UUID, v)}
+    return out
+
+
+def _grok_stored() -> list[Stored]:
+    """Every Grok conversation, in every profile's home: `sessions/<group>/
+    <id>/`, a scandir per group, a stat of the folder's log (or its summary,
+    before anything is said). A subagent's session is a folder in the same
+    tree, part of its parent's conversation: left out, by its parent's
+    `subagents/` (`_grok_children`)."""
+    out: list[Stored] = []
+    children: set[str] = set()
+    for profile, base in _profile_dirs(GROK, grok_dir()):
+        try:
+            groups = [e for e in os.scandir(base / "sessions") if e.is_dir()]
+        except OSError:
+            continue
+        for group in groups:
+            try:
+                entries = [e for e in os.scandir(group.path)
+                           if re.fullmatch(_UUID, e.name) and e.is_dir()]
+            except OSError:
+                continue
+            for e in entries:
+                at = None
+                for name in ("updates.jsonl", "summary.json"):
+                    try:
+                        at = os.stat(Path(e.path) / name).st_mtime
+                        break
+                    except OSError:
+                        continue
+                if at is None:
+                    continue
+                children |= _grok_children(e.path)
+                out.append(Stored(e.name, GROK, at, str(Path(e.path) / "updates.jsonl"),
+                                  group.name, profile))
+    return [r for r in out if r.session not in children]
+
+
 _CODEX_META: dict[str, dict] = {}
 
 
@@ -1097,6 +1495,7 @@ def stored(*, since: float = 0.0, limit: int = 0,
     found += _hermes_stored()
     found += _opencode_stored()
     found += _gemini_stored()
+    found += _grok_stored()
     from .deleted import deleted
     from .sealed import sealed
 
@@ -1160,8 +1559,10 @@ def _registered() -> list[Running]:
         harness = str(row.get("harness") or "")
         # A pane id and a pid are both reused: believe the row only while the
         # process it names is the same agent, sitting in the same pane.
-        # Gemini's process is `node` (`_gemini_pid`).
+        # Gemini's process is `node` (`_gemini_pid`); Grok's may go by the
+        # download's own name (`_grok_pid`).
         if not argv or not (_gemini_pid(argv) if harness == GEMINI
+                            else _grok_pid(argv) if harness == GROK
                             else os.path.basename(argv[0]) == harness):
             continue
         pane = str(row.get("pane") or "")
@@ -1172,17 +1573,17 @@ def _registered() -> list[Running]:
 
 
 def running() -> list[Running]:
-    """Every live codex, pi, hermes, opencode and gemini, with the session
-    each is on.
+    """Every live codex, pi, hermes, opencode, gemini and grok, with the
+    session each is on.
 
     Claude is not here: claude_sessions has Claude's own record of that, and
     the reply code keeps its extra fallbacks. A codex that has not been sent
-    anything yet has no session and is left out. pi and Gemini are what their
-    session-start hooks registered; a Gemini that never registered (started
-    before its hooks were wired) is worked out from its own arguments and
-    files instead.
+    anything yet has no session and is left out. pi, Gemini and Grok are what
+    their session-start hooks registered; a Gemini or Grok that never
+    registered (started before its hooks were wired) is worked out from its
+    own arguments and files instead.
     """
-    out = [r for r in _registered() if r.harness in (PI, GEMINI) and r.session]
+    out = [r for r in _registered() if r.harness in (PI, GEMINI, GROK) and r.session]
     registered = {r.pid for r in out}
     for d in glob.glob("/proc/[0-9]*"):
         pid = os.path.basename(d)
@@ -1194,6 +1595,11 @@ def running() -> list[Running]:
                 sid = _gemini_live_session(pid, argv)
                 if sid:
                     out.append(Running(int(pid), sid, _pane_of(pid), GEMINI))
+        elif _grok_pid(argv):
+            if int(pid) not in registered:
+                sid = _grok_live_session(pid, argv)
+                if sid:
+                    out.append(Running(int(pid), sid, _pane_of(pid), GROK))
         elif os.path.basename(argv[0]) == CODEX:
             sid = _codex_session(pid)
             if sid:
@@ -1413,6 +1819,19 @@ RECIPES: dict[str, Recipe] = {
         env=(("NO_BROWSER", "true"),),
         package="@google/gemini-cli",
     ),
+    # Not on npm: xAI's script puts a static binary under ~/.grok and links
+    # it as ~/.local/bin/grok, and `grok update` replaces it after that. It
+    # answers "is there a newer one?" itself, in JSON (`_grok_update_answer`).
+    # `login --device-auth` prints a URL and a code to type there, as Codex's
+    # does, so it works from the phone. Its state is read from `auth.json`
+    # (`_grok_auth`), not asked.
+    GROK: Recipe(
+        install=("sh", "-c", "curl -fsSL https://x.ai/cli/install.sh | bash"),
+        update=("grok", "update"),
+        login=("login", "--device-auth"),
+        logout=("logout",),
+        check=("update", "--check", "--json"),
+    ),
 }
 
 
@@ -1515,7 +1934,8 @@ def update_check(harness: str, timeout: float = 90.0) -> tuple[bool | None, str]
     its remotes and says either "Already up to date" or "Update available",
     which is the whole answer — there is no version to compare, and a commit
     id would mean nothing on the page. It touches the network (about ten
-    seconds), so the caller caches it like the registry lookups.
+    seconds), so the caller caches it like the registry lookups. Grok's
+    answers in JSON instead (`_grok_update_answer`).
     """
     import subprocess
 
@@ -1529,6 +1949,8 @@ def update_check(harness: str, timeout: float = 90.0) -> tuple[bool | None, str]
                               env={**os.environ, "PATH": bin_path()})
     except (OSError, subprocess.SubprocessError):
         return None, ""
+    if harness == GROK:
+        return _grok_update_answer(done.stdout or "")
     said = (done.stdout or "") + (done.stderr or "")
     low = said.lower()
     # Both phrases are the agent's own; anything else is "could not say",
@@ -1545,19 +1967,41 @@ def update_check(harness: str, timeout: float = 90.0) -> tuple[bool | None, str]
     return behind, line[:120]
 
 
+def _grok_update_answer(said: str) -> tuple[bool | None, str]:
+    """`grok update --check --json`'s answer, as `update_check`'s: one line
+    of JSON, `{"currentVersion", "latestVersion", "updateAvailable", "error",
+    …}` (1.0.62). Anything else — an `error`, no boolean — is "could not
+    say", never "current"."""
+    line = next((ln for ln in reversed(said.splitlines()) if ln.strip().startswith("{")), "")
+    try:
+        data = json.loads(line)
+    except ValueError:
+        return None, ""
+    if not isinstance(data, dict) or data.get("error") \
+            or not isinstance(data.get("updateAvailable"), bool):
+        return None, ""
+    here = str(data.get("currentVersion") or "")
+    latest = str(data.get("latestVersion") or "")
+    if data["updateAvailable"]:
+        return True, f"Update available: {latest} (this is {here})"[:120]
+    return False, f"Up to date ({here})"[:120]
+
+
 def auth_state(harness: str, timeout: float = 15.0, env: dict | None = None) -> tuple[str, str]:
     """`(state, detail)` — "in", "out" or "unknown", and a line to show.
 
-    Four of the six can be answered without opening a terminal: Claude
+    Five of the seven can be answered without opening a terminal: Claude
     answers `auth status` in JSON, Codex exits non-zero when it is signed out,
-    opencode counts its stored credentials, and Gemini's are files read
-    here (`_gemini_auth`). The other two are reported honestly as unknown
-    rather than guessed at.
+    opencode counts its stored credentials, and Gemini's and Grok's are files
+    read here (`_gemini_auth`, `_grok_auth`). The other two are reported
+    honestly as unknown rather than guessed at.
     """
     import subprocess
 
     if harness == GEMINI:
         return _gemini_auth(env)
+    if harness == GROK:
+        return _grok_auth(env)
     r = RECIPES.get(harness)
     exe = program(harness)
     if not r or not r.status or not exe:
@@ -1799,6 +2243,36 @@ def _gemini_auth(env: dict | None = None) -> tuple[str, str]:
         chosen = ""
     if chosen in ("vertex-ai", "compute-default-credentials", "cloud-shell"):
         return "unknown", f"{chosen}: set up outside Gemini"
+    return "out", "not signed in"
+
+
+def _grok_auth(env: dict | None = None) -> tuple[str, str]:
+    """Grok's sign-in, from `auth.json` — reading it is all `grok` would do,
+    and nothing is started to ask.
+
+    The file (0600) holds one entry per sign-in, keyed `<issuer>::<id>`: an
+    access `key`, the `refresh_token` that renews it, `expires_at`,
+    `auth_mode` and the account's `email` (1.0.62, red5). An entry with a
+    key or a refresh token is "in" — an expired key is renewed by the token —
+    and its email says who. Without one, `XAI_API_KEY` in the environment is
+    Grok's fallback. Anything else is "out". `env`: a harness profile's
+    (`GROK_HOME`).
+    """
+    environ = {**os.environ, **(env or {})}
+    base = Path(environ.get("GROK_HOME") or Path.home() / ".grok").expanduser()
+    try:
+        data = json.loads((base / "auth.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = None
+    if isinstance(data, dict):
+        # One entry at the top, as the proposal first read it, or many.
+        entries = [data] if ("key" in data or "refresh_token" in data) \
+            else [v for v in data.values() if isinstance(v, dict)]
+        for e in entries:
+            if e.get("key") or e.get("refresh_token"):
+                return "in", str(e.get("email") or "signed in to Grok")
+    if environ.get("XAI_API_KEY"):
+        return "in", "API key (environment)"
     return "out", "not signed in"
 
 

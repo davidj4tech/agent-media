@@ -70,6 +70,9 @@ def _clean_media_env(monkeypatch, tmp_path, request):
     # And Gemini CLI's, under GEMINI_CLI_HOME's `.gemini`.
     monkeypatch.setenv("GEMINI_CLI_HOME", str(tmp_path / "gemini-home"))
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    # And Grok's, the whole of its home under GROK_HOME.
+    monkeypatch.setenv("GROK_HOME", str(tmp_path / "grok-home"))
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
     from agent_media_server import context, recaps
 
     recaps._reset_for_tests()

@@ -1,0 +1,17 @@
+{
+  "info": {
+    "id": "0199f0a1-2b3c-7d4e-8f50-6172839405a6",
+    "cwd": "/home/x/proj"
+  },
+  "generated_title": "Fast tests and the README",
+  "title_is_manual": false,
+  "session_summary": "Ran the fast tests, read the README.",
+  "created_at": "2026-10-17T00:00:00Z",
+  "updated_at": "2026-10-17T00:01:03Z",
+  "num_messages": 16,
+  "num_chat_messages": 6,
+  "current_model_id": "grok-4.7",
+  "parent_session_id": null,
+  "last_turn_summary": "Read the README",
+  "last_recap": ""
+}

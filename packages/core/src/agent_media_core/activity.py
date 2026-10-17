@@ -39,7 +39,7 @@ _UUID = re.compile(r"^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
                    r"|[0-9]{8}_[0-9]{6}_[0-9a-f]{4,}|ses_[0-9A-Za-z]{26})$")
 #: Tools that are bookkeeping, not work anyone would want listed.
 _QUIET = {"TodoWrite", "ToolSearch", "TaskOutput", "BashOutput", "update_plan"}
-#: Codex's, pi's, opencode's and Gemini CLI's names for the same tools.
+#: Codex's, pi's, opencode's, Gemini CLI's and Grok's names for the same tools.
 _ALIASES = {"bash": "Bash", "shell": "Bash", "exec_command": "Bash", "local_shell": "Bash",
             # Codex's sandboxed runner: a little script whose command is
             # pulled out when it reads like one (transcript._codex_args).
@@ -52,7 +52,18 @@ _ALIASES = {"bash": "Bash", "shell": "Bash", "exec_command": "Bash", "local_shel
             "run_shell_command": "Bash", "read_file": "Read", "write_file": "Write",
             "replace": "Edit", "grep_search": "Grep", "list_directory": "LS",
             "web_fetch": "WebFetch", "google_web_search": "WebSearch",
-            "write_todos": "TodoWrite", "ask_user": "AskUserQuestion"}
+            "write_todos": "TodoWrite", "ask_user": "AskUserQuestion",
+            # Grok's (1.0.62, its docs' tool table and hook alias list):
+            # `search_replace` is its edit and `write` its new file; the
+            # model sees the shell as `run_terminal_command`, its id is
+            # `run_terminal_cmd`. The hashline toolset names the same tools.
+            # `read_file`, `grep`, `web_search` and `web_fetch` are above.
+            "run_terminal_command": "Bash", "run_terminal_cmd": "Bash",
+            "search_replace": "Edit", "hashline_edit": "Edit",
+            "hashline_read": "Read", "hashline_grep": "Grep", "list_dir": "LS",
+            "todo_write": "TodoWrite", "spawn_subagent": "Task",
+            "ask_user_question": "AskUserQuestion",
+            "get_command_or_subagent_output": "TaskOutput", "search_tool": "ToolSearch"}
 
 
 def canonical_tool(name: str) -> str:
