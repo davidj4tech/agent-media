@@ -223,8 +223,8 @@ def _replies(index: list[dict], busy: set[str]) -> list[dict]:
     """Threads that end on a reply, newest first: Home's Unread replies, which
     the app keeps to the ones that came after it last had the thread open.
     Archived threads and the ones working or on a dialog (`busy`) are left
-    out. Claude Code, Codex, pi and Gemini: the end of the transcript
-    (`transcript.last_reply`; Gemini's folded whole); opencode: its database
+    out. Claude Code, Codex, pi, Gemini and Grok: the end of the transcript
+    (`transcript.last_reply`; Gemini's and Grok's folded whole); opencode: its database
     (`transcript.last_reply_opencode`); Hermes: its newest spoken line."""
     from agent_media_core import harnesses
 

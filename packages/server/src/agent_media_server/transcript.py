@@ -38,7 +38,9 @@ that harness's records into the messages above, plus the two cheap tests the
 backwards scan makes on a raw line. **Gemini CLI** writes a file too, but
 one whose lines replace and rewind each other, so it is folded whole and
 fed the messages that survive (`GeminiBuilder`), the fold kept until the
-file changes; **opencode**'s database is read whole the same way. Hermes
+file changes; **Grok**'s log is chunks of words and updates to tool calls
+written further up, so it is folded whole too (`GrokBuilder`);
+**opencode**'s database is read whole the same way. Hermes
 keeps its conversations in a database rather than a file, so its threads
 are still made from their spoken lines (`messages_from_lines`), text only. A Builder is fed one record at a
 time — which is also the shape a headless session's stream-json events have
@@ -978,40 +980,148 @@ class GeminiBuilder(_HarnessBuilder):
                 self._finish_tool(tid, _gemini_result(call) or status, error=True)
 
 
-#: `{path: ((inode, size, mtime), messages)}`: a Gemini file's fold, kept
-#: until the file changes. Bounded like the other readers' cache.
-_GEMINI_CACHE: dict[str, tuple[tuple, list[dict]]] = {}
+#: Grok's argument names, as the summaries above spell them: its `write`
+#: holds the text in `contents` (its hooks guide).
+_GROK_ARGS = {"contents": "content"}
 
 
-def _gemini_messages(path: str) -> list[dict] | None:
-    """Every message of the Gemini conversation at `path` (the cache's own
-    list: copy before changing), or None when it cannot be read. The whole
-    file is folded each time it changes — a rewind can reach back to any
-    line, so there is no reading from the end as there is for the others —
-    and not again until it does."""
+def _grok_args(args) -> dict:
+    return {_GROK_ARGS.get(k, k): v for k, v in args.items()} if isinstance(args, dict) else {}
+
+
+def _grok_result(output) -> str:
+    """What a Grok tool call answered, as text: a string as it is; an ACP
+    `rawOutput` object by its words (`output`, `stdout`, `content`, `text`),
+    else as JSON; content blocks by their text."""
     from agent_media_core import harnesses
 
+    if output is None:
+        return ""
+    if isinstance(output, str):
+        return output
+    if isinstance(output, dict):
+        for k in ("output", "stdout", "content", "text", "result"):
+            if isinstance(output.get(k), str):
+                return output[k]
+        if isinstance(output.get("content"), list):
+            return harnesses.grok_text(output["content"])
+        return json.dumps(output)
+    if isinstance(output, list):
+        return harnesses.grok_text(output) or json.dumps(output)
+    return str(output)
+
+
+def _grok_epoch(ts) -> float | None:
+    """A Grok line's time: ISO text, or a number of seconds or milliseconds
+    (which one Grok writes is not known yet)."""
+    if isinstance(ts, (int, float)) and not isinstance(ts, bool):
+        return round(ts / 1000.0 if ts > 1e11 else float(ts), 3)
+    return epoch(ts) if ts else None
+
+
+class GrokBuilder(_HarnessBuilder):
+    """Grok's `updates.jsonl` (`agent_media_core.harnesses.grok_fold`).
+
+    Not fed line by line: the log's lines are chunks of words and updates to
+    tool calls written further up, so it is folded first — chunks joined,
+    each tool call brought up to its last update — and the builder is fed
+    the messages that come out. A `user` message is the person's prompt
+    (what Grok added to it left out); an `assistant` one is the whole turn
+    after it, in order: thoughts, words, and tool calls with their status
+    (`completed`, `failed`; `pending` and `in_progress` still running). Read
+    from Grok 1.0.62's docs, not yet off a real session.
+    """
+
+    def feed(self, rec: dict) -> None:
+        from agent_media_core import harnesses
+
+        if not isinstance(rec, dict):
+            return
+        at = _grok_epoch(rec.get("timestamp"))
+        r = {"uuid": rec.get("id"),
+             "timestamp": datetime.fromtimestamp(at, timezone.utc).isoformat() if at else None}
+        if rec.get("type") == "user":
+            text = harnesses.grok_prompt(str(rec.get("text") or ""))
+            if text:
+                self._prompt(r, text)
+            return
+        if rec.get("type") != "assistant":
+            return
+        msg = self._assistant_msg(r)
+        msg["turn"]["running"] = True
+        for p in rec.get("parts") or []:
+            kind = p.get("type")
+            if kind == "thought" and p.get("text", "").strip():
+                msg["parts"].append({"type": "reasoning", "redacted": False,
+                                     "text": _cut(p["text"].strip(), REASONING_MAX)})
+            elif kind == "text" and p.get("text", "").strip():
+                msg["parts"].append({"type": "text", "text": _cut(p["text"].strip(), TEXT_MAX)})
+            elif kind == "tool":
+                name, tid = str(p.get("name") or ""), str(p.get("id") or "")
+                part = _tool_part(name, _grok_args(p.get("input")), tid)
+                msg["parts"].append(part)
+                self._tools[tid] = (part["name"], part)
+                status = p.get("status")
+                if status == "completed":
+                    self._finish_tool(tid, _grok_result(p.get("output")))
+                elif status in ("failed", "cancelled", "rejected"):
+                    self._finish_tool(tid, _grok_result(p.get("output")) or status, error=True)
+
+
+#: `{path: ((inode, size, mtime), messages)}`: a Gemini or Grok file's
+#: fold, kept until the file changes. Bounded like the other readers' cache.
+_WHOLE_CACHE: dict[str, tuple[tuple, list[dict]]] = {}
+
+
+def _whole_messages(path: str, read, builder) -> list[dict] | None:
+    """Every message of the conversation at `path`, folded whole by `read`
+    (`harnesses.gemini_read`, `grok_read`) and fed to a `builder` — the
+    cache's own list: copy before changing — or None when it cannot be
+    read. Folded again only when the file changes."""
     try:
         st = os.stat(path)
     except OSError:
         return None
     key = (st.st_ino, st.st_size, st.st_mtime)
     with _LOCK:
-        got = _GEMINI_CACHE.get(path)
+        got = _WHOLE_CACHE.get(path)
     if got and got[0] == key:
         return got[1]
-    meta, recs = harnesses.gemini_read(path)
+    meta, recs = read(path)
     if not meta and not recs:
         return None
-    b = GeminiBuilder()
+    b = builder()
     for rec in recs:
         b.feed(rec)
     b.settle()
     with _LOCK:
-        _GEMINI_CACHE[path] = (key, b.messages)
-        while len(_GEMINI_CACHE) > _CACHE_MAX:
-            _GEMINI_CACHE.pop(next(iter(_GEMINI_CACHE)))
+        _WHOLE_CACHE[path] = (key, b.messages)
+        while len(_WHOLE_CACHE) > _CACHE_MAX:
+            _WHOLE_CACHE.pop(next(iter(_WHOLE_CACHE)))
     return b.messages
+
+
+def _gemini_messages(path: str) -> list[dict] | None:
+    """Every message of the Gemini conversation at `path` (`_whole_messages`).
+    The whole file is folded each time it changes — a rewind can reach back
+    to any line, so there is no reading from the end as there is for the
+    others."""
+    from agent_media_core import harnesses
+
+    return _whole_messages(path, harnesses.gemini_read, GeminiBuilder)
+
+
+def _grok_messages(path: str) -> list[dict] | None:
+    """Every message of the Grok conversation whose log is `path`
+    (`_whole_messages`): a tool call's last update can be any number of
+    lines below it, so its end alone does not say what a turn did."""
+    from agent_media_core import harnesses
+
+    return _whole_messages(path, harnesses.grok_read, GrokBuilder)
+
+
+#: The harnesses whose file is folded whole rather than read by a Reader.
+_WHOLE = {"gemini": _gemini_messages, "grok": _grok_messages}
 
 
 def copy_messages(messages: list[dict]) -> list[dict]:
@@ -1189,7 +1299,7 @@ _LOCK = threading.Lock()
 def _reset_for_tests() -> None:
     with _LOCK:
         _CACHE.clear()
-        _GEMINI_CACHE.clear()
+        _WHOLE_CACHE.clear()
 
 
 def _read(path: str, full: bool, sidechain: bool = False,
@@ -1254,8 +1364,9 @@ def transcript_of(session: str) -> tuple[str, str]:
     """`(harness, path)` of a transcript this module can read, or `("", "")`.
 
     Claude Code first (its own lookup knows where a moved thread went), then
-    the stores of the harnesses with a reader here — and Gemini's, which is
-    a file but read whole (`_gemini_messages`) rather than by a Reader.
+    the stores of the harnesses with a reader here — and Gemini's and
+    Grok's, which are files but read whole (`_WHOLE`) rather than by a
+    Reader.
     Hermes keeps conversations in a database, so it has no path and no
     parser: its threads are still built from their spoken lines."""
     path = transcript_path(session)
@@ -1264,7 +1375,7 @@ def transcript_of(session: str) -> tuple[str, str]:
     from agent_media_core import harnesses
 
     found = harnesses.transcript(session)
-    if not found or (found[0] not in READERS and found[0] != harnesses.GEMINI):
+    if not found or (found[0] not in READERS and found[0] not in _WHOLE):
         return "", ""
     return found[0], str(found[1])
 
@@ -1276,15 +1387,15 @@ def messages(session: str, *, limit: int | None = None, before: str = "") \
     which keeps conversations in a database, or nothing written yet).
 
     Claude Code, Codex and pi each have a reader (`READERS`); the harness is
-    decided by which store holds the file. Gemini's file is folded whole
-    (`_gemini_messages`), opencode's database queried whole.
+    decided by which store holds the file. Gemini's and Grok's files are
+    folded whole (`_WHOLE`), opencode's database queried whole.
 
     `limit` keeps the newest that many; `before` (a message id) keeps only
     those before it. `more` says older ones exist beyond what was returned.
     """
     harness, path = transcript_of(session)
-    if harness == "gemini":
-        return _page(_gemini_messages(path), limit=limit, before=before)
+    if harness in _WHOLE:
+        return _page(_WHOLE[harness](path), limit=limit, before=before)
     if not path:
         return _opencode_page(session, limit=limit, before=before)
     return messages_at(path, limit=limit, before=before, harness=harness)
@@ -1366,8 +1477,8 @@ def messages_around(session: str, around: str, *, limit: int, most: int) \
     """`window_around` over a session's whole transcript (copies). None when
     there is no transcript this can read, or no such message."""
     harness, path = transcript_of(session)
-    if harness == "gemini":
-        got = _page(_gemini_messages(path), limit=None, before="")
+    if harness in _WHOLE:
+        got = _page(_WHOLE[harness](path), limit=None, before="")
     elif path:
         got = _read(path, full=True, harness=harness)
     else:
@@ -1384,7 +1495,7 @@ def messages_around(session: str, around: str, *, limit: int, most: int) \
 def file_state(session: str) -> tuple[int, int, float] | None:
     """`(inode, size, mtime)` of the session's transcript — what a watcher
     polls to know there is something new to read. Whichever harness wrote
-    it, so a Codex, pi or Gemini thread streams like a Claude one. An opencode
+    it, so a Codex, pi, Gemini or Grok thread streams like a Claude one. An opencode
     session has no file: its parts are counted and their newest change
     taken, which moves exactly when a file's size and mtime would."""
     path = transcript_of(session)[1]
@@ -1419,15 +1530,15 @@ def last_reply(path: str, harness: str = "claude") -> dict | None:
     finished, not when it began); `text` its last words as one line of plain
     words (`reply_preview`). Reads only the file's end (`REPLY_TAIL`), with a
     builder of its own: Home asks this of many threads, and the thread cache
-    (`_read`) keeps the few being read. A Gemini file is folded whole
-    (`_gemini_messages`, kept until it changes): its end alone can name
-    messages written further up."""
-    if harness == "gemini":
+    (`_read`) keeps the few being read. A Gemini or Grok file is folded
+    whole (`_WHOLE`, kept until it changes): its end alone can name messages
+    written further up."""
+    if harness in _WHOLE:
         try:
             mtime = os.stat(path).st_mtime
         except OSError:
             return None
-        return _reply_in(_gemini_messages(path) or [], mtime)
+        return _reply_in(_WHOLE[harness](path) or [], mtime)
     reader = READERS.get(harness) or READERS["claude"]
     b = reader.build(False)
     try:
