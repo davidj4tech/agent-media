@@ -236,3 +236,28 @@ def test_silent_can_hold_alerts_only():
     assert submit._busy_hold(PHONE, _reply()) is not None, "a call still holds"
     free.report("p8a", {"quiet": True})
     assert free.answer()["quiet_replies"] is True, "absent means on"
+
+
+def test_quiet_kind_is_kept_and_answered():
+    NOW = time.time()
+    # The app names the quiet (David, 17 Oct 2026: Flip to Shhh read as
+    # "on silent"): a known kind is kept with a quiet report, and answered.
+    free.report("phone", {"quiet": True, "quiet_kind": "dnd"}, now=NOW)
+    assert free.answer(now=NOW)["quiet_kind"] == "dnd"
+    assert free.state(now=NOW)["quiet_kind"] == "dnd"
+
+
+def test_quiet_kind_needs_quiet_and_a_known_word():
+    NOW = time.time()
+    free.report("phone", {"quiet": False, "quiet_kind": "dnd"}, now=NOW)
+    assert "quiet_kind" not in free.answer(now=NOW)
+    free.report("phone", {"quiet": True, "quiet_kind": "<b>loud</b>"}, now=NOW)
+    a = free.answer(now=NOW)
+    assert a["why"] == ["quiet"] and "quiet_kind" not in a
+
+
+def test_quiet_kind_is_the_freshest_quiet_devices():
+    NOW = time.time()
+    free.report("tablet", {"quiet": True, "quiet_kind": "vibrate"}, now=NOW - 60)
+    free.report("phone", {"quiet": True, "quiet_kind": "dnd"}, now=NOW)
+    assert free.answer(now=NOW)["quiet_kind"] == "dnd"

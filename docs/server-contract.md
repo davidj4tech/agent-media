@@ -3470,6 +3470,12 @@ held (the morning agenda) in the spell joins it: `kind: digest`.
 - `quiet_replies: false` in a report (Settings' "Hold replies while on
   silent" off): when `quiet` is the only reason, replies speak and only
   alerts wait. Absent means on. The answer carries `quiet_replies`.
+- `quiet_kind` in a quiet report (built 17 Oct 2026): which quiet,
+  `"dnd"`, `"silent"` or `"vibrate"`; Do Not Disturb wins (under it Android
+  reports the ringer as silent too). Any other value, or a report that is not
+  quiet, drops it. The answer (and the `free` frame) carries the freshest
+  quiet device's `quiet_kind`, absent when none names one: the app's silent
+  chip says "Do Not Disturb" rather than "on silent".
 - `POST /free {speak: true}` — the app's gate or the host token. "Speak as
   it comes": speech goes through for the rest of this busy spell (the
   answer's `speaking: true`); the next spell holds again. 400 without

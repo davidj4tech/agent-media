@@ -57,6 +57,8 @@ REASONS = ("call", "quiet", "meeting", "manual")
 _BOOLS = ("call", "voice", "quiet", "quiet_replies")
 _UNTILS = ("meeting_until", "manual_until")
 TITLE_MAX = 120
+#: Which quiet a device is in, as it names it: the app's words for it.
+QUIET_KINDS = ("dnd", "silent", "vibrate")
 
 
 def state_path() -> Path:
@@ -88,6 +90,8 @@ def _clean(fields: dict) -> dict:
         v = fields.get(k)
         if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
             out[k] = float(v)
+    if out.get("quiet") and fields.get("quiet_kind") in QUIET_KINDS:
+        out["quiet_kind"] = fields["quiet_kind"]
     title = fields.get("meeting_title")
     if isinstance(title, str) and title.strip():
         out["meeting_title"] = title.strip()[:TITLE_MAX]
@@ -154,11 +158,13 @@ def _ask_jev(rep: dict, now: float) -> None:
 
 def answer(now: Optional[float] = None, data: Optional[dict] = None) -> dict:
     """``{"free", "why", "since", "until", "age_s", "speaking",
-    "quiet_replies"}``. ``until`` is the latest end among the reasons that
+    "quiet_replies", "quiet_kind"?}``. ``until`` is the latest end among the reasons that
     have one (a call or a quiet ringer has none: null). ``age_s`` is the
     freshest report's age, null with none. ``speaking``: "speak as it
     comes" for this spell. ``quiet_replies``: a quiet ringer holds replies
-    too (false only when every quiet device has turned that off)."""
+    too (false only when every quiet device has turned that off).
+    ``quiet_kind``: which quiet ("dnd", "silent", "vibrate"), as the freshest
+    quiet device that names it says; absent when none does."""
     now = time.time() if now is None else now
     data = _load() if data is None else data
     devices = data.get("devices") if isinstance(data.get("devices"), dict) else {}
@@ -168,6 +174,8 @@ def answer(now: Optional[float] = None, data: Optional[dict] = None) -> dict:
     freshest: Optional[float] = None
     quiet_replies = False
     any_quiet = False
+    quiet_kind: Optional[str] = None
+    quiet_at = -1.0
     for rep in devices.values():
         if not isinstance(rep, dict):
             continue
@@ -184,6 +192,8 @@ def answer(now: Optional[float] = None, data: Optional[dict] = None) -> dict:
             open_ended = True
         if "quiet" in r:
             any_quiet = True
+            if rep.get("quiet_kind") and at > quiet_at:
+                quiet_kind, quiet_at = rep["quiet_kind"], at
             quiet_replies = quiet_replies or rep.get("quiet_replies", True) is not False
     ordered = [r for r in REASONS if r in why]
     since = data.get("busy_since") if ordered else None
@@ -196,6 +206,7 @@ def answer(now: Optional[float] = None, data: Optional[dict] = None) -> dict:
         "speaking": bool(ordered) and "speak_spell" in data
                     and data["speak_spell"] == since,
         "quiet_replies": quiet_replies or not any_quiet,
+        **({"quiet_kind": quiet_kind} if quiet_kind else {}),
     }
 
 
