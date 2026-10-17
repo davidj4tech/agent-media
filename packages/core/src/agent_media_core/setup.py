@@ -44,7 +44,7 @@ import sys
 import time
 import sysconfig
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Optional
 
 
 # --- Hook wiring -----------------------------------------------------------
@@ -1545,6 +1545,60 @@ def _row_gemini(args, *, check_only: bool):
     return ("installed" if changed else "ok"), str(path)
 
 
+CODEX_HOOK_COMMAND = "media-hook-codex"
+
+
+def codex_home() -> Path:
+    return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+
+
+def _codex_notify(path: Path) -> Optional[list]:
+    """Codex's top-level `notify`, or None when it sets none."""
+    import tomllib
+
+    try:
+        return tomllib.loads(path.read_text()).get("notify")
+    except (OSError, ValueError):
+        return None
+
+
+def _row_codex(args, *, check_only: bool):
+    """Codex: its `notify` speaks a finished turn (config.toml), and a
+    UserPromptSubmit hook records what was typed (hooks.json, Claude Code's
+    shape). A notify of someone's own is theirs — Codex takes only one — so
+    it is left alone and the row says so. notify is an argv, run without a
+    shell, so it gets the expanded path, not `$HOME/...`."""
+    if shutil.which("codex") is None:
+        return "absent", "codex is not installed here"
+    config, hooks = codex_home() / "config.toml", codex_home() / "hooks.json"
+    notify = _codex_notify(config)
+    if notify and not any(CODEX_HOOK_COMMAND in str(a) for a in notify):
+        return "absent", f"a notify of your own is set in {config}: {notify}"
+    have_hook = _hook_installed(hooks, CODEX_HOOK_COMMAND)
+    if check_only:
+        return ("ok" if notify and have_hook else "missing"), str(config)
+    changed = False
+    if not notify:
+        cmd = os.path.expandvars(hook_command(CODEX_HOOK_COMMAND))
+        line = f"notify = [{json.dumps(cmd)}]\n"
+        if args.dry_run:
+            print(f"# would add to {config}: {line.strip()}")
+        else:
+            config.parent.mkdir(parents=True, exist_ok=True)
+            old = config.read_text() if config.exists() else ""
+            if old:
+                shutil.copy2(str(config), str(config) + ".bak")
+            # At the top: a key after the first [table] would belong to it.
+            config.write_text(line + old)
+        changed = True
+    merged, hook_changed = _merge_hook_entry(
+        _load_json(hooks), "UserPromptSubmit",
+        hook_command(CODEX_HOOK_COMMAND) + " event", CODEX_HOOK_COMMAND, 10, False)
+    if hook_changed:
+        _write_settings(hooks, merged, dry_run=args.dry_run)
+    return ("installed" if changed or hook_changed else "ok"), str(config)
+
+
 def _hook_row(hook, tool: str):
     """A row that registers `hook` when `tool` is on this machine."""
     event, command, match, timeout, async_ = hook
@@ -1684,6 +1738,8 @@ PROFILE_ROWS = (
      "extra", _row_opencode),
     ("pi", "pi's replies spoken and its turns recorded (its extension)",
      "extra", _row_pi),
+    ("codex", "Codex's replies spoken and its prompts recorded (notify + a hook)",
+     "extra", _row_codex),
     ("gemini", "Gemini CLI told how full its context is (a BeforeAgent hook)",
      "extra", _row_gemini),
 )

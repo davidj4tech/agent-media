@@ -624,7 +624,7 @@ def _only_hook_rows(monkeypatch):
     """Leave the services, the shell and the agents' plugin links out: they
     touch the machine."""
     rows = tuple(r for r in setup.PROFILE_ROWS
-                 if r[0] not in ("services", "shell", "opencode", "pi"))
+                 if r[0] not in ("services", "shell", "opencode", "pi", "codex"))
     monkeypatch.setattr(setup, "PROFILE_ROWS", rows)
 
 
@@ -892,3 +892,34 @@ def test_gemini_gets_the_context_hook_in_its_own_settings(tmp_path, monkeypatch)
     entry = data["hooks"]["BeforeAgent"][0]["hooks"][0]
     assert setup.CONTEXT_HOOK_COMMAND in entry["command"] and entry["timeout"] == 5000
     assert data["hooks"]["BeforeTool"][0]["hooks"][0]["command"] == "rtk"
+
+
+def test_codex_gets_notify_and_the_prompt_hook(tmp_path, monkeypatch):
+    monkeypatch.setattr(setup.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    config = tmp_path / "codex" / "config.toml"
+    config.parent.mkdir()
+    config.write_text('model = "gpt-5"\n\n[projects."/x"]\ntrust_level = "trusted"\n')
+    args = _profile_args(tmp_path)
+    assert setup._row_codex(args, check_only=True)[0] == "missing"
+    assert setup._row_codex(args, check_only=False)[0] == "installed"
+    import tomllib
+    data = tomllib.loads(config.read_text())
+    assert setup.CODEX_HOOK_COMMAND in data["notify"][0]
+    assert "$HOME" not in data["notify"][0]           # an argv: no shell
+    assert data["projects"]["/x"]["trust_level"] == "trusted"
+    hooks = json.loads((tmp_path / "codex" / "hooks.json").read_text())
+    entry = hooks["hooks"]["UserPromptSubmit"][0]["hooks"][0]
+    assert entry["command"].endswith(setup.CODEX_HOOK_COMMAND + " event")
+    assert setup._row_codex(args, check_only=False)[0] == "ok"   # a re-run
+
+
+def test_a_codex_notify_of_your_own_is_left_alone(tmp_path, monkeypatch):
+    monkeypatch.setattr(setup.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    config = tmp_path / "config.toml"
+    config.write_text('notify = ["my-notifier"]\n')
+    state, why = setup._row_codex(_profile_args(tmp_path), check_only=False)
+    assert state == "absent" and "my-notifier" in why
+    assert config.read_text() == 'notify = ["my-notifier"]\n'
+    assert not (tmp_path / "hooks.json").exists()
