@@ -122,11 +122,15 @@ def merge(described: list[dict], layers: list[dict]) -> tuple[dict, list[str]]:
 
 
 def resolve(described: list[dict]) -> dict:
-    """Everything the app reads: the merged `scope` and `trusted_models`, and
-    the three `layers` so Settings can show where each value comes from."""
+    """Everything the app reads: the merged `scope` and `trusted_models`, the
+    three `layers` so Settings can show where each value comes from, and
+    whether a private render can happen here yet (`private_mode`)."""
+    from . import personas
+
     layers = {"default": default_layer(described), "local": local_layer(), "user": user_layer()}
     scope, trusted = merge(described, [layers["default"], layers["local"], layers["user"]])
-    return {"scope": scope, "trusted_models": trusted, "layers": layers}
+    return {"scope": scope, "trusted_models": trusted, "layers": layers,
+            "private_mode": personas.PRIVATE_MODE_READY}
 
 
 def takes(scope: dict, pid: str, agent: str) -> bool:

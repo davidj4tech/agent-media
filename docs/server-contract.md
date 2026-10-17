@@ -3613,7 +3613,7 @@ GET  /presets → {"presets": [Preset…], "agents_md_default": "<the template a
                  "personas": ["zara", …], "roles": ["reviewer", …], "private": ["zara", …],
                  "scope": {"zara": {"agents": ["pi"] | null, "projects": ["agent-media"] | null, "private": true}, …},
                  "trusted_models": ["venice/*", …], "private_mode": false}
-GET  /personas/scope → {"scope", "trusted_models", "layers": {"default", "local", "user"}}
+GET  /personas/scope → {"scope", "trusted_models", "layers": {"default", "local", "user"}, "private_mode"}
 POST /personas/scope {"id", "agents"?: [...] | null, "projects"?: [...] | null} | {"trusted_models": [...] | null}
                  → the same as GET, after setting the user layer (null clears a field)
 POST /presets Preset → {"ok": true, "preset": Preset}       // added, or replaced by name
