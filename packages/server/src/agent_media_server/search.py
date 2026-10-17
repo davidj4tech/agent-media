@@ -649,9 +649,11 @@ def _sources() -> list[tuple[str, str, str]]:
     out += [("codex", f, s) for f, s in _codex_files()]
     out += [("hermes", str(p), "") for p in harnesses.hermes_stores()]
     from agent_media_core.deleted import deleted
+    from agent_media_core.private import marked
     from agent_media_core.sealed import sealed
 
-    gone = deleted().keys() | sealed().keys()
+    # A private thread (agent_media_core.private) is not indexed either.
+    gone = deleted().keys() | sealed().keys() | set(marked())
     return [src for src in out if src[2] not in gone] if gone else out
 
 
@@ -833,9 +835,9 @@ def _mark_terms(text: str, terms: list[str]) -> list[list[int]]:
 
 def _hidden(entrypoint: str | None, session: str, owned: set[str]) -> bool:
     from agent_media_core.deleted import is_deleted
-    from agent_media_core.sealed import is_sealed
+    from agent_media_core.private import hidden
 
-    if is_deleted(session) or is_sealed(session):
+    if is_deleted(session) or hidden(session):
         return True
     return bool(entrypoint) and entrypoint.startswith("sdk") and session not in owned
 

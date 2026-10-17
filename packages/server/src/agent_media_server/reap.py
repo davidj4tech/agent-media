@@ -483,7 +483,10 @@ def generate_recap(session: str) -> dict | None:
     (`rest.save_recap`). None on any failure — never raises."""
     try:
         from agent_media_core.intake._summary import _chat, _int_env
+        from agent_media_core.private import hidden
 
+        if hidden(session):     # a private thread is never read out to a model
+            return None
         text = tail_text(session)
         if not text:
             return None
@@ -590,6 +593,53 @@ def _append_log(lines: list[str]) -> None:
         print(f"session-reap: could not write {path} ({e})", file=sys.stderr)
 
 
+def _private_idle_s() -> float:
+    return _env_float("MEDIA_PRIVATE_IDLE", 7200.0)
+
+
+#: An ended private thread is sealed once it has been quiet this long, so a
+#: resume a moment after an exit is not raced.
+PRIVATE_ENDED_S = 1800.0
+
+
+def seal_private(now: float, apply: bool) -> list[str]:
+    """Seal the private threads agent-media started (agent_media_core.private,
+    `"by": "agent-media"`) that have ended and gone quiet for PRIVATE_ENDED_S,
+    or been idle MEDIA_PRIVATE_IDLE (two hours) while still open; and delete
+    each one's render. agent-private's own sweep seals the rest. Log lines."""
+    from agent_media_core import private, sealed
+
+    from . import personas, seal
+
+    out = []
+    stamp = datetime.fromtimestamp(now).astimezone().isoformat(timespec="seconds")
+    for sid in private.marked():
+        if sealed.is_sealed(sid):
+            continue
+        try:
+            marker = json.loads((private.marker_dir() / sid).read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(marker, dict) or marker.get("by") != "agent-media":
+            continue
+        last = last_message_at(sid) or _epoch(marker.get("started")) or now
+        quiet = now - last
+        running = seal._running(sid)
+        if not (quiet >= _private_idle_s() or (not running and quiet >= PRIVATE_ENDED_S)):
+            continue
+        why = "idle" if running else "ended"
+        if not apply:
+            out.append(f"{stamp} dry-run private {sid[:8]} would-seal ({why}, quiet {quiet / 3600:.1f}h)")
+            continue
+        try:
+            seal.seal(sid)
+            personas.forget(sid)
+            out.append(f"{stamp} apply private {sid[:8]} sealed ({why})")
+        except Exception as e:  # noqa: BLE001 — one thread's failure is not the pass's
+            out.append(f"{stamp} apply private {sid[:8]} failed-seal ({e})")
+    return out
+
+
 def run(mode: str | None = None, *, as_json: bool = False, write_log: bool = True,
         now: float | None = None, out=None) -> int:
     """One reaper pass. `mode` overrides MEDIA_REAP_MODE. Prints the decisions
@@ -604,6 +654,9 @@ def run(mode: str | None = None, *, as_json: bool = False, write_log: bool = Tru
     if not decisions:
         lines = [f"{datetime.fromtimestamp(now).astimezone().isoformat(timespec='seconds')} "
                  f"{mode} no live agent sessions"]
+    # Sealing a private thread does not wait on MEDIA_REAP_MODE: privacy is
+    # not something a host opts into by letting the reaper close panes.
+    lines += seal_private(now, apply=(os.environ.get("MEDIA_PRIVATE_SEAL", "1").strip() != "0"))
     if write_log:
         _append_log(lines)
     if as_json:

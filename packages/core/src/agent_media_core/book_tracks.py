@@ -409,9 +409,9 @@ def export_session(session: str, *, store=None) -> tuple[Optional[Path], int]:
     What has been written is what decides where the next one goes.
     """
     from .deleted import is_deleted
-    from .sealed import is_sealed
+    from .private import hidden
 
-    if is_deleted(session) or is_sealed(session):
+    if is_deleted(session) or hidden(session):
         # Deleted or sealed: its folder would be rebuilt from whatever speech
         # is left.
         return None, 0

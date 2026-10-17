@@ -334,10 +334,15 @@ def recap_for(session: str) -> dict | None:
     for the one the reaper wrote before resting the session (`rest.py`). The
     newer of the two wins, so Claude's own is shown whenever it is at least as
     recent — and a Codex, pi or Hermes session, which has no Claude recap at
-    all, shows the generated one when there is one.
+    all, shows the generated one when there is one. None for a private
+    thread (agent_media_core.private): it is listed with no recap.
     """
+    from agent_media_core.private import hidden
+
     from . import rest
 
+    if hidden(session):
+        return None
     own = latest_recap(session)
     ours = rest.generated_recap(session)
     if ours and (not own or ours["at"] > own["at"]):

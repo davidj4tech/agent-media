@@ -38,6 +38,8 @@ def _clean_media_env(monkeypatch, tmp_path, request):
     # and fail anywhere else. test_layout.py unpins it where it needs to.
     monkeypatch.setenv("MEDIA_LAYOUT", "projects-per-tmux-session")
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    # Private-thread markers (agent_media_core.private): never red5's own.
+    monkeypatch.setenv("AGENT_PRIVATE_DIR", str(tmp_path / "private.d"))
     # The alert store files TODOs in ~/org/inbox.org: never David's here.
     monkeypatch.setenv("MEDIA_ALERTS_INBOX", "0")
     # No ~/agent-personas: a host without the repo, unless a test makes one.

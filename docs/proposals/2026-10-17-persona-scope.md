@@ -5,7 +5,9 @@ personas should be **restricted by agent**, **sorted by project** (a
 project's own personas first, the rest still there), and a private persona
 should get its **private render only on a trusted model**, its public shell
 anywhere else. Each of these takes **defaults, a host's local settings and
-the user's own**, layered. Status: proposal. Follows
+the user's own**, layered. Status: **built 17 Oct 2026** — steps 1–5, and
+the private thread reuses agent-config's `agent-private` mark
+(agent_media_core.private) rather than a new one. Follows
 2026-10-15-personas-in-presets.md, whose steps 3–4 private mode depends on.
 
 ## What there is

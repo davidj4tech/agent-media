@@ -30,10 +30,11 @@ from pathlib import Path
 RENDER_TIMEOUT_S = 20.0
 LIST_TIMEOUT_S = 10.0
 
-#: Private renders stay off until a private thread is kept out of search,
-#: the shelf, the org bridge and the memory sync, and sealed when it ends
-#: (docs/proposals/2026-10-15-personas-in-presets.md steps 3–4).
-PRIVATE_MODE_READY = False
+#: Private renders: on now that a private thread is kept out of search, the
+#: shelf and feeds, recaps, titles, figures, follow-ups and catch-ups
+#: (agent_media_core.private), out of the governor and fleet-sync (agent-memory,
+#: agent-sessions), and sealed when it ends (reap.seal_private). 17 Oct 2026.
+PRIVATE_MODE_READY = True
 
 #: Harnesses that take a system prompt from a file, and the flag that does it.
 #: pi's `--append-system-prompt` reads a path as the file's contents.
@@ -161,13 +162,15 @@ def check(persona: str, role: str, lists: dict | None = None, agent: str = "",
     return ""
 
 
-def mode_for(persona: str, model: str, rows: list[dict]) -> str:
+def mode_for(persona: str, model: str, rows: list[dict], agent: str = "") -> str:
     """The render mode for `persona` on `model`: "private" for a persona with
     private material on a trusted model once PRIVATE_MODE_READY, else
-    "public"."""
+    "public". Only for an agent that takes it as a system prompt (`via`):
+    elsewhere it would be the thread's first message, and Hermes and
+    opencode, which could not be sealed after, are among those."""
     from . import persona_scope
 
-    if not persona or not PRIVATE_MODE_READY:
+    if not persona or not PRIVATE_MODE_READY or via(agent) != "system_prompt":
         return "public"
     resolved = persona_scope.resolve(rows)
     row = resolved["scope"].get(persona) or {}
@@ -222,6 +225,27 @@ def write(render_text: str) -> Path:
     with os.fdopen(fd, "w") as fh:
         fh.write(render_text)
     return path
+
+
+def forget(session: str) -> int:
+    """Delete the render `session` was started with: `<session>.md` and every
+    other name of the same file. The number of names removed. For a private
+    thread once it is sealed — its render is the decrypted persona."""
+    d = files_dir()
+    own = d / f"{session}.md"
+    try:
+        ino = own.stat().st_ino
+    except OSError:
+        return 0
+    gone = 0
+    for p in d.iterdir():
+        try:
+            if p.stat().st_ino == ino:
+                p.unlink()
+                gone += 1
+        except OSError:
+            pass
+    return gone
 
 
 def name_for(path: Path, session: str) -> None:

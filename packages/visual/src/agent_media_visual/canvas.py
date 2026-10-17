@@ -818,6 +818,16 @@ def _pane_session(pane: str) -> str:
     return ""
 
 
+def _private(session: str) -> bool:
+    """A sealed or private thread (agent_media_core.private); False when
+    agent-media's core is not installed beside the canvas."""
+    try:
+        from agent_media_core.private import hidden
+    except ImportError:
+        return False
+    return hidden(session)
+
+
 def _pane_turns(pane: str, limit: int = 12) -> list[str]:
     """A pane's Claude Code session as assistant turns (oldest→newest), read from
     its transcript (~/.claude/projects/<cwd-slug>/<session>.jsonl). Falls back to
@@ -825,6 +835,8 @@ def _pane_turns(pane: str, limit: int = 12) -> list[str]:
     if not pane:
         return []
     session = _pane_session(pane)
+    if session and _private(session):
+        return []       # a private thread is not read out to the canvas
     if session:
         cwd = _run(["tmux", "display-message", "-t", pane, "-p",
                           "#{pane_current_path}"])

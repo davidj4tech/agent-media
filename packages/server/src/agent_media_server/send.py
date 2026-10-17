@@ -730,6 +730,7 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
                        "fix": "harnesses"}
     persona, role = (persona or "").strip(), (role or "").strip()
     rendered = ""
+    render_mode = "public"
     if persona or role:
         from . import personas
 
@@ -737,8 +738,13 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
         why = personas.check(persona, role, agent=agent, rows=rows)
         if why:
             return False, {"error": why, "status": 400}
-        made_it, rendered = personas.render(persona, role, agent,
-                                            personas.mode_for(persona, model, rows))
+        from . import session_settings as _settings
+
+        # Judged on the model the agent will actually run: one `clean_new`
+        # drops (a venice/ id handed to Claude) falls back to the agent's own
+        # default, which is never trusted.
+        render_mode = personas.mode_for(persona, _settings.clean_new(agent, model, mode)[0], rows, agent)
+        made_it, rendered = personas.render(persona, role, agent, render_mode)
         if not made_it:
             return False, {"error": f"could not render the persona: {rendered}", "status": 502}
     where = (cwd or "").strip()
@@ -826,6 +832,16 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
         if prompt_file:
             personas.name_for(prompt_file, str(detail.get("session") or ""))
         detail.update({"persona": persona, "role": role, "persona_via": delivered})
+        if render_mode == "private":
+            # A private render makes a private thread (agent_media_core.private):
+            # marked the moment its id is known, sealed when it ends (reap.py).
+            from agent_media_core import private
+
+            marked = private.mark(str(detail.get("session") or ""), detail.get("cwd") or cwd)
+            detail["private"] = marked
+            if not marked:
+                print(f"ask: a private render's session could not be marked "
+                      f"({detail.get('session')!r})", file=sys.stderr, flush=True)
     return ok, detail
 
 

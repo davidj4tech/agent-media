@@ -3651,10 +3651,15 @@ user's, set by `POST /personas/scope`. `/ask` or a preset naming a persona or
 role its scope keeps from the agent → 400 (a preset with no agent is not
 judged). `trusted_models` are glob patterns on `/ask`'s model id (default
 `venice/*`, `ollama/*`, `local/*`; no model is never trusted): a private
-persona on a trusted model renders `--mode private` — once `private_mode`
-is true, which waits on the private thread (keeping it out of search, the
-shelf, recaps and the memory store, sealed when it ends). Until then every
-render is public. `/ask`'s `persona` and `role` (either, or both) start a
+persona on a trusted model renders `--mode private` when `private_mode` is
+true — only for Claude and pi, which take it as a system prompt. The session
+is then marked private (`~/.local/state/agent/private.d/<session>`, the mark
+agent-config's `agent-private` uses; `/ask` answers `"private": true`): it
+speaks and is listed, but nothing of it is rewritten, drawn, suggested from,
+recapped, titled by a model, indexed, fed to the shelf or a feed, or caught
+up; and the reaper seals it once it has ended and been quiet 30 min, or after
+`MEDIA_PRIVATE_IDLE` (2 h) idle, deleting its render (`MEDIA_PRIVATE_SEAL=0`
+turns that off). `/ask`'s `persona` and `role` (either, or both) start a
 fresh session as `persona-render <persona or role> --adapter <agent>
 [--role <role>] --mode public` — always public, never `sops`. Unknown id →
 400; a render that fails or takes over 20 s → 502 with its last line, before

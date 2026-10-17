@@ -185,7 +185,10 @@ def auto_title(session: str) -> str:
     cannot be had. The follow-up's model (a small hosted one): the summary's
     local model takes half a minute on red5 for a line."""
     from agent_media_core.intake._summary import DEFAULT_TIMEOUT, _chat, _int_env
+    from agent_media_core.private import hidden
 
+    if hidden(session):     # a private thread is never read out to a model
+        return ""
     text = _conversation_text(session)
     if not text:
         return ""

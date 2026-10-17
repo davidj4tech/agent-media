@@ -170,9 +170,13 @@ def collect(store, since: float, until: float,
                 thread = ""
         if not thread and kind == "reply":
             thread = str(ex.get("source_tmux_session") or "")
+        from .private import hidden
+
         items.append({"id": r.get("id"), "at": at, "kind": kind,
                       "thread": thread,
-                      "text": str(r.get("text") or "").strip()[:TEXT_CAP]})
+                      "text": str(r.get("text") or "").strip()[:TEXT_CAP],
+                      # A private thread's words never go to the gateway.
+                      "private": bool(session) and hidden(session)})
     items.sort(key=lambda i: i["at"])
     return items[-MAX_ITEMS:]
 
@@ -237,7 +241,8 @@ def summarise(items: "list[dict]", why) -> Optional[str]:
     from .intake import _summary
 
     material = "\n\n".join(
-        f"[{i['kind']}{' — ' + i['thread'] if i['thread'] else ''}]\n{i['text']}"
+        f"[{i['kind']}{' — ' + i['thread'] if i['thread'] else ''}]\n"
+        + ("(a private thread: its words are not shown)" if i.get("private") else i['text'])
         for i in items)
     prompt = PROMPT.format(words=MAX_WORDS, lead=_lead(why))
     try:

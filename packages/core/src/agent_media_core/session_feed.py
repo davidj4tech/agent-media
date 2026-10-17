@@ -146,8 +146,11 @@ def turns(session: str, *, store=None) -> list[Turn]:
     barge-in — *is* included. The words were written and spoken by the
     renderer; whether the room was listening is not what the archive is about.
     """
+    from .private import hidden
     from .state.store import StateStore
 
+    if hidden(session):     # a private thread never becomes an episode
+        return []
     st = store or StateStore()
     out: list[Turn] = []
     for row in st.recent_history(sink="speech", limit=_FETCH):
@@ -503,6 +506,7 @@ def conversations(store=None) -> list[dict]:
     """
     from collections import Counter
 
+    from .private import hidden
     from .state.store import StateStore
 
     st = store or StateStore()
@@ -512,7 +516,7 @@ def conversations(store=None) -> list[dict]:
         if not isinstance(ex, dict) or ex.get("kind") == "notif":
             continue
         sess = ex.get("source_session")
-        if not sess:
+        if not sess or hidden(sess):
             continue
         at = float(row.get("started_at") or 0)
         cur = seen.setdefault(sess, {"session": sess, "turns": 0,

@@ -256,7 +256,7 @@ def test_json_listing_carries_the_front_matter_scope(described, monkeypatch):
     assert d["scope"]["zara"] == {"agents": ["pi", "claude"], "projects": None, "private": True}
     assert d["scope"]["sam"]["projects"] == ["agent-media"]
     assert d["trusted_models"] == persona_scope.DEFAULT_TRUSTED
-    assert d["private_mode"] is False
+    assert d["private_mode"] is personas.PRIVATE_MODE_READY
 
 
 def test_local_then_user_layers_override_field_by_field(described, tmp_path, monkeypatch):
@@ -294,10 +294,96 @@ def test_trusted_models_match_by_pattern():
     assert not persona_scope.trusted("", ["*"])                # no model is the agent's own default
 
 
-def test_private_mode_waits_for_the_privacy_work(described, monkeypatch):
+def test_private_mode_needs_the_switch_a_trusted_model_and_private_material(described, monkeypatch):
     rows = personas.described()
-    assert personas.mode_for("zara", "venice/x", rows) == "public"      # PRIVATE_MODE_READY off
+    monkeypatch.setattr(personas, "PRIVATE_MODE_READY", False)
+    assert personas.mode_for("zara", "venice/x", rows, "pi") == "public"      # a host without it
     monkeypatch.setattr(personas, "PRIVATE_MODE_READY", True)
-    assert personas.mode_for("zara", "venice/x", rows) == "private"
-    assert personas.mode_for("zara", "sonnet", rows) == "public"
-    assert personas.mode_for("sam", "venice/x", rows) == "public"       # nothing private to render
+    assert personas.mode_for("zara", "venice/x", rows, "pi") == "private"
+    assert personas.mode_for("zara", "sonnet", rows, "claude") == "public"
+    assert personas.mode_for("sam", "venice/x", rows, "pi") == "public"       # nothing private to render
+
+
+# Private threads (agent_media_core.private): a private render marks its
+# session, every reader leaves a marked one alone, and the reaper seals it
+# once it has ended. AGENT_PRIVATE_DIR is the conftest's tmp dir.
+
+def test_a_private_render_marks_its_session(described, asker, monkeypatch):
+    from agent_media_core import private
+
+    monkeypatch.setattr(personas, "PRIVATE_MODE_READY", True)
+    ok, d = send.ask("hi", "tok", agent="pi", persona="zara", model="venice/z-ai-glm-5-3")
+    assert ok, d
+    assert d["private"] is True and private.is_private(d["session"])
+    assert repo_calls_mode(described) == "private"
+
+
+def repo_calls_mode(repo):
+    call = repo.calls()[-1]
+    return call[call.index("--mode") + 1]
+
+
+def test_an_untrusted_or_dropped_model_stays_public(described, asker, monkeypatch):
+    from agent_media_core import private
+
+    monkeypatch.setattr(personas, "PRIVATE_MODE_READY", True)
+    # Claude drops a venice/ id and runs its own default: never trusted.
+    ok, d = send.ask("hi", "tok", agent="claude", persona="zara", model="venice/x")
+    assert ok, d
+    assert repo_calls_mode(described) == "public" and "private" not in d
+    assert not private.is_private(asker["session"])
+
+
+def test_private_mode_needs_a_system_prompt_agent(described, monkeypatch):
+    monkeypatch.setattr(personas, "PRIVATE_MODE_READY", True)
+    rows = personas.described()
+    assert personas.mode_for("zara", "venice/x", rows, "pi") == "private"
+    assert personas.mode_for("zara", "venice/x", rows, "codex") == "public"   # would be its first message
+
+
+def test_readers_leave_a_private_thread_alone(monkeypatch):
+    from agent_media_core import catchup, private, session_feed
+
+    from agent_media_server import reap, recaps, threads
+
+    sid = str(uuid.uuid4())
+    private.mark(sid, "/tmp")
+    assert private.hidden(sid)
+    monkeypatch.setattr(threads, "_conversation_text", lambda s, budget=8000: pytest.fail("read for a title"))
+    assert threads.auto_title(sid) == ""
+    monkeypatch.setattr(reap, "tail_text", lambda s, limit=6000: pytest.fail("read for a recap"))
+    assert reap.generate_recap(sid) is None
+    assert recaps.recap_for(sid) is None
+    assert session_feed.turns(sid, store=object()) == []
+    sent = {}
+    from agent_media_core.intake import _summary
+
+    monkeypatch.setattr(_summary, "_chat", lambda prompt, material, timeout, model=None: sent.setdefault("m", material) and None)
+    catchup.summarise([{"kind": "reply", "thread": "t", "text": "the secret words", "private": True},
+                       {"kind": "reply", "thread": "u", "text": "ordinary words", "private": False}], [])
+    assert "the secret words" not in sent["m"] and "ordinary words" in sent["m"]
+
+
+def test_the_reaper_seals_an_ended_private_thread_and_drops_its_render(repo, monkeypatch):
+    from agent_media_core import private
+
+    from agent_media_server import reap, seal
+
+    ended, live, theirs = (str(uuid.uuid4()) for _ in range(3))
+    for sid in (ended, live, theirs):
+        private.mark(sid, "/tmp")
+    (private.marker_dir() / theirs).write_text('{"cwd": "/tmp"}')     # agent-private's: its sweep's
+    f = personas.write("decrypted persona")
+    personas.name_for(f, ended)
+    now = 1_000_000.0
+    monkeypatch.setattr(reap, "last_message_at", lambda s: now - 3600)
+    monkeypatch.setattr(seal, "_running", lambda s: s == live)
+    sealed_ = []
+    monkeypatch.setattr(seal, "seal", lambda s: sealed_.append(s))
+    lines = reap.seal_private(now, apply=True)
+    assert sealed_ == [ended], lines
+    assert not f.exists() and not (f.parent / f"{ended}.md").exists()
+    monkeypatch.setattr(reap, "last_message_at", lambda s: now - 3 * 3600)       # idle past two hours
+    sealed_.clear()
+    reap.seal_private(now, apply=True)
+    assert set(sealed_) == {ended, live}

@@ -233,10 +233,12 @@ def _replies(index: list[dict], busy: set[str]) -> list[dict]:
     # (when it last changed, row, cache key, change marker, how to read it)
     found: list[tuple[float, dict, str, tuple, object]] = []
     hermes: dict[str, dict] | None = None
+    from agent_media_core.private import hidden
+
     cut = time.time() - REPLIES_WINDOW_S
     for r in index:
         sid = str(r.get("session") or "")
-        if not sid or r.get("archived") or sid in busy:
+        if not sid or r.get("archived") or sid in busy or hidden(sid):
             continue
         if harnesses.is_hermes(sid):
             if hermes is None:

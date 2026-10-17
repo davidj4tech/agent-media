@@ -120,6 +120,8 @@ def _no_live_speech_token(monkeypatch, tmp_path):
     XDG_STATE_HOME somewhere itself still wins, being set after this.
     """
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
+    # Private-thread markers (agent_media_core.private): never red5's own.
+    monkeypatch.setenv("AGENT_PRIVATE_DIR", str(tmp_path / "private.d"))
     # opencode's conversations live under XDG_DATA_HOME (harnesses.opencode_db);
     # unset, a test that lists every harness's sessions would read this
     # machine's real ones.

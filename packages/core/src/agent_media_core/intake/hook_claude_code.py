@@ -844,6 +844,14 @@ def _handle_notification(payload: dict) -> int:
     return 0
 
 
+def _private(session: str) -> bool:
+    try:
+        from ..private import hidden
+        return hidden(session)
+    except Exception:  # noqa: BLE001 — a broken check must not stop speech
+        return False
+
+
 def _play_now(event: Event) -> None:
     """Dedup, stamp, and submit the Stop reply on a *fresh* StateStore.
 
@@ -865,6 +873,12 @@ def _play_now(event: Event) -> None:
     # Commit to speaking: the notif-suppression window keys off this stamp, and
     # detached playback won't report back.
     _write_stamp(_stamp_dir() / "stop-last", int(time.time()))
+    # A private thread (agent_media_core.private) is spoken as it stands: no
+    # figure, no follow-up and no model rewrite, each of which would send the
+    # reply to a model outside the thread.
+    if _private(event.metadata.get("session") or ""):
+        for k in ("visual_raw", "visual_hint", "visual_reveal", "followup_raw", "summary_raw"):
+            event.metadata.pop(k, None)
     # Opt-in visual accompaniment: hand the raw reply to `media-visual`
     # fire-and-forget *before* the (slow) summary/describe rewrites below, so
     # image generation runs concurrently with them and with playback. After
