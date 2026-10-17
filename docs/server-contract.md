@@ -1181,7 +1181,8 @@ Request:
 | `agent` | `claude` \| `codex` \| `pi` \| `hermes` \| `opencode` for a fresh session (default `MEDIA_ASK_AGENT`, else claude). With `MEDIA_HEADLESS` on, `claude` and `opencode` start headless (sessiond; opencode as a session of its one shared `opencode serve`, 29 Sep 2026), the rest in a pane |
 | `project` | open a fresh session in that project's directory: a series (`p-agent-media`) on David's desk, a folder basename (`agent-media`) in the default layout (§18) |
 | `cwd` | open a fresh session in that directory — must be a `/targets` place |
-| `new_project` | a name (15 Oct 2026, §6.24): make a project folder and open the fresh session in it — implies `target: "new"`. With `repo`, `agents_md`, `preset` |
+| `new_project` | a name (15 Oct 2026, §6.24): make a project folder and open the fresh session in it — implies `target: "new"`. With `repo`, `agents_md`, `preset`, `root` |
+| `root` | with `new_project` (18 Oct 2026, §6.24): which project root it goes in — one of `GET /projects/roots`, else 400; default the first |
 | `repo` | with `new_project`: clone this git URL instead of `git init` (§6.24) |
 | `agents_md` | with `new_project`: `true` writes a starter `AGENTS.md` and `CLAUDE.md` → it; `"draft"` has the first chat write it (§6.24) |
 | `preset` | a preset's name (§6.24): its AGENTS.md text for `agents_md`. The app sends the preset's agent, profile, model and plan itself |
@@ -3600,8 +3601,10 @@ folder never appears without the chat that asked for it — and is done only
 after the sign-in and agent checks pass. `new_project` and `worktree` each
 imply `target: "new"`; together, or with `cwd` / `project`, → 400.
 
-**New project** — `new_project: "<name>"`. The folder is
-`<MEDIA_PROJECTS_DIR, else ~/projects>/<name>`. A name is letters, digits,
+**New project** — `new_project: "<name>"`. The folder is `<root>/<name>`,
+`root` (18 Oct 2026) one of the project roots below — as listed, or a path
+that resolves to one; not listed → 400, before anything is made — and the
+first (the default) when it is left out. A name is letters, digits,
 `.` `_` `-`, starts with a letter or digit, ≤ 64, not ending `.git` → else
 400; a folder already there → 409 with its `cwd` (pick it from the places).
 
@@ -3622,6 +3625,30 @@ imply `target: "new"`; together, or with `cwd` / `project`, → 400.
 
 Answers as `/ask` does, plus `"cwd"`: the folder.
 
+**Project roots** (18 Oct 2026) — the folders a new project may go in, kept
+in `<state_dir>/project-roots.json` (a list of paths, the first the
+default). With no file it is one: `MEDIA_PROJECTS_DIR`, else `~/projects`,
+which is the host's word and not judged. One added here must be an existing
+directory under the home folder, judged after resolving symlinks (a link in
+`~` that points out of it → 400), and not listed already (by its resolved
+path → 409). The last one cannot be removed (409); an unknown one → 404.
+Answered on their own route and on `GET /presets` as `project_roots`, so
+the new-chat sheet has them without a second call. `label` is the path with
+the home folder as `~`.
+
+```
+GET  /projects/roots → {"ok": true, "roots": [{"path": "/home/d/projects", "label": "~/projects", "default": true}, …]}
+POST /projects/roots {"path": "~/work"}           → the same, with it added last
+POST /projects/roots/remove {"path"}              → the same, without it
+POST /projects/roots/default {"path"}             → the same, with it first
+```
+
+The three POSTs are gated by `auth.may_admin`, which today admits every
+device and owner exactly as the gate does; roles will narrow it to admin
+devices (docs/proposals/2026-10-18-roles.md). The list is tidiness, not a
+boundary: a device that may chat may already start an agent that runs
+anywhere it likes.
+
 **Worktree** — `worktree: {"from": "/home/…/projects/agent-media",
 "branch": "fix-x"}`. `from` must be a `/targets` place (404) and a git repo
 (422). `git -C <from> worktree add -b <branch> <from>/.worktrees/<branch>`
@@ -3636,6 +3663,7 @@ in `<state_dir>/presets.json`. "Profile" stays the harness login (§6.6).
 
 ```
 GET  /presets → {"presets": [Preset…], "agents_md_default": "<the template a new project gets without a preset>",
+                 "project_roots": [{"path", "label", "default"}, …],   // as GET /projects/roots
                  "personas": ["zara", …], "roles": ["reviewer", …], "private": ["zara", …],
                  "scope": {"zara": {"agents": ["pi"] | null, "projects": ["agent-media"] | null, "private": true}, …},
                  "trusted_models": ["venice/*", …], "private_mode": false}

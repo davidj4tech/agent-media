@@ -9,6 +9,7 @@ instead:
   may_control_speech(bearer)  → (ok, error)                    — the speech bar, harnesses
   identity(bearer)            → (user, status)                 — who, without the may-reply check
   may_reply(user)             → (ok, why)
+  may_admin(bearer)           → (user, {}) or (None, error)   — host setup (project roots)
   abs_bearer(bearer)          → the credential to show ABS for an item lookup
 
 The device check comes first because it is local and cheap: a hash and a
@@ -83,6 +84,17 @@ def gate(bearer: str) -> tuple[dict | None, dict]:
     if dev:
         return _owner(dev), {}
     return auth_abs._gate(bearer)
+
+
+def may_admin(bearer: str) -> tuple[dict | None, dict]:
+    """`(user, {})` when this bearer may change how the host is set up — the
+    folders new projects go in (project_roots.py) — else `(None, error)`.
+
+    Today exactly `gate`: every device is the owner. Roles will narrow it to
+    admin devices (docs/proposals/2026-10-18-roles.md), and the routes that
+    ask here already are the ones that will then refuse a member or a guest.
+    """
+    return gate(bearer)
 
 
 def may_control_speech(bearer: str) -> tuple[bool, dict]:

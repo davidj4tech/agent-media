@@ -121,7 +121,7 @@ def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "
                level: str = "", new_project: str = "", repo: str = "",
                agents_md: bool | str = False, preset: str = "",
                persona: str = "", role: str = "",
-               worktree: dict | None = None) -> tuple[bool, dict]:
+               worktree: dict | None = None, root: str = "") -> tuple[bool, dict]:
     """The assistant button's words, sent where they belong.
 
     In order: a target the app names outright (`target`, a session uuid from
@@ -208,7 +208,8 @@ def ask_routed(text: str, bearer: str, *, target: str = "", player_item: str = "
                               **({"persona": persona} if persona else {}),
                               **({"role": role} if role else {}),
                               **({"new_project": new_project, "repo": repo,
-                                  "agents_md": agents_md, "preset": preset}
+                                  "agents_md": agents_md, "preset": preset,
+                                  **({"root": root} if root else {})}
                                  if new_project else {}),
                               **({"worktree": worktree} if worktree else {}))
         if ok:

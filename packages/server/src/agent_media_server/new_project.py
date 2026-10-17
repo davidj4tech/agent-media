@@ -5,7 +5,8 @@ the folder a thread ran in. So "new project" is a folder that did not exist,
 made here, and a first chat opened in it — `/ask` with `new_project`, the one
 call, so a folder never appears without the chat that asked for it.
 
-The root is MEDIA_PROJECTS_DIR, else ~/projects. A name is one path segment of
+The root is one of the listed project roots (project_roots.py; by default
+MEDIA_PROJECTS_DIR, else ~/projects), checked by the caller. A name is one path segment of
 letters, digits, `.`, `_` and `-`, starting with a letter or digit; a folder
 already there is refused (409) rather than adopted — an existing project is
 picked from the places list, not created twice. `git init` (or a clone of
@@ -107,8 +108,9 @@ def _write_agents_md(path: Path, name: str, text: str, draft: bool = False) -> N
 
 
 def create(name: str, repo: str = "", agents_md: bool | str = False,
-           agents_text: str = "") -> tuple[bool, dict]:
-    """Make `<root>/<name>`: a clone of `repo`, or a `git init`, with a starter
+           agents_text: str = "", root_dir: str = "") -> tuple[bool, dict]:
+    """Make `<root_dir>/<name>` (`root_dir` a listed project root, else
+    `root()`): a clone of `repo`, or a `git init`, with a starter
     AGENTS.md when `agents_md` — or, when it is "draft", only CLAUDE.md → it,
     for the first chat to write (DRAFT_PROMPT). `(True, {"cwd"})`, or a
     refusal with its status."""
@@ -120,13 +122,14 @@ def create(name: str, repo: str = "", agents_md: bool | str = False,
     if repo and (not REPO.fullmatch(repo) or repo.startswith("-")):
         return False, {"error": "a repo is an https://, ssh:// or user@host:path URL",
                        "status": 400}
-    path = root() / name
+    base = Path(root_dir) if root_dir else root()
+    path = base / name
     if path.exists() or path.is_symlink():
         return False, {"error": f"{name!r} already exists", "status": 409, "cwd": str(path)}
     try:
-        root().mkdir(parents=True, exist_ok=True)
+        base.mkdir(parents=True, exist_ok=True)
     except OSError as e:
-        return False, {"error": f"could not make {root()}: {e}", "status": 500}
+        return False, {"error": f"could not make {base}: {e}", "status": 500}
     if repo:
         ok, why = _git("clone", "--quiet", "--", repo, str(path), timeout=CLONE_TIMEOUT)
         if not ok:

@@ -72,14 +72,15 @@ def listing(bearer: str) -> tuple[bool, dict]:
     user, err = auth.gate(bearer)
     if not user:
         return False, err
-    from . import new_project, persona_scope, personas
+    from . import new_project, persona_scope, personas, project_roots
 
     rows = personas.described()
     resolved = persona_scope.resolve(rows)
     return True, {"presets": load(), "agents_md_default": new_project.default_agents_md(),
                   **personas.listing(rows), "scope": resolved["scope"],
                   "trusted_models": resolved["trusted_models"],
-                  "private_mode": personas.PRIVATE_MODE_READY}
+                  "private_mode": personas.PRIVATE_MODE_READY,
+                  "project_roots": project_roots.listing()}
 
 
 def put(body: dict, bearer: str) -> tuple[bool, dict]:

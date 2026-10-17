@@ -672,7 +672,7 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
         model: str = "", mode: str = "", profile: str = "",
         new_project: str = "", repo: str = "", agents_md: bool | str = False,
         preset: str = "", worktree: dict | None = None,
-        persona: str = "", role: str = "") -> tuple[bool, dict]:
+        persona: str = "", role: str = "", root: str = "") -> tuple[bool, dict]:
     """Start a fresh session with `text` as its first message.
 
     What the phone's assistant button does. Nothing to resume and no item yet:
@@ -692,8 +692,9 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
     in the notes tree), never for a directory the phone named.
     `new_project` makes that folder first (new_project.py: a clone of
     `repo`, else `git init`; AGENTS.md when `agents_md`, a `preset`'s text if
-    named) and opens the chat in it: a name, not a path, so the phone still
-    chooses no directory. `agents_md: "draft"` has the chat write AGENTS.md
+    named) and opens the chat in it: a name, not a path, under `root` — one
+    of the listed project roots (project_roots.py; unlisted → 400, none →
+    the first) — so the phone still chooses no directory of its own. `agents_md: "draft"` has the chat write AGENTS.md
     itself: its first message is new_project.DRAFT_PROMPT, then `text`
     (which may then be empty). `worktree` (`{"from": <a place>, "branch"}`) cuts a
     new worktree of a place and opens the chat there (contract §6.24).
@@ -759,11 +760,17 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
         if new_project:
             from . import presets
 
+            from . import project_roots
+
             if preset and not presets.get(preset):
                 return False, {"error": f"no preset {preset!r}", "status": 404}
+            base = project_roots.find(root) if root else project_roots.load()[0]
+            if not base:
+                return False, {"error": f"{root!r} is not one of the project folders",
+                               "status": 400}
             made, made_detail = projects_new.create(
                 new_project, repo=repo, agents_md=agents_md,
-                agents_text=presets.agents_md_of(preset))
+                agents_text=presets.agents_md_of(preset), root_dir=base)
         else:
             source = str(worktree.get("from") or "").strip()
             if source not in {p["path"] for p in sessions.places(limit=0)}:
