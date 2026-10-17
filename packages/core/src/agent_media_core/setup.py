@@ -1525,21 +1525,78 @@ def _row_statusline(args, *, check_only: bool):
 
 
 def gemini_settings_path() -> Path:
-    return Path.home() / ".gemini" / "settings.json"
+    """Gemini CLI's own settings: `~/.gemini/settings.json`, under
+    `GEMINI_CLI_HOME` when that moves its home."""
+    from agent_media_core import harnesses
+
+    return harnesses.gemini_dir() / "settings.json"
+
+
+#: Gemini CLI's hooks are all one command (intake/hook_gemini.py), which
+#: reads the event from its input. Each event and its timeout — in ms, as
+#: Gemini counts them. None of them waits on speech: the reply is spoken
+#: from a detached child, so AfterAgent's is only the time to start it.
+GEMINI_HOOK_COMMAND = "media-hook-gemini"
+GEMINI_HOOKS = (("SessionStart", 5000), ("BeforeAgent", 5000),
+                ("BeforeTool", 5000), ("AfterAgent", 10000))
+
+
+def _gemini_hook_events(settings: dict, match: str) -> set[str]:
+    """The events with a hook whose command contains `match`."""
+    out = set()
+    for event, groups in (settings.get("hooks") or {}).items():
+        for group in groups or []:
+            if any(match in (h.get("command") or "")
+                   for h in (group.get("hooks") or []) if isinstance(h, dict)):
+                out.add(event)
+    return out
+
+
+def _drop_gemini_context_hook(settings: dict) -> tuple[dict, bool]:
+    """Take out the BeforeAgent `media-hook-context` entry an earlier profile
+    added: `media-hook-gemini` gives the same note now, and both would give
+    it twice. A group left with no hooks goes with it."""
+    settings = json.loads(json.dumps(settings))
+    groups = (settings.get("hooks") or {}).get("BeforeAgent")
+    if not groups:
+        return settings, False
+    changed = False
+    kept = []
+    for group in groups:
+        inner = group.get("hooks") or []
+        mine = [h for h in inner if CONTEXT_HOOK_COMMAND in (h.get("command") or "")]
+        if mine:
+            changed = True
+            inner = [h for h in inner if h not in mine]
+            if not inner:
+                continue
+            group["hooks"] = inner
+        kept.append(group)
+    settings["hooks"]["BeforeAgent"] = kept
+    return settings, changed
 
 
 def _row_gemini(args, *, check_only: bool):
-    """Gemini CLI's BeforeAgent hook: the same context warnings. Gemini
-    reads its own settings file, and counts a hook's timeout in ms."""
+    """Gemini CLI's hooks: its replies spoken, its turns and steps recorded,
+    which pane it is in, and the context warnings — four events, one
+    command. Gemini reads its own settings file, and counts a hook's
+    timeout in ms. The context hook this row used to add on its own is
+    replaced, not kept beside (`_drop_gemini_context_hook`)."""
     if shutil.which("gemini") is None:
         return "absent", "gemini is not installed here"
     path = gemini_settings_path()
+    settings = _load_json(path)
     if check_only:
-        return ("ok" if _hook_installed(path, CONTEXT_HOOK_COMMAND)
-                else "missing"), str(path)
-    merged, changed = _merge_hook_entry(
-        _load_json(path), "BeforeAgent", hook_command(CONTEXT_HOOK_COMMAND),
-        CONTEXT_HOOK_COMMAND, 5000, False)
+        have = _gemini_hook_events(settings, GEMINI_HOOK_COMMAND)
+        ok = (all(e in have for e, _t in GEMINI_HOOKS)
+              and "BeforeAgent" not in _gemini_hook_events(settings, CONTEXT_HOOK_COMMAND))
+        return ("ok" if ok else "missing"), str(path)
+    merged, changed = _drop_gemini_context_hook(settings)
+    command = hook_command(GEMINI_HOOK_COMMAND)
+    for event, timeout in GEMINI_HOOKS:
+        merged, did = _merge_hook_entry(merged, event, command, GEMINI_HOOK_COMMAND,
+                                        timeout, False)
+        changed = changed or did
     if changed:
         _write_settings(path, merged, dry_run=args.dry_run)
     return ("installed" if changed else "ok"), str(path)
@@ -1740,8 +1797,8 @@ PROFILE_ROWS = (
      "extra", _row_pi),
     ("codex", "Codex's replies spoken and its prompts recorded (notify + a hook)",
      "extra", _row_codex),
-    ("gemini", "Gemini CLI told how full its context is (a BeforeAgent hook)",
-     "extra", _row_gemini),
+    ("gemini", "Gemini CLI's replies spoken, its turns recorded and its context "
+     "watched (its hooks)", "extra", _row_gemini),
 )
 
 

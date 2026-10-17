@@ -10,6 +10,9 @@ held the conversation.
 
 pi adds SessionStart: it is the only record of which pi is on which session
 (see harnesses.register_pane).
+
+Gemini CLI's hooks have names of their own (BeforeAgent, BeforeTool,
+AfterAgent); intake/hook_gemini.py renames them and hands them here too.
 """
 
 from __future__ import annotations

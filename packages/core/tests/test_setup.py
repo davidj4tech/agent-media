@@ -880,18 +880,52 @@ def test_the_status_line_is_ours_unless_one_is_already_set(tmp_path, monkeypatch
     assert "a status line of your own" in capsys.readouterr().out
 
 
-def test_gemini_gets_the_context_hook_in_its_own_settings(tmp_path, monkeypatch):
+def test_gemini_gets_its_hooks_in_its_own_settings(tmp_path, monkeypatch):
+    """All four events, one command, ms timeouts; someone else's hook on the
+    same event is left where it was."""
     _only_hook_rows(monkeypatch)
     monkeypatch.setattr(setup.shutil, "which", lambda name: f"/usr/bin/{name}")
     gemini = tmp_path / "gemini.json"
-    gemini.write_text(json.dumps({"hooks": {"BeforeTool": [{"hooks": [
+    gemini.write_text(json.dumps({"hooks": {"BeforeTool": [{"matcher": "run_shell_command", "hooks": [
         {"type": "command", "command": "rtk"}]}]}}))
     monkeypatch.setattr(setup, "gemini_settings_path", lambda: gemini)
+    assert setup._row_gemini(_profile_args(tmp_path), check_only=True)[0] == "missing"
     assert setup.cmd_profile(_profile_args(tmp_path, only="gemini")) == 0
     data = json.loads(gemini.read_text())
-    entry = data["hooks"]["BeforeAgent"][0]["hooks"][0]
-    assert setup.CONTEXT_HOOK_COMMAND in entry["command"] and entry["timeout"] == 5000
+    for event, timeout in setup.GEMINI_HOOKS:
+        mine = [h for g in data["hooks"][event] for h in g["hooks"]
+                if setup.GEMINI_HOOK_COMMAND in h["command"]]
+        assert len(mine) == 1 and mine[0]["timeout"] == timeout
     assert data["hooks"]["BeforeTool"][0]["hooks"][0]["command"] == "rtk"
+    assert setup._row_gemini(_profile_args(tmp_path), check_only=True)[0] == "ok"
+    before = gemini.read_text()
+    assert setup.cmd_profile(_profile_args(tmp_path, only="gemini")) == 0
+    assert gemini.read_text() == before
+
+
+def test_gemini_the_old_context_hook_is_replaced_not_doubled(tmp_path, monkeypatch):
+    """The row used to add `media-hook-context` on BeforeAgent; media-hook-gemini
+    gives that note now, so the old entry goes and there is one BeforeAgent."""
+    _only_hook_rows(monkeypatch)
+    monkeypatch.setattr(setup.shutil, "which", lambda name: f"/usr/bin/{name}")
+    gemini = tmp_path / "gemini.json"
+    gemini.write_text(json.dumps({"hooks": {"BeforeAgent": [
+        {"hooks": [{"type": "command", "timeout": 5000,
+                    "command": "$HOME/projects/agent-media/.venv/bin/media-hook-context"}]},
+        {"hooks": [{"type": "command", "command": "my-own-check"}]}]}}))
+    monkeypatch.setattr(setup, "gemini_settings_path", lambda: gemini)
+    assert setup._row_gemini(_profile_args(tmp_path), check_only=True)[0] == "missing"
+    assert setup.cmd_profile(_profile_args(tmp_path, only="gemini")) == 0
+    data = json.loads(gemini.read_text())
+    cmds = [h["command"] for g in data["hooks"]["BeforeAgent"] for h in g["hooks"]]
+    assert not any(setup.CONTEXT_HOOK_COMMAND in c for c in cmds)
+    assert "my-own-check" in cmds
+    assert sum(setup.GEMINI_HOOK_COMMAND in c for c in cmds) == 1
+
+
+def test_gemini_settings_follow_its_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("GEMINI_CLI_HOME", str(tmp_path / "g"))
+    assert setup.gemini_settings_path() == tmp_path / "g" / ".gemini" / "settings.json"
 
 
 def test_codex_gets_notify_and_the_prompt_hook(tmp_path, monkeypatch):

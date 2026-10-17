@@ -7,10 +7,11 @@ Two entry points share one state file per session:
   and the share of it used (``used_percentage``). It prints a short line and
   saves the numbers under ``<state>/<session_id>.window``.
 
-* ``media-hook-context`` — Claude Code's UserPromptSubmit hook and Gemini
-  CLI's BeforeAgent hook. Codex's is ``media-hook-codex event``, which calls
-  ``note_for`` (a new hooks.json entry would stop Codex for a review), and
-  pi's extension calls this with its own numbers. It takes the last turn's
+* ``media-hook-context`` — Claude Code's UserPromptSubmit hook. Codex's is
+  ``media-hook-codex event``, which calls ``note_for`` (a new hooks.json
+  entry would stop Codex for a review); Gemini CLI's is its BeforeAgent
+  hook, ``media-hook-gemini``, which does the same; and pi's extension calls
+  this with its own numbers. It takes the last turn's
   usage from the transcript and, when that crosses a band
   (50, 70, 85%), adds a note to the session's context so it can work leaner
   and, near the limit, write a handoff note before auto-compaction runs (a
@@ -90,8 +91,9 @@ def gemini_compression_threshold() -> float:
     """The share of the window at which Gemini CLI compresses its history
     (``model.compressionThreshold``, default 0.5). Its warnings are counted
     against that point, since that is where history is lost."""
+    home = Path(os.environ.get("GEMINI_CLI_HOME") or Path.home())
     try:
-        cfg = json.loads((Path.home() / ".gemini" / "settings.json").read_text())
+        cfg = json.loads((home / ".gemini" / "settings.json").read_text())
         return float(cfg["model"]["compressionThreshold"])
     except (OSError, ValueError, KeyError, TypeError):
         return 0.5
