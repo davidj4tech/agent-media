@@ -67,6 +67,16 @@ def _looking_s() -> int:
         return 1800
 
 
+def _in_other_app() -> bool:
+    """Is this session driven from another app's front-end (Paseo and the
+    like)? That app is where the conversation is watched, and no pane or
+    thread of ours shows it, so its replies play. The app is known by a
+    variable it sets in the agent's environment: MEDIA_TOAST_APP_ENV, names
+    separated by commas (default PASEO_AGENT_ID); empty turns this off."""
+    names = os.environ.get("MEDIA_TOAST_APP_ENV", "PASEO_AGENT_ID")
+    return any(os.environ.get(n.strip()) for n in names.split(",") if n.strip())
+
+
 def _desk(within: Optional[int] = None) -> Optional[tuple[str, str]]:
     """(client, pane it shows) for the client typed into most recently, if
     that was within `within` seconds (MEDIA_TOAST_PRESENCE_S by default);
@@ -101,10 +111,13 @@ def should_hold(session: str = "") -> bool:
     conversation: on screen in the app (core's watching.py), or its pane is
     the one the desk's freshest client shows. That client may have been idle
     for MEDIA_TOAST_LOOKING_S (default 1800), longer than presence: a long
-    turn is watched without a keystroke."""
+    turn is watched without a keystroke. A session run from another app
+    (`_in_other_app`) is watched there, so it plays."""
     from .. import watching
     from ..speak_priority import level_of
 
+    if _in_other_app():
+        return False
     if watching.is_open(session, pocketed=level_of(session) == "pocket"):
         return False
     pane = os.environ.get("TMUX_PANE")

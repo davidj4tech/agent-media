@@ -73,6 +73,14 @@ def _no_inherited_mailbox(monkeypatch):
         monkeypatch.delenv(key, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _no_inherited_app(monkeypatch):
+    """A suite run from a Paseo agent inherits PASEO_AGENT_ID, which makes
+    every reply count as watched (toast._in_other_app) and nothing hold."""
+    monkeypatch.delenv("PASEO_AGENT_ID", raising=False)
+    monkeypatch.delenv("MEDIA_TOAST_APP_ENV", raising=False)
+
+
 # Keep test transitions out of the production floor history.
 #
 # Same hazard as the fixtures in this file — real config, real side effect —

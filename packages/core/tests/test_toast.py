@@ -67,6 +67,20 @@ def test_open_in_the_app_plays(monkeypatch):
     assert toast.should_hold("s1")
 
 
+def test_a_session_run_from_another_app_plays(monkeypatch):
+    monkeypatch.setenv("TMUX_PANE", "%3")
+    _fake_tmux(monkeypatch)                           # the desk is on %1
+    assert toast.should_hold("s1")
+    monkeypatch.setenv("PASEO_AGENT_ID", "7ee969ff")  # a Paseo agent
+    assert not toast.should_hold("s1")
+    monkeypatch.setenv("MEDIA_TOAST_APP_ENV", "")     # turned off
+    assert toast.should_hold("s1")
+    monkeypatch.setenv("MEDIA_TOAST_APP_ENV", "OTHER_APP_ID, PASEO_AGENT_ID")
+    monkeypatch.delenv("PASEO_AGENT_ID")
+    monkeypatch.setenv("OTHER_APP_ID", "x")           # another app, named
+    assert not toast.should_hold("s1")
+
+
 def test_a_dead_servers_table_is_nothing_open(monkeypatch):
     import json
     from agent_media_core import watching
