@@ -10,7 +10,11 @@ had exited. This is that for the whole trail, from the app (David, 15 Oct
 
 1. **The agent's transcript.** Claude Code's `<session>.jsonl` and the
    `<session>/` folder beside it (subagents, tool results); a Codex rollout;
-   a pi session file. And the copies agent-sessions stages for fleet sync
+   a pi session file; a Gemini CLI conversation file, with what Gemini
+   itself deletes along with one (its subagents' `chats/<session>/`, and
+   `tool-outputs/session-<session>/`, `logs/session-<session>.jsonl` and
+   `<session>/` in its project folder). And the copies agent-sessions
+   stages for fleet sync
    (`~/.cache/claude-incoming`, `~/.cache/agent-sessions-incoming`), which
    are the whole transcript again. Hermes and opencode keep conversations in
    a database shared with every other one, so they cannot be sealed: 409.
@@ -114,6 +118,15 @@ def _transcript_paths(session: str) -> tuple[str, list[Path]]:
         side = path.with_suffix("")
         if harness == harnesses.CLAUDE and side.is_dir():
             out.append(side)
+        if harness == harnesses.GEMINI:
+            # What Gemini deletes with a session (deleteSessionArtifacts,
+            # 0.64): its subagents' chats, its tool outputs, its log, and a
+            # folder of its own, all in the project folder above `chats/`.
+            project = path.parent.parent
+            out += [p for p in (path.parent / session,
+                                project / "tool-outputs" / f"session-{session}",
+                                project / "logs" / f"session-{session}.jsonl",
+                                project / session) if p.exists()]
     for root in staging_roots():
         out += [p for p in root.glob(f"*/*/*/{session}.jsonl") if p.is_file()]
     return harness, out

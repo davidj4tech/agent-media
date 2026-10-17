@@ -321,8 +321,11 @@ def run(agent: str, action: str, bearer: str, profile: str = "") -> tuple[bool, 
 
 
 #: What an agent's prompt shows once it will take a slash command (pi's
-#: startup help), and how long to wait for it before typing anyway.
-READY = re.compile(r"/ commands|Select authentication|›|❯")
+#: startup help; Gemini's composer placeholder, or its sign-in already open
+#: — strings from its 0.64 bundle), and how long to wait for it before
+#: typing anyway.
+READY = re.compile(r"/ commands|Select authentication|›|❯|Type your message or"
+                   r"|How would you like to authenticate")
 READY_WAIT_S = 20.0
 
 

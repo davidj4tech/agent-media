@@ -214,7 +214,7 @@ media-share refuses to start otherwise.
 
 | Name | Shape | Notes |
 | --- | --- | --- |
-| **session** | a uuid (Claude Code, Codex, pi), or Hermes's `YYYYMMDD_HHMMSS_hex` | `reply._SESSION`. The thread id. Every session-taking route rejects anything else with 400 `"not a session id"` |
+| **session** | a uuid (Claude Code, Codex, pi, Gemini CLI), or Hermes's `YYYYMMDD_HHMMSS_hex` | `reply._SESSION`. The thread id. Every session-taking route rejects anything else with 400 `"not a session id"` |
 | **pane** | tmux `%23`, or herdr `herdr:<id>` | where a live session runs. Display and `/focus` only — never a key; panes are recycled |
 | **item** | an ABS library item id — a plain uuid on red5's server (the `li_…` in examples here is illustrative) | **ABS-specific; goes in v1** (§10). Resolved to a session through the item's folder tail and the book-tracks manifest |
 | **key** (line) | a reply's dedup key | joins a line to its pictures. `""` on listener lines |
@@ -965,6 +965,19 @@ working now is §6.2's question, not the transcript's.
 **Hermes** keeps its conversations in a SQLite database rather than a file,
 so it has no reader: its messages are still its lines reshaped (one text or
 ask part each, `id` `"line:<at>"`, `spoken` when the line was spoken).
+
+**Gemini CLI** (17 Oct 2026) writes `~/.gemini/tmp/<slug>/chats/
+session-<stamp>-<id[:8]>.jsonl`, but its lines replace one another — a
+message is written again whole each time it changes, `$rewindTo` drops a
+turn — so it has no Reader: the file is folded whole as Gemini folds it
+(`harnesses.gemini_fold`) and `GeminiBuilder` is fed what survives, the
+result kept until the file's inode, size or mtime moves. A `user` message
+is a prompt (its `<hook_context>` left out), or a tool's answer, which is no
+message; a `gemini` message is one model step — `thoughts` (subject and
+line, with their words), the words, and its `toolCalls`, each written once
+it has finished, with its status. A turn's steps are one message until the
+next prompt. Tool names are canonicalised as above (`run_shell_command` →
+`Bash`, `read_file` → `Read`, `replace` → `Edit`, …).
 
 **Cost** (measured on red5, 22 Sep 2026, the 8 largest transcripts, 7.5–
 11.1 MB, page cache warm): a first read, from the end, 40–210 ms; the
@@ -1782,6 +1795,17 @@ Getting an agent onto the host and signed in, from the phone.
 | `GET /harnesses/updates[?refresh=1]` (23 Sep 2026) | – | `{"ok", "updates": [{"name", "installed", "latest", "behind": bool\|null, "line", "checked_at"}]}` |
 
 Only windows `/harnesses/run` opened can be read or typed into.
+
+**Gemini CLI** (17 Oct 2026) is the sixth row. Install and update are
+`npm install -g @google/gemini-cli[@latest]`. Its sign-in is `gemini`
+itself, run as `env NO_BROWSER=true gemini --skip-trust` with `/auth` typed
+in once its prompt is up: Google's sign-in then prints a URL and asks for
+the code that page shows, so it works from the phone. `auth` is read from
+its files, nothing run: `in` for `GEMINI_API_KEY` (the environment,
+`~/.gemini/.env` or `~/.env`; `account` says which) or an
+`oauth_creds.json` with a refresh token (`account` the active one in
+`google_accounts.json`); `unknown` for Vertex AI and a cloud machine's own
+credentials; `out` otherwise. No `logout`.
 
 **Harness profiles — more than one login per agent (27 Sep 2026).** A
 profile is a harness plus the directory its sign-in, settings and sessions
@@ -2618,14 +2642,14 @@ machines are. Code: `agent_media_server/dashboard.py`. Pinned by
   finished — and `text` its last words as plain words on one line (240
   chars): markers out, Markdown read as speech reads it (a table as
   "Option: Keep, Cost: 0.", links and code as their words). The server keeps no read state: the app shows the ones newer
-  than when that device last had the thread open. Claude Code, Codex and pi
-  from the transcript; opencode from its database (`at` its newest part's
+  than when that device last had the thread open. Claude Code, Codex, pi
+  and Gemini CLI from the transcript (Gemini's folded whole); opencode from its database (`at` its newest part's
   change); Hermes, which has no reader here, from its newest spoken line
   (alerts left out; one scan of the last 600 speech rows, kept 15 s) — so
   a Hermes reply that was never spoken is not listed.
 - `project`, `cwd` (22 Sep 2026) on every `recent`, `working`, `replies` and
   `needs_you` row: as on `/targets` (§6.1), `null` when unknown.
-- `places`: `/targets.places`. `agents`: every harness (five since opencode, 24 Sep 2026), `present` =
+- `places`: `/targets.places`. `agents`: every harness (five since opencode, 24 Sep 2026; six since Gemini CLI, 17 Oct 2026), `present` =
   installed on this host (a PATH lookup only — `/harnesses` has versions and
   sign-in).
 - `signins` (27 Sep 2026): Sasonica Shell sign-ins waiting for Approve
@@ -3071,12 +3095,13 @@ own store** as well:
 | codex | `~/.codex/sessions/YYYY/MM/DD/rollout-<stamp>-<id>.jsonl` |
 | pi | `~/.pi/agent/sessions/--<cwd>--/<stamp>_<id>.jsonl` |
 | hermes | `~/.hermes/state.db` and each profile's (a table, not a file) |
+| gemini | `~/.gemini/tmp/<slug>/chats/session-<stamp>-<id[:8]>.jsonl` (`GEMINI_CLI_HOME` moves it; each file's first line read once, for the whole id) |
 
 `harnesses.stored()` (core) is that sweep, and it is **stat-only** — one
 `scandir` per directory, no transcript opened, ~4,000 conversations in
 0.06 s — so the list can be built on every poll.
 
-- **Every row carries `harness`**: `"claude" | "codex" | "pi" | "hermes"`.
+- **Every row carries `harness`**: `"claude" | "codex" | "pi" | "hermes" | "opencode" | "gemini"`.
   Live rows and shelved rows gained it too; the app shows it as a chip and
   filters by it.
 - **Store-only rows** are shaped like any other closed row, plus `source:

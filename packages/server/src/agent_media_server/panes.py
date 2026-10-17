@@ -28,6 +28,7 @@ from __future__ import annotations
 import re
 import subprocess
 import time
+from pathlib import Path
 
 HERDR = "herdr:"
 
@@ -317,7 +318,9 @@ def classify_cc(pane: str) -> "str | None":
 
 #: What each coding agent's pane reports as its command. Codex and pi hold
 #: conversations the phone can reach too (see agent_media_core.harnesses).
-AGENT_COMMANDS = ("claude", "codex", "pi", "hermes", "opencode")
+#: Gemini's pane says `node`, which is no answer: it is found by argv
+#: (`agent_by_argv`), as Hermes is.
+AGENT_COMMANDS = ("claude", "codex", "pi", "hermes", "opencode", "gemini")
 
 
 def classify(pane: str, agent: str = "claude") -> "str | None":
@@ -364,7 +367,28 @@ def classify(pane: str, agent: str = "claude") -> "str | None":
         if re.search(r"ctrl\+p commands", pane):
             return "input"
         return None
+    if agent == "gemini":
+        # Read from gemini-cli 0.64's bundle, not yet off a signed-in pane:
+        # its tool confirmation lists "Allow once" … "No, suggest changes
+        # (esc)" under a question ("Apply this change?", "Allow execution
+        # of …"); a turn shows "(esc to cancel, 3s)" by its spinner; the
+        # composer's placeholder is "Type your message or @path/to/file".
+        if re.search(r"Allow once|No, suggest changes|Apply this change\?|"
+                     r"Allow execution of|Do you want to proceed\?", pane):
+            return "approval"
+        if re.search(r"\(esc to cancel, \d", pane):
+            return "working"
+        if re.search(r"Type your message or", pane):
+            return "input"
+        return None
     return classify_cc(pane)
+
+
+def _children(pid: str) -> list[str]:
+    try:
+        return Path("/proc", pid, "task", pid, "children").read_text().split()
+    except OSError:
+        return []
 
 
 def agent_by_argv(pid: str) -> str:
@@ -372,13 +396,27 @@ def agent_by_argv(pid: str) -> str:
 
     Hermes is the case: the process is the venv's python with the `hermes`
     script as its first argument, so `pane_current_command` is `python3`.
+    Gemini is the other: node running its bundle, and usually not the
+    pane's own process but its shell's child (and that one's relaunched
+    child), so the pane's process and a couple of levels below it are
+    looked at.
     """
     if not pid:
         return ""
     from agent_media_core import harnesses
 
     argv = harnesses._argv(pid)
-    return harnesses.HERMES if harnesses._hermes_pid(argv) else ""
+    if harnesses._hermes_pid(argv):
+        return harnesses.HERMES
+    level = [pid]
+    for _ in range(3):
+        for p in level:
+            if harnesses._gemini_pid(harnesses._argv(p) if p != pid else argv):
+                return harnesses.GEMINI
+        level = [c for p in level for c in _children(p)][:16]
+        if not level:
+            break
+    return ""
 
 
 # --- which panes hold an agent ---------------------------------------------------

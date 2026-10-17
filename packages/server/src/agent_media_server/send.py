@@ -657,6 +657,13 @@ def _agent_unready(agent: str, profile: str = "") -> str:
             if state == "out" else "")
 
 
+#: Agents whose threads are listed and read, but which a new chat is not
+#: started in yet. Gemini CLI (17 Oct 2026): its fresh-session id, its
+#: composer and its trust prompt are not measured on a signed-in pane — the
+#: proposal's second phase (docs/proposals/2026-10-17-gemini-as-an-agent.md).
+NOT_STARTED_HERE = frozenset({"gemini"})
+
+
 def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
         agent: str = "", cwd: str = "", cwd_trusted: bool = False,
         model: str = "", mode: str = "", profile: str = "",
@@ -702,6 +709,8 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
     agent = (agent or os.environ.get("MEDIA_ASK_AGENT") or "claude").strip().lower()
     if agent not in panes.AGENT_COMMANDS:
         return False, {"error": f"unknown agent {agent!r}", "status": 400}
+    if agent in NOT_STARTED_HERE:
+        return False, {"error": f"a {agent} chat cannot be started from here yet", "status": 400}
     profile = (profile or "").strip()
     if profile:
         from agent_media_core import harness_profiles
