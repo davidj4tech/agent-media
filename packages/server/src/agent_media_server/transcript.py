@@ -35,9 +35,12 @@ follow-along clock.
 
 **Claude Code, Codex and pi**, each with a reader in `READERS`: a fold from
 that harness's records into the messages above, plus the two cheap tests the
-backwards scan makes on a raw line. Hermes keeps its conversations in a
-database rather than a file, so its threads are still made from their spoken
-lines (`messages_from_lines`), text only. A Builder is fed one record at a
+backwards scan makes on a raw line. **Gemini CLI** writes a file too, but
+one whose lines replace and rewind each other, so it is folded whole and
+fed the messages that survive (`GeminiBuilder`), the fold kept until the
+file changes; **opencode**'s database is read whole the same way. Hermes
+keeps its conversations in a database rather than a file, so its threads
+are still made from their spoken lines (`messages_from_lines`), text only. A Builder is fed one record at a
 time — which is also the shape a headless session's stream-json events have
 (the spike, `docs/notes/2026-09-22-headless-spike.md`: one `assistant` event
 per content block, `user` events for tool results), so the same fold serves
@@ -887,6 +890,130 @@ def _opencode_messages(session: str) -> list[dict] | None:
     return b.messages
 
 
+#: Gemini's argument names, as the summaries above spell them. Its
+#: read_file counts lines from 0; the summaries count from 1.
+_GEMINI_ARGS = {"dir_path": "path"}
+
+
+def _gemini_args(name: str, args) -> dict:
+    args = {_GEMINI_ARGS.get(k, k): v for k, v in (args or {}).items()} \
+        if isinstance(args, dict) else {}
+    if name == "read_file" and isinstance(args.get("offset"), int):
+        args["offset"] = args["offset"] + 1
+    return args
+
+
+def _gemini_result(call: dict) -> str:
+    """What a Gemini tool call answered, as text: its functionResponse's
+    `output` (or `error`), else what the terminal showed (`resultDisplay`,
+    when that is words — a diff is an object)."""
+    out = []
+    for p in call.get("result") or []:
+        r = (p.get("functionResponse") or {}).get("response") if isinstance(p, dict) else None
+        if isinstance(r, dict):
+            said = r.get("output", r.get("error"))
+            if said is not None:
+                out.append(said if isinstance(said, str) else json.dumps(said))
+    if out:
+        return "\n".join(out)
+    shown = call.get("resultDisplay")
+    return shown if isinstance(shown, str) else ""
+
+
+class GeminiBuilder(_HarnessBuilder):
+    """Gemini CLI's conversation file (`agent_media_core.harnesses.gemini_fold`).
+
+    Not fed line by line: Gemini rewrites a message whole each time it
+    changes and rewinds by id, so the file is folded first, as Gemini folds
+    it, and the builder is fed the messages that survive. A `user` message
+    is the person's prompt, or — with no words in it — a tool's answer
+    going back to the model, which is no message here. A `gemini` message
+    is one model step: its `thoughts` (a subject and a line), its words,
+    and the tool calls it made, each recorded once it has finished, with
+    its result and status. A turn's steps fold into one message until the
+    next prompt, as opencode's do. `info`, `warning` and `error` are the
+    terminal's own notices and are left out, as Gemini leaves them out of a
+    resumed history.
+    """
+
+    def feed(self, rec: dict) -> None:
+        from agent_media_core import harnesses
+
+        if not isinstance(rec, dict):
+            return
+        r = {"uuid": rec.get("id"), "timestamp": rec.get("timestamp")}
+        kind = rec.get("type")
+        if kind == "user":
+            text = harnesses.gemini_prompt(rec)
+            if text:
+                self._prompt(r, text)
+            return
+        if kind != "gemini":
+            return
+        msg = self._assistant_msg(r)
+        msg["turn"]["running"] = True
+        for t in rec.get("thoughts") or []:
+            if not isinstance(t, dict):
+                continue
+            said = "\n".join(s for s in (str(t.get("subject") or "").strip(),
+                                         str(t.get("description") or "").strip()) if s)
+            if said:
+                msg["parts"].append({"type": "reasoning", "text": _cut(said, REASONING_MAX),
+                                     "redacted": False})
+        text = harnesses.gemini_text(rec.get("content"))
+        if text:
+            msg["parts"].append({"type": "text", "text": _cut(text, TEXT_MAX)})
+        for call in rec.get("toolCalls") or []:
+            if not isinstance(call, dict):
+                continue
+            name = str(call.get("name") or "")
+            tid = str(call.get("id") or "")
+            part = _tool_part(name, _gemini_args(name, call.get("args")), tid)
+            msg["parts"].append(part)
+            self._tools[tid] = (part["name"], part)
+            status = call.get("status")
+            if status == "success":
+                self._finish_tool(tid, _gemini_result(call))
+            elif status in ("error", "cancelled"):
+                self._finish_tool(tid, _gemini_result(call) or status, error=True)
+
+
+#: `{path: ((inode, size, mtime), messages)}`: a Gemini file's fold, kept
+#: until the file changes. Bounded like the other readers' cache.
+_GEMINI_CACHE: dict[str, tuple[tuple, list[dict]]] = {}
+
+
+def _gemini_messages(path: str) -> list[dict] | None:
+    """Every message of the Gemini conversation at `path` (the cache's own
+    list: copy before changing), or None when it cannot be read. The whole
+    file is folded each time it changes — a rewind can reach back to any
+    line, so there is no reading from the end as there is for the others —
+    and not again until it does."""
+    from agent_media_core import harnesses
+
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    key = (st.st_ino, st.st_size, st.st_mtime)
+    with _LOCK:
+        got = _GEMINI_CACHE.get(path)
+    if got and got[0] == key:
+        return got[1]
+    meta, recs = harnesses.gemini_read(path)
+    if not meta and not recs:
+        return None
+    b = GeminiBuilder()
+    for rec in recs:
+        b.feed(rec)
+    b.settle()
+    with _LOCK:
+        _GEMINI_CACHE[path] = (key, b.messages)
+        while len(_GEMINI_CACHE) > _CACHE_MAX:
+            _GEMINI_CACHE.pop(next(iter(_GEMINI_CACHE)))
+    return b.messages
+
+
 def copy_messages(messages: list[dict]) -> list[dict]:
     """Copies the caller may change (the speech join does) without touching
     the cache."""
@@ -1062,6 +1189,7 @@ _LOCK = threading.Lock()
 def _reset_for_tests() -> None:
     with _LOCK:
         _CACHE.clear()
+        _GEMINI_CACHE.clear()
 
 
 def _read(path: str, full: bool, sidechain: bool = False,
@@ -1126,16 +1254,17 @@ def transcript_of(session: str) -> tuple[str, str]:
     """`(harness, path)` of a transcript this module can read, or `("", "")`.
 
     Claude Code first (its own lookup knows where a moved thread went), then
-    the stores of the harnesses with a reader here. Hermes keeps
-    conversations in a database, so it has no path and no parser: its
-    threads are still built from their spoken lines."""
+    the stores of the harnesses with a reader here — and Gemini's, which is
+    a file but read whole (`_gemini_messages`) rather than by a Reader.
+    Hermes keeps conversations in a database, so it has no path and no
+    parser: its threads are still built from their spoken lines."""
     path = transcript_path(session)
     if path:
         return "claude", path
     from agent_media_core import harnesses
 
     found = harnesses.transcript(session)
-    if not found or found[0] not in READERS:
+    if not found or (found[0] not in READERS and found[0] != harnesses.GEMINI):
         return "", ""
     return found[0], str(found[1])
 
@@ -1147,12 +1276,15 @@ def messages(session: str, *, limit: int | None = None, before: str = "") \
     which keeps conversations in a database, or nothing written yet).
 
     Claude Code, Codex and pi each have a reader (`READERS`); the harness is
-    decided by which store holds the file.
+    decided by which store holds the file. Gemini's file is folded whole
+    (`_gemini_messages`), opencode's database queried whole.
 
     `limit` keeps the newest that many; `before` (a message id) keeps only
     those before it. `more` says older ones exist beyond what was returned.
     """
     harness, path = transcript_of(session)
+    if harness == "gemini":
+        return _page(_gemini_messages(path), limit=limit, before=before)
     if not path:
         return _opencode_page(session, limit=limit, before=before)
     return messages_at(path, limit=limit, before=before, harness=harness)
@@ -1165,6 +1297,13 @@ def _opencode_page(session: str, *, limit: int | None, before: str) \
     from agent_media_core import harnesses
 
     msgs = _opencode_messages(session) if harnesses.is_opencode(session) else None
+    return _page(msgs, limit=limit, before=before)
+
+
+def _page(msgs: list[dict] | None, *, limit: int | None, before: str) \
+        -> tuple[list[dict], bool] | None:
+    """`messages`' paging over a conversation read whole: the ones before
+    `before`, the newest `limit` of those, copied."""
     if msgs is None:
         return None
     more = False
@@ -1227,7 +1366,9 @@ def messages_around(session: str, around: str, *, limit: int, most: int) \
     """`window_around` over a session's whole transcript (copies). None when
     there is no transcript this can read, or no such message."""
     harness, path = transcript_of(session)
-    if path:
+    if harness == "gemini":
+        got = _page(_gemini_messages(path), limit=None, before="")
+    elif path:
         got = _read(path, full=True, harness=harness)
     else:
         got = _opencode_page(session, limit=None, before="")
@@ -1243,7 +1384,7 @@ def messages_around(session: str, around: str, *, limit: int, most: int) \
 def file_state(session: str) -> tuple[int, int, float] | None:
     """`(inode, size, mtime)` of the session's transcript — what a watcher
     polls to know there is something new to read. Whichever harness wrote
-    it, so a Codex or pi thread streams like a Claude one. An opencode
+    it, so a Codex, pi or Gemini thread streams like a Claude one. An opencode
     session has no file: its parts are counted and their newest change
     taken, which moves exactly when a file's size and mtime would."""
     path = transcript_of(session)[1]
@@ -1278,7 +1419,15 @@ def last_reply(path: str, harness: str = "claude") -> dict | None:
     finished, not when it began); `text` its last words as one line of plain
     words (`reply_preview`). Reads only the file's end (`REPLY_TAIL`), with a
     builder of its own: Home asks this of many threads, and the thread cache
-    (`_read`) keeps the few being read."""
+    (`_read`) keeps the few being read. A Gemini file is folded whole
+    (`_gemini_messages`, kept until it changes): its end alone can name
+    messages written further up."""
+    if harness == "gemini":
+        try:
+            mtime = os.stat(path).st_mtime
+        except OSError:
+            return None
+        return _reply_in(_gemini_messages(path) or [], mtime)
     reader = READERS.get(harness) or READERS["claude"]
     b = reader.build(False)
     try:
