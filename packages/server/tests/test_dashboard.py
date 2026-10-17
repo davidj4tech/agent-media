@@ -114,7 +114,8 @@ def test_shape_while_working(server, shelf, signed_in, machine):
                              {"name": "pi", "present": True},
                              {"name": "hermes", "present": False},
                              {"name": "opencode", "present": True},
-                             {"name": "gemini", "present": True}]
+                             {"name": "gemini", "present": True},
+                             {"name": "grok", "present": True}]
     red5, hpo = obj["hosts"]
     assert keys(red5) == HOST and keys(hpo) == HOST
     assert red5["local"] is True and red5["online"] is True and red5["sessions"] == 1

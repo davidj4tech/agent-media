@@ -319,8 +319,9 @@ def classify_cc(pane: str) -> "str | None":
 #: What each coding agent's pane reports as its command. Codex and pi hold
 #: conversations the phone can reach too (see agent_media_core.harnesses).
 #: Gemini's pane says `node`, which is no answer: it is found by argv
-#: (`agent_by_argv`), as Hermes is.
-AGENT_COMMANDS = ("claude", "codex", "pi", "hermes", "opencode", "gemini")
+#: (`agent_by_argv`), as Hermes is. Grok's says `grok`, unless it was
+#: started by the download's own name (`grok-linux-x86_64`): argv again.
+AGENT_COMMANDS = ("claude", "codex", "pi", "hermes", "opencode", "gemini", "grok")
 
 
 def classify(pane: str, agent: str = "claude") -> "str | None":
@@ -381,6 +382,17 @@ def classify(pane: str, agent: str = "claude") -> "str | None":
         if re.search(r"Type your message or", pane):
             return "input"
         return None
+    if agent == "grok":
+        # From Grok 1.0.62's docs and binary, not yet off a signed-in pane:
+        # its permission prompt's rows are "Allow once", "Always allow …" and
+        # "Reject once"; Esc during a turn shows "Press Ctrl+c to cancel the
+        # turn". What its composer and a running turn show otherwise is not
+        # known, so nothing yet says "input".
+        if re.search(r"Allow once|Reject once", pane):
+            return "approval"
+        if re.search(r"Ctrl\+c to cancel the turn", pane):
+            return "working"
+        return None
     return classify_cc(pane)
 
 
@@ -399,7 +411,8 @@ def agent_by_argv(pid: str) -> str:
     Gemini is the other: node running its bundle, and usually not the
     pane's own process but its shell's child (and that one's relaunched
     child), so the pane's process and a couple of levels below it are
-    looked at.
+    looked at — for Grok too, which goes by its download's name when it was
+    started by that.
     """
     if not pid:
         return ""
@@ -411,8 +424,11 @@ def agent_by_argv(pid: str) -> str:
     level = [pid]
     for _ in range(3):
         for p in level:
-            if harnesses._gemini_pid(harnesses._argv(p) if p != pid else argv):
+            got = harnesses._argv(p) if p != pid else argv
+            if harnesses._gemini_pid(got):
                 return harnesses.GEMINI
+            if harnesses._grok_pid(got):
+                return harnesses.GROK
         level = [c for p in level for c in _children(p)][:16]
         if not level:
             break

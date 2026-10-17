@@ -13,7 +13,9 @@ had exited. This is that for the whole trail, from the app (David, 15 Oct
    a pi session file; a Gemini CLI conversation file, with what Gemini
    itself deletes along with one (its subagents' `chats/<session>/`, and
    `tool-outputs/session-<session>/`, `logs/session-<session>.jsonl` and
-   `<session>/` in its project folder). And the copies agent-sessions
+   `<session>/` in its project folder); a Grok session's folder and its
+   subagents' (its shared search index keeps a title and the prompts). And
+   the copies agent-sessions
    stages for fleet sync
    (`~/.cache/claude-incoming`, `~/.cache/agent-sessions-incoming`), which
    are the whole transcript again. Hermes and opencode keep conversations in
@@ -127,6 +129,15 @@ def _transcript_paths(session: str) -> tuple[str, list[Path]]:
                                 project / "tool-outputs" / f"session-{session}",
                                 project / "logs" / f"session-{session}.jsonl",
                                 project / session) if p.exists()]
+        if harness == harnesses.GROK:
+            # Grok's conversation is its whole folder (the log, its summary,
+            # chat history, prompt, plan, compaction checkpoints), and its
+            # subagents' sessions are folders of their own beside it. Its
+            # search index (`sessions/session_search.sqlite`) is shared by
+            # every session and keeps its titles and prompts: not sealed.
+            folder = path.parent
+            out = [folder, *(p for c in harnesses._grok_children(str(folder))
+                             for p in folder.parent.parent.glob(f"*/{c}") if p.is_dir())]
     for root in staging_roots():
         out += [p for p in root.glob(f"*/*/*/{session}.jsonl") if p.is_file()]
     return harness, out

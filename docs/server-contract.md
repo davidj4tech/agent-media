@@ -214,7 +214,7 @@ media-share refuses to start otherwise.
 
 | Name | Shape | Notes |
 | --- | --- | --- |
-| **session** | a uuid (Claude Code, Codex, pi, Gemini CLI), or Hermes's `YYYYMMDD_HHMMSS_hex` | `reply._SESSION`. The thread id. Every session-taking route rejects anything else with 400 `"not a session id"` |
+| **session** | a uuid (Claude Code, Codex, pi, Gemini CLI, Grok), or Hermes's `YYYYMMDD_HHMMSS_hex` | `reply._SESSION`. The thread id. Every session-taking route rejects anything else with 400 `"not a session id"` |
 | **pane** | tmux `%23`, or herdr `herdr:<id>` | where a live session runs. Display and `/focus` only — never a key; panes are recycled |
 | **item** | an ABS library item id — a plain uuid on red5's server (the `li_…` in examples here is illustrative) | **ABS-specific; goes in v1** (§10). Resolved to a session through the item's folder tail and the book-tracks manifest |
 | **key** (line) | a reply's dedup key | joins a line to its pictures. `""` on listener lines |
@@ -978,6 +978,25 @@ line, with their words), the words, and its `toolCalls`, each written once
 it has finished, with its status. A turn's steps are one message until the
 next prompt. Tool names are canonicalised as above (`run_shell_command` →
 `Bash`, `read_file` → `Read`, `replace` → `Edit`, …).
+
+**Grok** (17 Oct 2026) keeps a folder per conversation,
+`~/.grok/sessions/<cwd, url-encoded>/<id>/` (`GROK_HOME` moves it), and its
+log there, `updates.jsonl`, is ACP `session/update` events: words in
+chunks (`user_message_chunk`, `agent_message_chunk`, `agent_thought_chunk`)
+and tool calls (`tool_call`) brought up to date by later lines
+(`tool_call_update`). So it has no Reader either: the log is folded whole
+(`harnesses.grok_fold` — chunks in a row joined, a new `messageId` a new
+message) and `GrokBuilder` is fed the result, kept until the file moves,
+as Gemini's is. A user message is a prompt (Grok's `<system-reminder>`s
+and `<user_query>` wrapper left out); everything after it until the next
+prompt is one assistant message — thoughts, words, and tool calls with
+their status (`completed`, `failed`; `pending` and `in_progress` running).
+Tool names are canonicalised as above (`run_terminal_command` → `Bash`,
+`search_replace` → `Edit`, `write` → `Write`, `list_dir` → `LS`, …). The
+shapes are from Grok 1.0.62's docs, not yet read off a real session: how a
+line wraps its update is not known (all three plausible wrappings are
+taken), and xAI's rewind marker is not understood yet, so a rewound turn
+still reads as said.
 
 **Cost** (measured on red5, 22 Sep 2026, the 8 largest transcripts, 7.5–
 11.1 MB, page cache warm): a first read, from the end, 40–210 ms; the
@@ -1806,6 +1825,17 @@ its files, nothing run: `in` for `GEMINI_API_KEY` (the environment,
 `oauth_creds.json` with a refresh token (`account` the active one in
 `google_accounts.json`); `unknown` for Vertex AI and a cloud machine's own
 credentials; `out` otherwise. No `logout`.
+
+**Grok** (17 Oct 2026) is the seventh row. Install is xAI's script, run as
+`sh -c "curl -fsSL https://x.ai/cli/install.sh | bash"` (a static binary
+under `~/.grok`, linked as `~/.local/bin/grok`); update is `grok update`.
+Its own `grok update --check --json` answers `behind` and the `line`
+(`{currentVersion, latestVersion, updateAvailable}`), as Hermes's check
+does — it is not on npm, so `latest` is empty. Sign-in is `grok login
+--device-auth`, a URL and a code to type there, so it works from the
+phone; `logout` is `grok logout`. `auth` is read from `~/.grok/auth.json`,
+nothing run: `in` for an entry with a key or a refresh token (`account` its
+email), or `XAI_API_KEY` in the environment; `out` otherwise.
 
 **Harness profiles — more than one login per agent (27 Sep 2026).** A
 profile is a harness plus the directory its sign-in, settings and sessions
@@ -2643,13 +2673,13 @@ machines are. Code: `agent_media_server/dashboard.py`. Pinned by
   chars): markers out, Markdown read as speech reads it (a table as
   "Option: Keep, Cost: 0.", links and code as their words). The server keeps no read state: the app shows the ones newer
   than when that device last had the thread open. Claude Code, Codex, pi
-  and Gemini CLI from the transcript (Gemini's folded whole); opencode from its database (`at` its newest part's
+  Gemini CLI and Grok from the transcript (Gemini's and Grok's folded whole); opencode from its database (`at` its newest part's
   change); Hermes, which has no reader here, from its newest spoken line
   (alerts left out; one scan of the last 600 speech rows, kept 15 s) — so
   a Hermes reply that was never spoken is not listed.
 - `project`, `cwd` (22 Sep 2026) on every `recent`, `working`, `replies` and
   `needs_you` row: as on `/targets` (§6.1), `null` when unknown.
-- `places`: `/targets.places`. `agents`: every harness (five since opencode, 24 Sep 2026; six since Gemini CLI, 17 Oct 2026), `present` =
+- `places`: `/targets.places`. `agents`: every harness (five since opencode, 24 Sep 2026; six since Gemini CLI and seven since Grok, 17 Oct 2026), `present` =
   installed on this host (a PATH lookup only — `/harnesses` has versions and
   sign-in).
 - `signins` (27 Sep 2026): Sasonica Shell sign-ins waiting for Approve
@@ -3096,12 +3126,13 @@ own store** as well:
 | pi | `~/.pi/agent/sessions/--<cwd>--/<stamp>_<id>.jsonl` |
 | hermes | `~/.hermes/state.db` and each profile's (a table, not a file) |
 | gemini | `~/.gemini/tmp/<slug>/chats/session-<stamp>-<id[:8]>.jsonl` (`GEMINI_CLI_HOME` moves it; each file's first line read once, for the whole id) |
+| grok | `~/.grok/sessions/<cwd, url-encoded>/<id>/updates.jsonl` (`GROK_HOME` moves it; a subagent's session folder, named in its parent's `subagents/`, left out) |
 
 `harnesses.stored()` (core) is that sweep, and it is **stat-only** — one
 `scandir` per directory, no transcript opened, ~4,000 conversations in
 0.06 s — so the list can be built on every poll.
 
-- **Every row carries `harness`**: `"claude" | "codex" | "pi" | "hermes" | "opencode" | "gemini"`.
+- **Every row carries `harness`**: `"claude" | "codex" | "pi" | "hermes" | "opencode" | "gemini" | "grok"`.
   Live rows and shelved rows gained it too; the app shows it as a chip and
   filters by it.
 - **Store-only rows** are shaped like any other closed row, plus `source:

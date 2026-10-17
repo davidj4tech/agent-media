@@ -264,7 +264,7 @@ def transcript_cwd(session: str) -> str:
         pane = live_sessions().get(session, "")
         return panes.cwd(pane) if pane else ""
     if harnesses.harness_of(session) in (harnesses.CODEX, harnesses.PI, harnesses.OPENCODE,
-                                         harnesses.GEMINI):
+                                         harnesses.GEMINI, harnesses.GROK):
         return harnesses.cwd_of(session)
     for f in _claude_files(session):
         try:

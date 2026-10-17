@@ -661,7 +661,10 @@ def _agent_unready(agent: str, profile: str = "") -> str:
 #: started in yet. Gemini CLI (17 Oct 2026): its fresh-session id, its
 #: composer and its trust prompt are not measured on a signed-in pane — the
 #: proposal's second phase (docs/proposals/2026-10-17-gemini-as-an-agent.md).
-NOT_STARTED_HERE = frozenset({"gemini"})
+#: Grok (17 Oct 2026) likewise: its `--session-id` start, its composer and
+#: its folder-trust prompt are its proposal's later phase
+#: (docs/proposals/2026-10-17-grok-as-an-agent.md).
+NOT_STARTED_HERE = frozenset({"gemini", "grok"})
 
 
 def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
