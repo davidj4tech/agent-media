@@ -12,11 +12,13 @@ reading backwards from the end, which is one chunk on any live session (it
 writes one every turn). After a /compact the next reply's count is the
 smaller context, so nothing special is done for it.
 
-The transcript does not say how big the window is. Claude Code's status
-line is given it (`context_window.context_window_size`), and the status line
-in agent-config writes it to `<state_dir>/context-window/<session>.json` as
-`{"size": N}`; a session that never drew one (a headless one) is taken to
-have the usual 200k, or 1M once it is past 200k.
+The transcript does not say how big the window is. It is worked out the
+way the context hook does it (`agent_media_core.intake.context.window`):
+what `media-statusline` saved for the session from Claude Code's own count,
+else by the reply's model (Opus 5.5 has 1M), else 200k, or 1M once past
+200k. Before 18 Oct 2026 this read a file only agent-config's old status line
+wrote, so Opus 5.5 sessions near 200k showed as nearly full (David: "quite a
+few contexts … come up over 80% full without any action").
 
 Read-only: this never writes to a transcript.
 """
@@ -35,12 +37,10 @@ _CHUNK = 256 * 1024
 #: Give up after this much of the end without a usage line: a transcript
 #: whose last reply is further back than this is not worth a full read.
 _REACH = 4 * 1024 * 1024
-_WINDOW = 200_000
-_WINDOW_LONG = 1_000_000
 _CACHE_MAX = 512
 
-#: path → ((inode, size, mtime), answer)
-_CACHE: dict[str, tuple[tuple, int | None]] = {}
+#: path → ((inode, size, mtime), (used, model) or None)
+_CACHE: dict[str, tuple[tuple, tuple[int, str] | None]] = {}
 _LOCK = threading.Lock()
 
 
@@ -49,8 +49,9 @@ def _reset_for_tests() -> None:
         _CACHE.clear()
 
 
-def _used(raw: bytes) -> int | None:
-    """The input tokens of one transcript line, or None if it has none."""
+def _used(raw: bytes) -> tuple[int, str] | None:
+    """The input tokens of one transcript line and the model that answered,
+    or None if it has none."""
     try:
         rec = json.loads(raw)
     except ValueError:
@@ -64,10 +65,10 @@ def _used(raw: bytes) -> int | None:
     n = sum(int(usage.get(k) or 0) for k in
             ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
     # A synthetic line (an error, an interrupt) reports nothing sent.
-    return n or None
+    return (n, str(msg.get("model") or "")) if n else None
 
 
-def _last_used(path: str, size: int) -> int | None:
+def _last_used(path: str, size: int) -> tuple[int, str] | None:
     """The newest usage in the file, reading backwards from `size`."""
     with open(path, "rb") as fh:
         carry = b""
@@ -102,17 +103,10 @@ def _last_used(path: str, size: int) -> int | None:
     return None
 
 
-def _window(session: str, used: int) -> int:
-    from agent_media_core._paths import state_dir
+def _window(session: str, used: int, model: str) -> int:
+    from agent_media_core.intake import context as hook
 
-    try:
-        with open(state_dir() / "context-window" / f"{session}.json") as fh:
-            size = int(json.load(fh).get("size") or 0)
-        if size > 0:
-            return size
-    except (OSError, ValueError, TypeError, AttributeError):
-        pass
-    return _WINDOW_LONG if used > _WINDOW else _WINDOW
+    return hook.window(model, used, hook.state_dir() / f"{session}.window")
 
 
 def context_for(session: str) -> dict | None:
@@ -129,17 +123,18 @@ def context_for(session: str) -> dict | None:
     with _LOCK:
         hit = _CACHE.get(path)
     if hit and hit[0] == key:
-        used = hit[1]
+        got = hit[1]
     else:
         try:
-            used = _last_used(path, st.st_size)
+            got = _last_used(path, st.st_size)
         except OSError:
             return None
         with _LOCK:
             _CACHE.pop(path, None)
-            _CACHE[path] = (key, used)
+            _CACHE[path] = (key, got)
             while len(_CACHE) > _CACHE_MAX:
                 _CACHE.pop(next(iter(_CACHE)))
-    if not used:
+    if not got:
         return None
-    return {"used": used, "window": _window(session, used)}
+    used, model = got
+    return {"used": used, "window": _window(session, used, model)}

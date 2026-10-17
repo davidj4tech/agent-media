@@ -16,10 +16,11 @@ from test_contract import (AUTH, SID, call, server, shelf,  # noqa: F401
 from test_recaps import _append, _msg, _transcript
 
 
-def _reply(i: int, inp: int, created: int, read: int, sidechain: bool = False) -> str:
+def _reply(i: int, inp: int, created: int, read: int, sidechain: bool = False,
+           model: str = "claude-sonnet-5-5") -> str:
     return json.dumps({"type": "assistant", "uuid": f"r{i}", "isSidechain": sidechain,
                        "timestamp": "2026-10-07T01:00:00Z",
-                       "message": {"role": "assistant", "model": "claude-opus-5-5",
+                       "message": {"role": "assistant", "model": model,
                                    "content": [{"type": "text", "text": "hi"}],
                                    "usage": {"input_tokens": inp,
                                              "cache_creation_input_tokens": created,
@@ -59,11 +60,18 @@ def test_no_reply_yet_is_none():
 def test_the_window_is_the_status_lines_or_a_guess():
     _transcript(SID, [_reply(1, 0, 0, 250_000)])
     assert context.context_for(SID)["window"] == 1_000_000
-    d = os.path.join(os.environ["XDG_STATE_HOME"], "agent-media", "context-window")
-    os.makedirs(d)
-    with open(os.path.join(d, f"{SID}.json"), "w") as fh:
-        fh.write('{"size": 500000}')
+    # Where media-statusline saves Claude Code's own count.
+    d = os.path.join(os.environ["XDG_STATE_HOME"], "agent-media", "context")
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, f"{SID}.window"), "w") as fh:
+        fh.write('{"size": 500000, "used_percentage": 50}')
     assert context.context_for(SID) == {"used": 250_000, "window": 500_000}
+
+
+def test_an_opus_5_5_session_under_200k_has_the_1m_window():
+    # Headless, no status line: 190k of Opus 5.5's 1M is 19%, not 95% of 200k.
+    _transcript(SID, [_reply(1, 0, 0, 190_000, model="claude-opus-5-5")])
+    assert context.context_for(SID) == {"used": 190_000, "window": 1_000_000}
 
 
 def test_the_log_carries_it(server, shelf, signed_in, monkeypatch):

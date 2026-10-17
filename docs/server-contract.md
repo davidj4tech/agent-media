@@ -613,9 +613,10 @@ newest page, as without it. Other harnesses' threads find their line ids
   session). `used` is the newest reply's input (`input_tokens` +
   `cache_creation_input_tokens` + `cache_read_input_tokens`), so it is as
   of the last reply and drops after a /compact. `window` is what Claude
-  Code's status line last reported for the session
-  (`<state_dir>/context-window/<session>.json`), else 200 000, or 1 000 000
-  once `used` is past 200 000.
+  Code's status line last reported for the session (`media-statusline`,
+  saved as `<state>/agent-media/context/<session>.window`), else by the
+  reply's model (Opus 5.5: 1 000 000), else 200 000, or 1 000 000 once
+  `used` is past 200 000.
 
 **A line**
 
