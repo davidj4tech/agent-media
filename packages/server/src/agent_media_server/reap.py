@@ -197,6 +197,10 @@ def last_message_at(session: str) -> float | None:
     if not found:
         return None
     harness, path = found
+    if harness == h.GEMINI:
+        # Its lines rewrite and rewind each other: the fold says what is left.
+        said = [m for m in h.gemini_read(path)[1] if m.get("type") in ("user", "gemini")]
+        return _epoch(said[-1].get("timestamp")) if said else None
     try:
         for raw in _lines_backwards(path):
             try:
@@ -260,6 +264,15 @@ def tail_text(session: str, limit: int = 6000) -> str:
         pairs = []
 
         def gen():
+            if harness == h.GEMINI:
+                # Its lines rewrite and rewind each other: read the fold,
+                # newest first, as the others are read backwards.
+                for m in reversed(h.gemini_read(path)[1]):
+                    if m.get("type") == "user":
+                        yield "Person", " ".join(h.gemini_prompt(m).split())
+                    elif m.get("type") == "gemini":
+                        yield "Assistant", " ".join(h.gemini_text(m.get("content")).split())
+                return
             for raw in _lines_backwards(path):
                 try:
                     rec = json.loads(raw)

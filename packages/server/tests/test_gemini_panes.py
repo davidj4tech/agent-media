@@ -63,6 +63,17 @@ def test_its_pane_is_found_by_argv(monkeypatch):
     assert panes.agent_by_argv("20") == ""
 
 
+def test_the_reaper_reads_the_fold(chat):
+    """Its last message and the recap's text, from what the rewind left."""
+    from agent_media_server import reap
+
+    assert reap.last_message_at(SID) == reap._epoch("2026-10-17T00:02:05.000Z")
+    text = reap.tail_text(SID)
+    assert text.splitlines()[-2:] == ["Person: Run only the fast tests",
+                                      "Assistant: Done: **12 passed**."]
+    assert "run all the tests" not in text
+
+
 def test_a_new_chat_is_not_started_in_it_yet():
     """Phase 2 of the proposal: /ask refuses it until its fresh session and
     composer are measured."""
