@@ -1524,6 +1524,27 @@ def _row_statusline(args, *, check_only: bool):
     return "installed", str(path)
 
 
+def gemini_settings_path() -> Path:
+    return Path.home() / ".gemini" / "settings.json"
+
+
+def _row_gemini(args, *, check_only: bool):
+    """Gemini CLI's BeforeAgent hook: the same context warnings. Gemini
+    reads its own settings file, and counts a hook's timeout in ms."""
+    if shutil.which("gemini") is None:
+        return "absent", "gemini is not installed here"
+    path = gemini_settings_path()
+    if check_only:
+        return ("ok" if _hook_installed(path, CONTEXT_HOOK_COMMAND)
+                else "missing"), str(path)
+    merged, changed = _merge_hook_entry(
+        _load_json(path), "BeforeAgent", hook_command(CONTEXT_HOOK_COMMAND),
+        CONTEXT_HOOK_COMMAND, 5000, False)
+    if changed:
+        _write_settings(path, merged, dry_run=args.dry_run)
+    return ("installed" if changed else "ok"), str(path)
+
+
 def _hook_row(hook, tool: str):
     """A row that registers `hook` when `tool` is on this machine."""
     event, command, match, timeout, async_ = hook
@@ -1663,6 +1684,8 @@ PROFILE_ROWS = (
      "extra", _row_opencode),
     ("pi", "pi's replies spoken and its turns recorded (its extension)",
      "extra", _row_pi),
+    ("gemini", "Gemini CLI told how full its context is (a BeforeAgent hook)",
+     "extra", _row_gemini),
 )
 
 

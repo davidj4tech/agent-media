@@ -68,3 +68,46 @@ def test_nonsense_in_prints_nothing(monkeypatch, capsys):
     context.main()
     context.main_statusline()
     assert capsys.readouterr().out == ""
+
+
+def test_a_harness_that_knows_both_numbers_gives_them(tmp_path, monkeypatch, capsys):
+    """pi's extension: its own count and window, no transcript."""
+    _env(tmp_path, monkeypatch)
+    out = _run(context.main, monkeypatch, capsys, {
+        "session_id": "pi-x", "context_tokens": 230_000, "context_window": 272_000})
+    assert "85% full (230k of 272k)" in out
+
+
+def test_codex_gives_its_own_window(tmp_path, monkeypatch, capsys):
+    _env(tmp_path, monkeypatch)
+    t = tmp_path / "rollout.jsonl"
+    t.write_text("\n".join(json.dumps(r) for r in (
+        {"type": "event_msg", "payload": {"type": "token_count", "info": {
+            "last_token_usage": {"input_tokens": 190_000, "total_tokens": 191_000},
+            "model_context_window": 258_400}}},
+        {"type": "event_msg", "payload": {"type": "token_count", "info": None}},
+    )) + "\n")
+    note = context.note_for({"transcript_path": str(t), "session_id": "cx",
+                             "hook_event_name": "UserPromptSubmit"})
+    out = json.loads(note)["hookSpecificOutput"]
+    assert out["hookEventName"] == "UserPromptSubmit"
+    assert "74% full (191k of 258k)" in out["additionalContext"]
+
+
+def test_gemini_is_counted_to_where_it_compresses(tmp_path, monkeypatch, capsys):
+    """Gemini compresses at half its window by default: 400k of 1M is 76%
+    of the way there, and the note is JSON, since its plain stdout goes to
+    the person, not the model."""
+    _env(tmp_path, monkeypatch)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    t = tmp_path / "session.jsonl"
+    t.write_text("\n".join(json.dumps(r) for r in (
+        {"sessionId": "g", "startTime": "x"},
+        {"type": "user", "content": "hi"},
+        {"type": "gemini", "model": "gemini-2.5-pro",
+         "tokens": {"input": 400_000, "output": 10, "total": 400_010}},
+    )) + "\n")
+    out = _run(context.main, monkeypatch, capsys, {
+        "transcript_path": str(t), "session_id": "g", "hook_event_name": "BeforeAgent"})
+    ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+    assert "76% full (400k of 524k)" in ctx

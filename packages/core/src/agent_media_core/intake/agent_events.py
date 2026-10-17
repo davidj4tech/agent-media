@@ -50,6 +50,14 @@ def handle(payload: dict, harness: str) -> int:
         if event == "UserPromptSubmit":
             from .hook_claude_code import _handle_user_prompt
 
+            if harness == "codex":
+                # How full the context is: printed here, by the hook Codex
+                # already trusts (intake/context.py).
+                from .context import note_for
+
+                note = note_for(payload)
+                if note:
+                    print(note)
             return _handle_user_prompt(payload)
     except Exception as e:  # noqa: BLE001
         log.warning("%s hook: %s failed: %s", harness, event, e)

@@ -14,12 +14,16 @@
  *   tool_call     → PreToolUse: a step in the phone's list
  *   agent_end     → Stop
  *
+ * And before each run it asks `media-hook-context` whether the context is
+ * full enough to say so (50/70/85% of pi's own count, ctx.getContextUsage()),
+ * and passes any note it prints to the model as a hidden message.
+ *
  * Install once:
  *   pi install /home/ryer/projects/agent-media/packages/core/pi
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { spawn } from "child_process";
+import { execFileSync, spawn } from "child_process";
 import { existsSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
@@ -45,6 +49,25 @@ function run(args: string[], input: string): void {
 		child.unref();
 	} catch {
 		// Non-fatal: agent-media is best-effort.
+	}
+}
+
+// How full the context is, as a note for the model, or "" (intake/context.py).
+function contextNote(session_id: string, usage: any): string {
+	if (!usage || usage.tokens == null || !usage.contextWindow) return "";
+	const bin = join(homedir(), "projects", "agent-media", ".venv", "bin", "media-hook-context");
+	try {
+		return execFileSync(existsSync(bin) ? bin : "media-hook-context", [], {
+			input: JSON.stringify({
+				session_id: `pi-${session_id}`,
+				context_tokens: usage.tokens,
+				context_window: usage.contextWindow,
+			}),
+			timeout: 5000,
+			stdio: ["pipe", "pipe", "ignore"],
+		}).toString().trim();
+	} catch {
+		return "";
 	}
 }
 
@@ -76,6 +99,13 @@ export default function (pi: ExtensionAPI) {
 		if (e?.source === "extension") return;
 		const text = typeof e?.text === "string" ? e.text : "";
 		if (text.trim()) event("UserPromptSubmit", ctx, { prompt: text });
+	});
+
+	pi.on("before_agent_start", async (_e, ctx) => {
+		const session_id = sessionId(ctx);
+		const note = session_id ? contextNote(session_id, ctx.getContextUsage?.()) : "";
+		if (!note) return;
+		return { message: { customType: "agent-media-context", content: note, display: false } };
 	});
 
 	pi.on("tool_call", async (e: any, ctx) => {

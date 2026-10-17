@@ -878,3 +878,17 @@ def test_the_status_line_is_ours_unless_one_is_already_set(tmp_path, monkeypatch
     data = json.loads((tmp_path / "settings.json").read_text())
     assert data["statusLine"]["command"] == "my-line"
     assert "a status line of your own" in capsys.readouterr().out
+
+
+def test_gemini_gets_the_context_hook_in_its_own_settings(tmp_path, monkeypatch):
+    _only_hook_rows(monkeypatch)
+    monkeypatch.setattr(setup.shutil, "which", lambda name: f"/usr/bin/{name}")
+    gemini = tmp_path / "gemini.json"
+    gemini.write_text(json.dumps({"hooks": {"BeforeTool": [{"hooks": [
+        {"type": "command", "command": "rtk"}]}]}}))
+    monkeypatch.setattr(setup, "gemini_settings_path", lambda: gemini)
+    assert setup.cmd_profile(_profile_args(tmp_path, only="gemini")) == 0
+    data = json.loads(gemini.read_text())
+    entry = data["hooks"]["BeforeAgent"][0]["hooks"][0]
+    assert setup.CONTEXT_HOOK_COMMAND in entry["command"] and entry["timeout"] == 5000
+    assert data["hooks"]["BeforeTool"][0]["hooks"][0]["command"] == "rtk"
