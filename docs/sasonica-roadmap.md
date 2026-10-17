@@ -1185,6 +1185,20 @@ ahead.
      aimed at the sentence follow-along is on; margin notes gathered while
      reading and applied in one pass.
 
+25. **Gemini CLI as an agent** (David, 17 Oct 2026: "let's add Gemini to
+    sasonica settings" — then "Full agent"). Plan in
+    `docs/proposals/2026-10-17-gemini-as-an-agent.md`: phase 1 Settings row,
+    speech and threads; 2 start from the phone and resume; 3 headless over
+    `gemini --acp`; 4 model picker, API key, profiles. Installed on red5
+    (0.64.0), not signed in; its context hook is in (`e53eae2`). Sign-in from
+    the phone is the open question (`NO_BROWSER=true` gives a code to paste).
+26. **Simon Willison's `llm` as a light agent** (David, 17 Oct 2026,
+    considering). A "just ask" agent, not a coding one: its SQLite log
+    (conversations, responses, model, tokens) gives threads for free, and a
+    phone turn is one `llm -c --cid …` command — no pane, no sign-in. No
+    hooks, so speech comes from the server reading the reply. `llm` 0.36 is
+    on red5 with no plugins. After Gemini.
+
 ## Loose ends
 
 - **A reply with a figure had no follow-along at all** (David, 23 Sep 2026)
