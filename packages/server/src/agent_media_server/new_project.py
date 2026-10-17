@@ -110,7 +110,7 @@ def _write_agents_md(path: Path, name: str, text: str, draft: bool = False) -> N
 def create(name: str, repo: str = "", agents_md: bool | str = False,
            agents_text: str = "", root_dir: str = "") -> tuple[bool, dict]:
     """Make `<root_dir>/<name>` (`root_dir` a listed project root, else
-    `root()`): a clone of `repo`, or a `git init`, with a starter
+    `root()`; one that is not an existing folder → 409, not made): a clone of `repo`, or a `git init`, with a starter
     AGENTS.md when `agents_md` — or, when it is "draft", only CLAUDE.md → it,
     for the first chat to write (DRAFT_PROMPT). `(True, {"cwd"})`, or a
     refusal with its status."""
@@ -126,10 +126,9 @@ def create(name: str, repo: str = "", agents_md: bool | str = False,
     path = base / name
     if path.exists() or path.is_symlink():
         return False, {"error": f"{name!r} already exists", "status": 409, "cwd": str(path)}
-    try:
-        base.mkdir(parents=True, exist_ok=True)
-    except OSError as e:
-        return False, {"error": f"could not make {base}: {e}", "status": 500}
+    # A root is never made here: one that has gone stays gone (project_roots.py).
+    if not base.is_dir():
+        return False, {"error": "that folder is gone", "status": 409, "root": str(base)}
     if repo:
         ok, why = _git("clone", "--quiet", "--", repo, str(path), timeout=CLONE_TIMEOUT)
         if not ok:

@@ -694,7 +694,7 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
     `repo`, else `git init`; AGENTS.md when `agents_md`, a `preset`'s text if
     named) and opens the chat in it: a name, not a path, under `root` — one
     of the listed project roots (project_roots.py; unlisted → 400, none →
-    the first) — so the phone still chooses no directory of its own. `agents_md: "draft"` has the chat write AGENTS.md
+    the first, its folder gone → 409) — so the phone still chooses no directory of its own. `agents_md: "draft"` has the chat write AGENTS.md
     itself: its first message is new_project.DRAFT_PROMPT, then `text`
     (which may then be empty). `worktree` (`{"from": <a place>, "branch"}`) cuts a
     new worktree of a place and opens the chat there (contract §6.24).
@@ -764,10 +764,9 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
 
             if preset and not presets.get(preset):
                 return False, {"error": f"no preset {preset!r}", "status": 404}
-            base = project_roots.find(root) if root else project_roots.load()[0]
+            base, why = project_roots.chosen(root)
             if not base:
-                return False, {"error": f"{root!r} is not one of the project folders",
-                               "status": 400}
+                return False, why
             made, made_detail = projects_new.create(
                 new_project, repo=repo, agents_md=agents_md,
                 agents_text=presets.agents_md_of(preset), root_dir=base)

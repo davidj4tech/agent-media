@@ -1182,7 +1182,7 @@ Request:
 | `project` | open a fresh session in that project's directory: a series (`p-agent-media`) on David's desk, a folder basename (`agent-media`) in the default layout (§18) |
 | `cwd` | open a fresh session in that directory — must be a `/targets` place |
 | `new_project` | a name (15 Oct 2026, §6.24): make a project folder and open the fresh session in it — implies `target: "new"`. With `repo`, `agents_md`, `preset`, `root` |
-| `root` | with `new_project` (18 Oct 2026, §6.24): which project root it goes in — one of `GET /projects/roots`, else 400; default the first |
+| `root` | with `new_project` (18 Oct 2026, §6.24): which project root it goes in — one of `GET /projects/roots`, else 400; default the first; its folder gone (`missing`) → 409 |
 | `repo` | with `new_project`: clone this git URL instead of `git init` (§6.24) |
 | `agents_md` | with `new_project`: `true` writes a starter `AGENTS.md` and `CLAUDE.md` → it; `"draft"` has the first chat write it (§6.24) |
 | `preset` | a preset's name (§6.24): its AGENTS.md text for `agents_md`. The app sends the preset's agent, profile, model and plan itself |
@@ -3636,8 +3636,19 @@ Answered on their own route and on `GET /presets` as `project_roots`, so
 the new-chat sheet has them without a second call. `label` is the path with
 the home folder as `~`.
 
+A root whose folder has gone (18 Oct 2026) stays listed with
+`"missing": true` — checked at each request (exists and is a directory), so
+it is `false` again once the folder is back. A new project in it — named as
+`root`, or the default when the default is missing — is refused 409 `"that
+folder is gone"` (with `"root"`) before anything is made: the server never
+creates a root, the built-in `~/projects` included. There is no fallback to
+another root and `default` stays the stored first one; the app starts its
+form on the first root that is not missing and sends it as `root`. A
+missing root can still be removed (and made default, though nothing is made
+in it until it returns).
+
 ```
-GET  /projects/roots → {"ok": true, "roots": [{"path": "/home/d/projects", "label": "~/projects", "default": true}, …]}
+GET  /projects/roots → {"ok": true, "roots": [{"path": "/home/d/projects", "label": "~/projects", "default": true, "missing": false}, …]}
 POST /projects/roots {"path": "~/work"}           → the same, with it added last
 POST /projects/roots/remove {"path"}              → the same, without it
 POST /projects/roots/default {"path"}             → the same, with it first
@@ -3663,7 +3674,7 @@ in `<state_dir>/presets.json`. "Profile" stays the harness login (§6.6).
 
 ```
 GET  /presets → {"presets": [Preset…], "agents_md_default": "<the template a new project gets without a preset>",
-                 "project_roots": [{"path", "label", "default"}, …],   // as GET /projects/roots
+                 "project_roots": [{"path", "label", "default", "missing"}, …],   // as GET /projects/roots
                  "personas": ["zara", …], "roles": ["reviewer", …], "private": ["zara", …],
                  "scope": {"zara": {"agents": ["pi"] | null, "projects": ["agent-media"] | null, "private": true}, …},
                  "trusted_models": ["venice/*", …], "private_mode": false}

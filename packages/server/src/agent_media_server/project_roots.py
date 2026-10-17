@@ -8,6 +8,13 @@ is not judged; a root added from the app must be an existing directory under
 the home folder, judged after resolving symlinks, so a link in ~ cannot point
 a project at /etc.
 
+A listed root whose folder has gone (deleted, an unmounted disk) stays
+listed, marked `"missing": true` — judged at each answer, so it is simply
+present again when the folder comes back — and a new project is never made
+in it (`chosen`: 409 "that folder is gone"); nothing here recreates it.
+Removing it still works. `default` stays the stored first one even when it
+is missing: the app starts on the first present root and names it outright.
+
 This is tidiness, not a boundary: any paired device may start an agent that
 runs without permission checks, wherever it runs. The boundary is the role
 of the device that asks (docs/proposals/2026-10-18-roles.md); until roles
@@ -67,9 +74,34 @@ def _save(roots: list[str]) -> None:
     tmp.replace(path)
 
 
+def present(path: str) -> bool:
+    """The root's folder is there: it exists and is a directory (symlinks followed)."""
+    try:
+        return Path(path).is_dir()
+    except OSError:
+        return False
+
+
+GONE = "that folder is gone"
+
+
 def listing() -> list[dict]:
     roots = load()
-    return [{"path": r, "label": label(r), "default": i == 0} for i, r in enumerate(roots)]
+    return [{"path": r, "label": label(r), "default": i == 0, "missing": not present(r)}
+            for i, r in enumerate(roots)]
+
+
+def chosen(root: str = "") -> tuple[str, dict]:
+    """The root a new project goes in: `root` as listed (else 400), or the
+    default when it is left out — `(path, {})`, or `("", refusal)`; a root
+    whose folder is gone → 409, the default included (no fallback: the app
+    names the present one it shows)."""
+    base = find(root) if (root or "").strip() else load()[0]
+    if not base:
+        return "", {"error": f"{root!r} is not one of the project folders", "status": 400}
+    if not present(base):
+        return "", {"error": GONE, "status": 409, "root": base}
+    return base, {}
 
 
 def find(path: str) -> str | None:

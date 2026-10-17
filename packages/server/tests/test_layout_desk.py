@@ -198,6 +198,7 @@ def test_davids_project_from_claude_history_when_nothing_is_shelved(tmp_path, mo
 
 def test_a_new_project_is_made_initialised_and_chatted_in(default_desk, asker, monkeypatch):
     monkeypatch.setenv("MEDIA_PROJECTS_DIR", str(default_desk / "projects"))
+    (default_desk / "projects").mkdir(exist_ok=True)
     ok, detail = send.ask("hi", "tok", new_project="drones")
     made = default_desk / "projects" / "drones"
     assert ok and asker == [(str(made), "sasonica", [])]
@@ -206,6 +207,7 @@ def test_a_new_project_is_made_initialised_and_chatted_in(default_desk, asker, m
 
 def test_a_new_project_refuses_a_name_already_there_or_not_a_name(default_desk, asker, monkeypatch):
     monkeypatch.setenv("MEDIA_PROJECTS_DIR", str(default_desk / "projects"))
+    (default_desk / "projects").mkdir(exist_ok=True)
     (default_desk / "projects" / "runlet").mkdir(parents=True)
     ok, detail = send.ask("hi", "tok", new_project="runlet")
     assert not ok and detail["status"] == 409
@@ -217,6 +219,7 @@ def test_a_new_project_refuses_a_name_already_there_or_not_a_name(default_desk, 
 
 def test_a_new_project_is_not_made_for_someone_signed_out(default_desk, asker, monkeypatch):
     monkeypatch.setenv("MEDIA_PROJECTS_DIR", str(default_desk / "projects"))
+    (default_desk / "projects").mkdir(exist_ok=True)
     monkeypatch.setattr(auth_abs, "abs_identity", lambda b: (None, 401))
     ok, _ = send.ask("hi", "bad", new_project="drones")
     assert not ok and not (default_desk / "projects" / "drones").exists()
@@ -236,6 +239,7 @@ def _git(*args):
 @needs_git
 def test_a_new_project_clones_a_repo_and_keeps_its_agents_md(default_desk, asker, monkeypatch):
     monkeypatch.setenv("MEDIA_PROJECTS_DIR", str(default_desk / "projects"))
+    (default_desk / "projects").mkdir(exist_ok=True)
     src = default_desk / "src"
     src.mkdir()
     _git("init", "-q", str(src))
@@ -258,6 +262,7 @@ def test_a_new_project_clones_a_repo_and_keeps_its_agents_md(default_desk, asker
 
 def test_a_failed_clone_leaves_no_folder(default_desk, asker, monkeypatch):
     monkeypatch.setenv("MEDIA_PROJECTS_DIR", str(default_desk / "projects"))
+    (default_desk / "projects").mkdir(exist_ok=True)
     def fail(*a, timeout=20):
         (default_desk / "projects" / "c").mkdir()
         return False, "fatal: repository not found"
@@ -270,6 +275,7 @@ def test_a_failed_clone_leaves_no_folder(default_desk, asker, monkeypatch):
 @needs_git
 def test_a_new_project_gets_its_presets_agents_md(default_desk, asker, monkeypatch, tmp_path):
     monkeypatch.setenv("MEDIA_PROJECTS_DIR", str(default_desk / "projects"))
+    (default_desk / "projects").mkdir(exist_ok=True)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     assert presets.put({"name": "Web app", "agent": "claude", "agents_md": "# {name}: web\n"}, "tok")[0]
     ok, _ = send.ask("hi", "tok", new_project="shop", agents_md=True, preset="nope")
@@ -280,6 +286,7 @@ def test_a_new_project_gets_its_presets_agents_md(default_desk, asker, monkeypat
 
 def test_a_new_project_can_have_its_first_chat_draft_agents_md(default_desk, asker, monkeypatch):
     monkeypatch.setenv("MEDIA_PROJECTS_DIR", str(default_desk / "projects"))
+    (default_desk / "projects").mkdir(exist_ok=True)
     typed = []
     monkeypatch.setattr(send, "_send_to_pane", lambda p, t: typed.append(t) or "")
     ok, _ = send.ask("", "tok", new_project="empty")

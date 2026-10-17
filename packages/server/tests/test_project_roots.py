@@ -40,7 +40,7 @@ def asker(monkeypatch):
 
 def test_the_default_is_projects_dir_else_home_projects(home, monkeypatch):
     assert project_roots.listing() == [
-        {"path": str(home / "projects"), "label": "~/projects", "default": True}]
+        {"path": str(home / "projects"), "label": "~/projects", "default": True, "missing": False}]
     monkeypatch.setenv("MEDIA_PROJECTS_DIR", str(home / "code"))
     assert project_roots.listing()[0]["label"] == "~/code"
     assert not project_roots.store_path().exists()
@@ -52,7 +52,7 @@ def test_roots_are_added_made_default_and_removed(home):
     assert ok and [r["label"] for r in d["roots"]] == ["~/projects", "~/work"]
     assert [r["default"] for r in d["roots"]] == [True, False]
     ok, d = project_roots.make_default(str(home / "work"), "tok")
-    assert ok and d["roots"][0] == {"path": str(home / "work"), "label": "~/work", "default": True}
+    assert ok and d["roots"][0] == {"path": str(home / "work"), "label": "~/work", "default": True, "missing": False}
     ok, d = project_roots.remove("~/projects", "tok")
     assert ok and [r["label"] for r in d["roots"]] == ["~/work"]
     ok, d = project_roots.remove("~/work", "tok")
@@ -124,3 +124,60 @@ def test_ask_routed_passes_the_root(home, asker):
     assert project_roots.add("~/work", "tok")[0]
     ok, d = routing.ask_routed("hi", "tok", new_project="r", root=str(home / "work"))
     assert ok and d["cwd"] == str(home / "work" / "r")
+
+
+def test_a_root_whose_folder_is_gone_is_listed_missing_until_it_returns(home):
+    work = home / "work"
+    work.mkdir()
+    assert project_roots.add("~/work", "tok")[0]
+    assert [r["missing"] for r in project_roots.listing()] == [False, False]
+    work.rmdir()
+    ok, d = project_roots.get("tok")
+    assert ok and [(r["label"], r["missing"]) for r in d["roots"]] == [
+        ("~/projects", False), ("~/work", True)]
+    assert presets.listing("tok")[1]["project_roots"][1]["missing"] is True
+    (work).write_text("not a folder")
+    assert project_roots.listing()[1]["missing"] is True
+    work.unlink()
+    work.mkdir()
+    assert project_roots.listing()[1]["missing"] is False
+
+
+def test_a_new_project_is_refused_in_a_missing_root_and_the_root_not_remade(home, asker):
+    work = home / "work"
+    work.mkdir()
+    assert project_roots.add("~/work", "tok")[0]
+    work.rmdir()
+    ok, d = send.ask("hi", "tok", new_project="x", root="~/work")
+    assert not ok and d["status"] == 409 and d["error"] == "that folder is gone"
+    assert not work.exists() and asker == []
+    # The default missing: refused too, no falling back to another root.
+    assert project_roots.make_default(str(work), "tok")[0]
+    ok, d = send.ask("hi", "tok", new_project="x")
+    assert not ok and d["status"] == 409
+    assert not work.exists() and not (home / "projects" / "x").exists() and asker == []
+    # The present one, named, still works; the default stays the stored one.
+    ok, d = send.ask("hi", "tok", new_project="x", root="~/projects")
+    assert ok and d["cwd"] == str(home / "projects" / "x")
+    assert project_roots.listing()[0] == {"path": str(work), "label": "~/work",
+                                          "default": True, "missing": True}
+
+
+def test_the_built_in_default_is_not_made_when_missing(home, asker):
+    (home / "projects").rmdir()
+    assert project_roots.listing()[0]["missing"] is True
+    ok, d = send.ask("hi", "tok", new_project="x")
+    assert not ok and d["status"] == 409 and not (home / "projects").exists()
+    from agent_media_server import new_project
+
+    ok, d = new_project.create("x")
+    assert not ok and d["status"] == 409 and not (home / "projects").exists()
+
+
+def test_a_missing_root_can_still_be_removed(home):
+    work = home / "work"
+    work.mkdir()
+    assert project_roots.add("~/work", "tok")[0]
+    work.rmdir()
+    ok, d = project_roots.remove("~/work", "tok")
+    assert ok and [r["label"] for r in d["roots"]] == ["~/projects"]
