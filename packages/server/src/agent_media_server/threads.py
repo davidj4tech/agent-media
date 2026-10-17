@@ -577,7 +577,8 @@ def session_log(session: str, *, limit=None, before: str = "",
     if room is not None:
         # A Matrix room (matrix.py): its timeline, and none of a session's
         # speech, turn or manifest.
-        return True, matrix.envelope(room, limit=_limit(limit), before=before)
+        return True, matrix.envelope(room, limit=_limit(limit), before=before,
+                                     around=around, most=MESSAGES_MAX)
     try:
         from agent_media_core import book_tracks
 

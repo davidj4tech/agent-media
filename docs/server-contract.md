@@ -352,7 +352,10 @@ Everything a message can be pointed at.
   `MATRIX_CONTROL_IDS` that is not `MATRIX_SAM_ID`) is `user`, everyone
   else `assistant` with `peer: {name}` and `sender: {id, name}`; photos,
   voice notes and files are a one-line text part. The envelope adds
-  `room: {id, name, members}`. **Sending** (9 Oct 2026): `/reply` to a
+  `room: {id, name, members}`; `around=<event id>` (a search hit, §6.14;
+  17 Oct 2026) answers the window holding it as for a session, paging
+  back up to 10 pages for one older than the room holds. Rooms are
+  searched (§6.14, 17 Oct 2026). **Sending** (9 Oct 2026): `/reply` to a
   room sends `text` as the owner, with the owner's own token
   (`MATRIX_OWNER_TOKEN`, made by `matrix-owner-login`; never the agent's),
   a `quote` in front as a Markdown quote, and answers `{"session",
@@ -3001,7 +3004,22 @@ memory as its own section when this host has agent-memory. Code:
   text, narration, an ask's question and answer); pi session files (each
   `message` record); Codex rollouts (each `message` item, Codex's preamble
   skipped, and its tool calls); Hermes stores (every profile's `messages`).
-  Subagents' own turns are not. **Left out:** threads in an excluded folder
+  Subagents' own turns are not. **Matrix rooms** (17 Oct 2026): every room
+  `/targets` lists as a Matrix row (the allow list and the owner's bridge
+  rooms), by event id — `message` is the id `/conversation/log` gives the
+  message, `role` is `user` for the owner and `assistant` for anyone else,
+  `thread.harness` is `"matrix"`, `thread.title` the room's title and
+  `thread.project` null, so the app's `agent=matrix` filter takes them. A
+  room's held messages (the newest page, the sync's since, pages scrolled
+  back to) are indexed as they change, an edit with its new words and a
+  message taken back dropped; older history is paged in by the background
+  thread, 10 pages of 50 a minute across the rooms, down to each room's
+  start (and first any gap left while the canvas was down). A query never
+  waits on the homeserver, so a room's oldest words may come a few minutes
+  after it is first read (`indexing` does not count them). A room no
+  longer served (off the list, or the sync off) is not answered; its rows
+  stay until a rebuild. **Left out:** deleted and sealed threads, rooms
+  included; threads in an excluded folder
   (`MEDIA_SESSIONS_EXCLUDE_CWD`, default `~/.meridian`: Meridian's pool) are
   never read; machinery — a `claude -p` run whose transcript says
   `entrypoint: sdk-*` (a pipeline's calls, the slash-menu probe) — is
@@ -3013,7 +3031,9 @@ memory as its own section when this host has agent-memory. Code:
   still names *records* rather than messages (`rec:<offset>`, the pi record
   id), so only a pi hit on the record that opened a message matches; every
   other Codex, pi or Hermes hit says `found: false` and the app places the
-  thread by `at` instead.
+  thread by `at` instead. A Matrix hit opens the same way (17 Oct 2026):
+  the room's log takes `around=<event id>` and finds it, paging back for
+  it if the room does not hold it yet.
 
 **The index.** SQLite FTS5 at `$XDG_STATE_HOME/agent-media/search.db`
 (`~/.local/state/…`): a `docs` table (one row per message and kind: session,
@@ -3025,7 +3045,8 @@ inode, size, mtime, the offset read to, the 256 bytes before it, and
 `resume`, its rows from there on replaced (the turn that was open has
 grown); a file that shrank, was replaced or rewritten in place is read
 again; an unchanged one is a stat. Hermes resumes from its highest message
-id. The canvas builds it on a background thread at nice 15 after start,
+id. A Matrix room has a `files` row of its own, `matrix:<room id>`, holding
+how far back its history has been paged (17 Oct 2026). The canvas builds it on a background thread at nice 15 after start,
 then looks for changes every 60 s (`MEDIA_SEARCH_INTERVAL_S`;
 `MEDIA_SEARCH_INDEX=0` turns the thread off and leaves it to queries); each
 query first catches up changed files, newest first, for up to 0.6 s. A

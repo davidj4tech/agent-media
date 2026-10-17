@@ -42,6 +42,10 @@ _SYNC: list = [None]
 PAGE = 50
 #: After a failed first read, how long before a room is asked again.
 RETRY_S = 60.0
+#: A jump to a message (`around`, §6.14) not held pages back this far for it.
+AROUND_PAGES = 10
+#: Changes the search index has not taken yet, kept at most (`Room.amends`).
+AMENDS_MAX = 1000
 
 
 def sync() -> "matrix.Sync | None":
@@ -113,6 +117,12 @@ class Room:
         self.loaded = False
         self._failed_at = 0.0
         self.lock = threading.RLock()
+        # For the search index (search.py, 17 Oct 2026): `rev` moves on every
+        # change to what is held; `amends` is what it cannot see there — a
+        # message taken back (None) or one edited that is no longer held
+        # (its new parts), by event id, until the index takes them.
+        self.rev = 0
+        self.amends: dict[str, list[dict] | None] = {}
 
     # -- reading the homeserver --
 
@@ -203,12 +213,19 @@ class Room:
         with self.lock:
             self._take(ev, front=False)
 
+    def _amend(self, ev_id: str, parts: list[dict] | None) -> None:
+        self.amends.pop(ev_id, None)
+        self.amends[ev_id] = parts
+        while len(self.amends) > AMENDS_MAX:
+            self.amends.pop(next(iter(self.amends)))
+
     def _take(self, ev: dict, *, front: bool) -> None:
         kind = ev.get("type")
         content = ev.get("content") or {}
         if kind == "m.room.name":
             if not front:
                 self.name = content.get("name") or ""
+                self.rev += 1
             return
         if kind == "m.room.member":
             uid = ev.get("state_key") or ""
@@ -221,6 +238,9 @@ class Room:
             m = self._by_id.pop(gone, None) if gone else None
             if m is not None:
                 self.messages.remove(m)
+                self.rev += 1
+            if gone:
+                self._amend(gone, None)
             return
         if kind != "m.room.message" or not content:
             return
@@ -232,6 +252,9 @@ class Room:
             if m is not None and new:
                 m["parts"] = self._parts(ev.get("sender") or "", new)
                 m["edited"] = True
+                self.rev += 1
+            elif new and not front and rel.get("event_id"):
+                self._amend(rel["event_id"], self._parts(ev.get("sender") or "", new))
             return
         ev_id = ev.get("event_id") or ""
         if not ev_id or ev_id in self._by_id:
@@ -242,6 +265,7 @@ class Room:
             self.messages.insert(0, m)
         else:
             self.messages.append(m)
+        self.rev += 1
 
     def _parts(self, sender: str, content: dict) -> list[dict]:
         msgtype = content.get("msgtype") or "m.text"
@@ -286,14 +310,34 @@ class Room:
                 if end >= limit or not self.back or not self.older():
                     break
             start = max(0, end - limit)
-            out = [dict(m, sender=dict(m["sender"])) for m in self.messages[start:end]]
-            for m in out:            # names learnt since the message came in
-                m["sender"]["name"] = self.members.get(m["sender"]["id"]) or m["sender"]["name"]
-                if m["role"] == "assistant":
-                    # The app's "From <name>" note (§6.2.2 `peer`), drawn
-                    # over an incoming message.
-                    m["peer"] = {"name": m["sender"]["name"]}
-            return out, start > 0 or bool(self.back)
+            return self._view(self.messages[start:end]), start > 0 or bool(self.back)
+
+    def around(self, ev_id: str, limit: int, most: int) -> tuple[list[dict], bool, bool] | None:
+        """A jump from search (§6.14, 17 Oct 2026): `(window, older, newer)`
+        holding message `ev_id`, as `transcript.window_around` makes it —
+        paging back up to `AROUND_PAGES` for one older than what is held —
+        or None when it is not found."""
+        from . import transcript
+
+        with self.lock:
+            for _ in range(AROUND_PAGES):
+                if ev_id in self._by_id or not self.back or not self.older():
+                    break
+            win = transcript.window_around(self.messages, ev_id, limit, most)
+            if win is None:
+                return None
+            msgs, older, newer = win
+            return self._view(msgs), older or bool(self.back), newer
+
+    def _view(self, msgs: list[dict]) -> list[dict]:
+        out = [dict(m, sender=dict(m["sender"])) for m in msgs]
+        for m in out:            # names learnt since the message came in
+            m["sender"]["name"] = self.members.get(m["sender"]["id"]) or m["sender"]["name"]
+            if m["role"] == "assistant":
+                # The app's "From <name>" note (§6.2.2 `peer`), drawn
+                # over an incoming message.
+                m["peer"] = {"name": m["sender"]["name"]}
+        return out
 
 
 def _network(state: list) -> dict | None:
@@ -373,16 +417,29 @@ def _join_speech(thread: str, messages: list[dict]) -> None:
                           else {})}
 
 
-def envelope(r: Room, *, limit: int, before: str = "") -> dict:
+def envelope(r: Room, *, limit: int, before: str = "", around: str = "",
+             most: int = 500) -> dict:
     """The `/conversation/log?session=` answer for a room: the §6.2.2
-    messages, and nothing an agent session has (no lines, no turn)."""
-    messages, older = r.page(limit, before)
+    messages, and nothing an agent session has (no lines, no turn). With
+    `around` (a search hit), the window holding it, as for a session."""
+    jump = None
+    win = r.around(around, limit, most) if around else None
+    if win is not None:
+        messages, older, newer = win
+        jump = {"id": around, "found": True, "newer": newer}
+    else:
+        messages, older = r.page(limit, before)
+        if around:
+            jump = {"id": around, "found": False, "newer": False}
     _join_speech(r.thread, messages)
-    return {"session": r.thread, "lines": [], "messages": messages, "older": older,
-            "pending": False, "working": None, "approval": None, "suggestion": "",
-            "recap": None, "context": None,
-            "room": {"id": r.id, "name": r.title(),
-                     "members": [{"id": u, "name": n} for u, n in sorted(r.members.items())]}}
+    out = {"session": r.thread, "lines": [], "messages": messages, "older": older,
+           "pending": False, "working": None, "approval": None, "suggestion": "",
+           "recap": None, "context": None,
+           "room": {"id": r.id, "name": r.title(),
+                    "members": [{"id": u, "name": n} for u, n in sorted(r.members.items())]}}
+    if jump is not None:
+        out["around"], out["newer"] = jump, jump["newer"]
+    return out
 
 
 def _seed_quiet(threads: list[str]) -> None:

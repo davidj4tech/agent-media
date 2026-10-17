@@ -16,6 +16,21 @@ same id. What is indexed, per harness:
 - **Codex** — `~/.codex/sessions/Y/M/D/rollout-*.jsonl`: each `message`
   response item (the preamble Codex staples in is skipped), and its tool calls.
 - **Hermes** — every profile's `state.db`, `messages` table, read-only.
+- **Matrix rooms** (17 Oct 2026) — every room matrix.py serves (the allow
+  list, `MATRIX_ROOM_ALLOW`, and the owner's bridge rooms), once loaded:
+  what its `Room` holds — the newest page, the sync's events since, pages
+  scrolled back to — by event id, the id `/conversation/log` gives it.
+  Indexed when the room's `rev` moves; an edit takes the new words, a
+  message taken back is dropped (`Room.amends`), and rows are never
+  dropped just because the room no longer holds them. Older history is
+  paged in by `backfill` from the background thread only — `BACKFILL_PAGES`
+  pages of `matrix.PAGE` a pass, outside the writer lock, down to the start
+  of each room (its cursor is the room's `files` row, `matrix:<room id>`),
+  and first any gap left below what a room holds when it is read again
+  after a restart. A query never waits on the homeserver: it indexes only
+  what is in memory, and passes over a room whose lock a read holds. Only
+  in the canvas's process: `python -m … rebuild` from a shell has no rooms
+  (the canvas reads them again on its next pass).
 
 Text (the words of both sides, the narration, an ask's question and answer)
 goes into one full-text table; tool steps (name, title, input and result
@@ -40,7 +55,9 @@ index lazily). `python -m agent_media_server.search rebuild` starts over;
 `sessions._excluded_dirs`, MEDIA_SESSIONS_EXCLUDE_CWD) are never read.
 Machinery — a `claude -p` run nobody chats in (`entrypoint` `sdk-*`: the
 slash-menu probe, a pipeline's calls) — is indexed but never answered,
-unless sessiond holds it as a headless thread (§17).
+unless sessiond holds it as a headless thread (§17). Deleted and sealed
+threads are neither read nor answered; a Matrix room is answered only while
+matrix.py serves it (one taken off the allow list keeps its rows, unanswered).
 
 Read-only toward every transcript; the only file written is the index.
 """
@@ -143,6 +160,8 @@ def _wipe(conn: sqlite3.Connection) -> None:
     conn.execute("INSERT INTO tool_fts(tool_fts) VALUES('delete-all')")
     conn.execute("INSERT OR REPLACE INTO meta VALUES('schema', ?)", (str(SCHEMA_VERSION),))
     conn.execute("COMMIT")
+    _MATRIX_REV.clear()
+    _MATRIX_GAPS.clear()
 
 
 def forget(session: str) -> int:
@@ -162,6 +181,8 @@ def forget(session: str) -> int:
             conn.execute("ROLLBACK")
             raise
     _LISTED[0] = (0.0, {})
+    _MATRIX_REV.pop(session, None)
+    _MATRIX_GAPS.pop(session, None)
     return int(n)
 
 
@@ -172,6 +193,8 @@ def _reset_for_tests() -> None:
     _LOCAL.conn = _LOCAL.path = None
     _MEMORY[0] = (0.0, False)
     _LISTED[0] = (0.0, {})
+    _MATRIX_REV.clear()
+    _MATRIX_GAPS.clear()
 
 
 def _delete_docs(conn: sqlite3.Connection, where: str, args: tuple) -> None:
@@ -637,6 +660,236 @@ def _index_hermes(conn: sqlite3.Connection, store: Path, st: os.stat_result,
         raise
 
 
+# --- Matrix rooms ---------------------------------------------------------------
+#
+# A room has no file: its messages are what `matrix.Room` holds (the newest
+# page, the sync's events since, pages the app scrolled back to). They are
+# indexed from there, by event id, whenever the room's `rev` moved; history
+# older than any of that is paged in by `backfill`, from the background
+# thread only. Rows are never dropped because a room no longer holds them —
+# only when the room says a message was taken back (`Room.amends`).
+
+#: thread → the `Room.rev` last indexed, this process.
+_MATRIX_REV: dict[str, int] = {}
+#: thread → the /messages token below the held messages, where a gap may
+#: be (the room was read again after a restart and holds nothing indexed).
+_MATRIX_GAPS: dict[str, str] = {}
+#: History pages (`matrix.PAGE` messages each) fetched per background pass.
+BACKFILL_PAGES = 10
+
+
+def _matrix_rooms() -> list:
+    """The rooms matrix.py serves (the allow list, and the owner's bridge
+    rooms) that are loaded and neither deleted nor sealed."""
+    from agent_media_core.deleted import is_deleted
+    from agent_media_core.sealed import is_sealed
+
+    from . import matrix
+
+    return [r for r in list(matrix._ROOMS.values())
+            if r.loaded and not is_deleted(r.thread) and not is_sealed(r.thread)]
+
+
+def _room_served(session: str) -> bool:
+    from . import matrix
+
+    return session in matrix._ROOMS
+
+
+def _matrix_key(r) -> str:
+    return f"matrix:{r.id}"
+
+
+def _indexed(conn: sqlite3.Connection, session: str) -> dict[str, str]:
+    return {m: b for m, b in conn.execute(
+        f"SELECT msg, body FROM docs WHERE session=? AND kind={_TEXT}", (session,))}
+
+
+def _put_room_msg(conn: sqlite3.Connection, session: str, msg: str, role: str, at: float,
+                  text: str) -> None:
+    _delete_docs(conn, "session=? AND msg=?", (session, msg))
+    _insert_doc(conn, session, msg, role, at, int(at * 1000), _TEXT, text)
+
+
+def _index_room(conn: sqlite3.Connection, r, blocking: bool) -> bool | None:
+    """Bring one room's rows up to what it holds. True when something was
+    written, False when nothing changed, None when the room was busy (a
+    homeserver read holds its lock) and was left for the next pass."""
+    if not r.lock.acquire(timeout=5.0 if blocking else 0.05):
+        return None
+    try:
+        first = r.thread not in _MATRIX_REV
+        if not first and _MATRIX_REV[r.thread] == r.rev and not r.amends:
+            return False
+        rev = r.rev
+        held = [(str(m["id"]), m["role"], float(m.get("at") or 0),
+                 bodies(m)[0].strip()[:BODY_MAX]) for m in r.messages]
+        amends = dict(r.amends)
+        title, back = r.title(), r.back
+    finally:
+        r.lock.release()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        have = _indexed(conn, r.thread)
+        if first and have and held and back and not any(h[0] in have for h in held):
+            # Read again, and nothing it holds is indexed: what came between
+            # is paged in by backfill, down to a message that is.
+            _MATRIX_GAPS[r.thread] = back
+        for msg, role, at, text in held:
+            if have.get(msg) != text:
+                _put_room_msg(conn, r.thread, msg, role, at, text)
+        for msg, parts in amends.items():
+            if parts is None:
+                _delete_docs(conn, "session=? AND msg=?", (r.thread, msg))
+            elif msg in have:
+                row = conn.execute("SELECT role, at FROM docs WHERE session=? AND msg=?",
+                                   (r.thread, msg)).fetchone()
+                text = bodies({"parts": parts})[0]
+                _put_room_msg(conn, r.thread, msg, row[0], row[1], text)
+        ats = [h[2] for h in held if h[2]]
+        _upsert_thread(conn, r.thread, "matrix",
+                       {"title": _one_line(title), "first_at": min(ats) if ats else None,
+                        "last_at": max(ats) if ats else None})
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    with r.lock:
+        for msg, parts in amends.items():
+            if msg in r.amends and r.amends[msg] is parts:
+                del r.amends[msg]
+    _MATRIX_REV[r.thread] = rev
+    return True
+
+
+def _room_event(r, ev: dict) -> tuple[str, str, float, str, bool] | None:
+    """`(event id, role, at, text, edit)` of one event read going back, or
+    None. An edit (`m.replace`) is its original's id with the new words —
+    seen before the original, going back; the server's bundled latest edit
+    (`unsigned.m.relations.m.replace`) wins over an original's own words."""
+    content = ev.get("content") or {}
+    if ev.get("type") != "m.room.message" or not content:
+        return None
+    sender = ev.get("sender") or ""
+    rel = content.get("m.relates_to") or {}
+    at = round((ev.get("origin_server_ts") or 0) / 1000, 3)
+    role = "user" if sender == r.owner else "assistant"
+    if rel.get("rel_type") == "m.replace":
+        new = content.get("m.new_content") or {}
+        if not new or not rel.get("event_id"):
+            return None
+        return rel["event_id"], role, at, bodies({"parts": r._parts(sender, new)})[0], True
+    ev_id = ev.get("event_id") or ""
+    if not ev_id:
+        return None
+    edit = (((ev.get("unsigned") or {}).get("m.relations") or {}).get("m.replace") or {})
+    new = (edit.get("content") or {}).get("m.new_content") if isinstance(edit, dict) else None
+    words = bodies({"parts": r._parts(sender, new or content)})[0]
+    return ev_id, role, at, words, False
+
+
+def _write_page(conn: sqlite3.Connection, r, evs: list, before: set[str] = frozenset()) -> bool:
+    """Write one page of history (newest first). A message already indexed
+    keeps its words (a later edit's, or the held copy's); its `at` is the
+    original's. True when the page holds a message in `before` (what was
+    indexed when the gap was found: the gap is closed)."""
+    have = _indexed(conn, r.thread)
+    met = False
+    ats = []
+    for ev in evs:
+        got = _room_event(r, ev)
+        if got is None:
+            continue
+        msg, role, at, text, edit = got
+        met = met or (not edit and msg in before)
+        if msg in have:
+            if not edit and at:
+                conn.execute("UPDATE docs SET at=?, role=?, pos=? WHERE session=? AND msg=?",
+                             (at, role, int(at * 1000), r.thread, msg))
+                ats.append(at)
+            continue
+        _put_room_msg(conn, r.thread, msg, role, at, text)
+        have[msg] = text
+        if at:
+            ats.append(at)
+    if ats:
+        _upsert_thread(conn, r.thread, "matrix", {"first_at": min(ats), "last_at": max(ats)})
+    return met
+
+
+def backfill(pages: int = BACKFILL_PAGES) -> int:
+    """Page older history of the rooms into the index, at most `pages`
+    pages this pass: first any gap below what a room holds since it was
+    read again, then on down from where the last pass stopped, to the start
+    of the room. Never on a query's path: each page is a homeserver read,
+    made outside the writer lock. The pages fetched."""
+    fetched = 0
+    for r in _matrix_rooms():
+        if fetched >= pages:
+            break
+        with _WRITE:
+            conn = _connect()
+            _index_room(conn, r, blocking=True)
+            row = conn.execute("SELECT seam, resume FROM files WHERE path=?",
+                               (_matrix_key(r),)).fetchone()
+            known = set(_indexed(conn, r.thread))
+        gap = _MATRIX_GAPS.get(r.thread)
+        while gap and fetched < pages:
+            got = r._page(gap)
+            fetched += 1
+            if got is None:
+                break
+            evs, gap = got
+            with _WRITE:
+                conn = _connect()
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    met = _write_page(conn, r, evs, known)
+                    conn.execute("COMMIT")
+                except BaseException:
+                    conn.execute("ROLLBACK")
+                    raise
+            if met or not gap:
+                gap = None
+            if gap:
+                _MATRIX_GAPS[r.thread] = gap
+            else:
+                _MATRIX_GAPS.pop(r.thread, None)
+        if row and row[1]:
+            continue                       # the start of the room is indexed
+        if row:
+            token = (row[0] or b"").decode() or None
+        else:
+            with r.lock:
+                token = r.back
+        while fetched < pages:
+            evs: list = []
+            if token:
+                got = r._page(token)
+                fetched += 1
+                if got is None:
+                    break                  # unreadable now: the next pass
+                evs, token = got
+            with _WRITE:
+                conn = _connect()
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    if evs:
+                        _write_page(conn, r, evs)
+                    conn.execute(
+                        "INSERT OR REPLACE INTO files(path, harness, session, ino, size, mtime, "
+                        "offset, seam, resume, skip) VALUES(?,?,?,0,0,?,0,?,?,0)",
+                        (_matrix_key(r), "matrix", r.thread, time.time(),
+                         (token or "").encode(), 0 if token else 1))
+                    conn.execute("COMMIT")
+                except BaseException:
+                    conn.execute("ROLLBACK")
+                    raise
+            if not token:
+                break
+    return fetched
+
+
 # --- the sweep ------------------------------------------------------------------
 
 
@@ -691,6 +944,28 @@ def refresh(budget_s: float | None = None, pause_s: float = 0.0) -> dict:
                 continue
             todo.append((st.st_mtime, harness, path, session, st, k))
         todo.sort(key=lambda t: -t[0])
+        # Matrix rooms first: they are in memory, a query or two each. A room
+        # whose lock a homeserver read holds is left for the next pass.
+        rooms = _matrix_rooms()
+        if _MATRIX_REV:
+            # Wiped under us (a `rebuild` from the command line): read again.
+            there = {r[0] for r in conn.execute(
+                "SELECT session FROM threads WHERE harness='matrix'")}
+            for sid in [s for s in _MATRIX_REV if s not in there]:
+                del _MATRIX_REV[sid]
+        rooms_left = 0
+        rooms_changed = 0
+        for r in rooms:
+            if budget_s is not None and time.monotonic() - t0 > budget_s:
+                rooms_left += 1
+                continue
+            try:
+                got = _index_room(conn, r, blocking=budget_s is None)
+            except sqlite3.Error as e:
+                print(f"search: indexing Matrix room {r.id} failed ({e})", file=sys.stderr)
+                continue
+            rooms_left += got is None
+            rooms_changed += bool(got)
         done = 0
         for _mt, harness, path, session, st, k in todo:
             if budget_s is not None and time.monotonic() - t0 > budget_s:
@@ -708,8 +983,9 @@ def refresh(budget_s: float | None = None, pause_s: float = 0.0) -> dict:
             done += 1
             if pause_s:
                 time.sleep(pause_s)
-        return {"files": len(known), "changed": done,
-                "done": done == len(todo), "seconds": round(time.monotonic() - t0, 3)}
+        return {"files": len(known), "changed": done + rooms_changed,
+                "done": done == len(todo) and not rooms_left,
+                "seconds": round(time.monotonic() - t0, 3)}
     finally:
         _WRITE.release()
 
@@ -765,6 +1041,10 @@ def _run() -> None:
             first = False
         except Exception as e:  # noqa: BLE001 — never take the canvas down
             print(f"search: refresh failed ({e})", file=sys.stderr)
+        try:
+            backfill()
+        except Exception as e:  # noqa: BLE001
+            print(f"search: Matrix history failed ({e})", file=sys.stderr)
         time.sleep(interval)
 
 
@@ -833,12 +1113,17 @@ def _mark_terms(text: str, terms: list[str]) -> list[list[int]]:
     return merged
 
 
-def _hidden(entrypoint: str | None, session: str, owned: set[str]) -> bool:
+def _hidden(entrypoint: str | None, session: str, owned: set[str],
+            harness: str | None = None) -> bool:
     from agent_media_core.deleted import is_deleted
     from agent_media_core.private import hidden
 
     if is_deleted(session) or hidden(session):
         return True
+    if harness == "matrix":
+        # A room is answered only while matrix.py serves it: one taken off
+        # the allow list (or with the sync off) keeps its rows, unanswered.
+        return not _room_served(session)
     return bool(entrypoint) and entrypoint.startswith("sdk") and session not in owned
 
 
@@ -901,7 +1186,7 @@ def _thread_hits(terms: list[str], rows: dict[str, dict], listed: dict[str, dict
     hits = []
     for sid in set(rows) | set(listed):
         t = rows.get(sid)
-        if t and _hidden(t.get("entrypoint"), sid, owned):
+        if t and _hidden(t.get("entrypoint"), sid, owned, t.get("harness")):
             continue
         if t and _excluded(t.get("cwd") or ""):
             continue
@@ -937,7 +1222,7 @@ def _message_hits(conn: sqlite3.Connection, query: str, *, tools: bool, before: 
                 break
             for sid, msg, role, at, snip in found:
                 t = rows.get(sid)
-                if t is None or _hidden(t.get("entrypoint"), sid, owned) \
+                if t is None or _hidden(t.get("entrypoint"), sid, owned, t.get("harness")) \
                         or _excluded(t.get("cwd") or ""):
                     continue
                 view = _thread_view(sid, t, listed.get(sid))
