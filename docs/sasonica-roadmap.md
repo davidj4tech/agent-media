@@ -1218,6 +1218,19 @@ ahead.
     headless if it has ended, queued behind a turn in progress, refusing over
     a draft like the pane path does — and `agent-mail-deliver --to <session>`
     using it.
+28. **Messages: search, Show and Sort** (David, 17 Oct 2026: "a way to
+    search in the messages tab… maybe even some selections for show and
+    sort"). A box that narrows rooms by name or last message; Show Active,
+    Unread, Archived, Everything or one service; Sort Most recent, Unread
+    first, Name A–Z or By service. ⌕ searches inside the texts, which needs
+    the rooms in the search index (§6.14, branch `feat/search-matrix-rooms`).
+    **Built 17 Oct 2026**, on branches; not yet merged.
+29. **Contacts: people, not rooms** (David, 17 Oct 2026). One row per
+    person across their SMS and Signal rooms, a contact card, texting a
+    contact, and edits written back. The sources are Google Contacts and the
+    Drupal CRM on red4, with Google winning where they disagree. The plan is
+    docs/proposals/2026-10-17-contacts.md: open questions first, then five
+    steps, starting with Google read-only.
 
 ## Loose ends
 
