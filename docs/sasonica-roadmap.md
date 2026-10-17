@@ -1192,7 +1192,7 @@ ahead.
     `gemini --acp`; 4 model picker, API key, profiles. Installed on red5
     (0.64.0), not signed in; its context hook is in (`e53eae2`). Sign-in from
     the phone is the open question (`NO_BROWSER=true` gives a code to paste).
-26. **Quick question** (David, 17 Oct 2026). A chat that skips the coding
+26. **Quick chat** (David, 17 Oct 2026; renamed from "Quick question" the same day). A chat that skips the coding
     agent: the question goes straight to a fast model (Haiku, Gemini Flash)
     through red5's LiteLLM gateway — the route the speech summaries already
     take (`intake/_summary.py`) — so the reply starts in about a second
