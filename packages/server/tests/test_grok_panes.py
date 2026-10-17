@@ -70,3 +70,16 @@ def test_a_new_chat_is_not_started_in_it_yet():
     """Its proposal's later phase: /ask refuses it until its fresh session
     and composer are measured."""
     assert "grok" in send.NOT_STARTED_HERE
+
+
+def test_the_reaper_reads_the_fold(chat):
+    """Its last message's last line and the recap's text, from the chunks
+    joined."""
+    from agent_media_server import reap
+
+    assert reap.last_message_at(SID) == reap._epoch("2026-10-17T00:01:03.000Z")
+    text = reap.tail_text(SID)
+    assert text.splitlines() == ["Person: Run the fast tests",
+                                 "Assistant: I'll run them. Done: **12 passed**.",
+                                 "Person: Now read the README",
+                                 "Assistant: It says hi."]

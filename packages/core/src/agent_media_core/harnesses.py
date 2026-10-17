@@ -559,8 +559,10 @@ def grok_fold(lines) -> tuple[dict, list[dict]]:
     agent did between two prompts, in order: `text` and `thought` parts
     (chunks in a row joined), and `tool` parts (`id`, `name`, `title`,
     `kind`, `input`, `status`, `output`), each updated in place by the
-    `tool_call_update`s naming it. `info` keeps what the session-level
-    updates said (a `title`, the current mode)."""
+    `tool_call_update`s naming it. `timestamp` is when a message began,
+    `updated` the last line's while it was the newest, when lines say.
+    `info` keeps what the session-level updates said (a `title`, the
+    current mode)."""
     info: dict = {}
     msgs: list[dict] = []
     tools: dict[str, dict] = {}
@@ -576,6 +578,8 @@ def grok_fold(lines) -> tuple[dict, list[dict]]:
         at = _grok_at(rec, u)
         mid = str(u.get("messageId") or "")
         cur = msgs[-1] if msgs else None
+        if cur is not None and at is not None:
+            cur["updated"] = at         # the last line written while it was the newest
         if kind == "user_message_chunk":
             text = grok_text(u.get("content"))
             if cur and cur["type"] == "user" and (not mid or mid == cur["mid"]):

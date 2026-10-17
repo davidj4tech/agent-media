@@ -201,6 +201,11 @@ def last_message_at(session: str) -> float | None:
         # Its lines rewrite and rewind each other: the fold says what is left.
         said = [m for m in h.gemini_read(path)[1] if m.get("type") in ("user", "gemini")]
         return _epoch(said[-1].get("timestamp")) if said else None
+    if harness == h.GROK:
+        # Its lines are chunks and tool updates: the fold says what was said,
+        # and when its last line was written.
+        said = h.grok_read(path)[1]
+        return _epoch(said[-1].get("updated") or said[-1].get("timestamp")) if said else None
     try:
         for raw in _lines_backwards(path):
             try:
@@ -272,6 +277,16 @@ def tail_text(session: str, limit: int = 6000) -> str:
                         yield "Person", " ".join(h.gemini_prompt(m).split())
                     elif m.get("type") == "gemini":
                         yield "Assistant", " ".join(h.gemini_text(m.get("content")).split())
+                return
+            if harness == h.GROK:
+                # Its lines are chunks: read the fold, newest first, a turn's
+                # words joined.
+                for m in reversed(h.grok_read(path)[1]):
+                    if m["type"] == "user":
+                        yield "Person", " ".join(h.grok_prompt(m["text"]).split())
+                    else:
+                        yield "Assistant", " ".join(" ".join(
+                            p["text"] for p in m["parts"] if p["type"] == "text").split())
                 return
             for raw in _lines_backwards(path):
                 try:
