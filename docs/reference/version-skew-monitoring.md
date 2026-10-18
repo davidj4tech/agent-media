@@ -384,6 +384,50 @@ media update --host p8a --dry-run
 media update --host p8a
 ```
 
+**Any host the same way: its jobs worker.** The laptop (pn), the speaker
+(sp4) or a Windows box gets the phone's arrangement: a worker that holds its
+own connection open to red5 (`packages/core/services/jobs-worker`, the same
+script as the phone's `phone-jobs.py`, run with `--generic`), paired as a
+**jobs-only device**. It takes restarts and updates, never a command, and its
+token opens no other route on red5. Once per host, after the host has pulled
+this code:
+
+1. On red5, mint a jobs code (it prints the line to run on the host):
+
+   ```
+   media-visual-canvas pair --device "pn jobs" --jobs --server https://red5.sasonica.com
+   ```
+
+2. On the host, that line. It pairs, keeps the token in
+   `~/.config/agent-media/jobs-worker.json` (0600), and installs and starts
+   the worker for the host's init:
+
+   ```
+   media jobs pair 'sasonica://pair?server=…&code=…'
+   ```
+
+3. From red5:
+
+   ```
+   media jobs list
+   media update --host pn --dry-run
+   media restart-services --host pn --dry-run
+   ```
+
+NAME is the first word of the device's name (`pn` for `pn jobs`). `media
+jobs status` on the host says whether it is paired and its worker installed;
+`media-setup profile`'s `jobs` row keeps it installed (absent until paired).
+
+| | systemd --user (Linux) | runit (Termux, `/etc/service`) | Windows |
+|---|---|---|---|
+| worker installed as | `agent-media-jobs-worker.service`, generated (`ExecStart=/bin/sh <checkout>/…/jobs-worker/run`), enabled --now | the template dir linked into the service dir | logon task `agent-media\jobs-worker` (`conhost --headless <python> jobs-worker.py --generic`; from task XML with restart-on-failure when the Sasonica package is installed, else a plain ONLOGON task) |
+| restart jobs | the units the checkout owns (`agent-media*`, `am-*`) | the service dirs that link into the checkout | the tasks under `\Sasonica\` and `\agent-media\` (End, then Run); every task counts as possibly the worker's own, so a restart there is always detached (10 s) |
+| update jobs | `git pull --ff-only`, then the restart | same | same, with a checkout, python and `git` on PATH. A binary install (`sasonica install`) has no checkout: `media jobs pair` refuses to install the worker there (use `sasonica update`) |
+| drift check | unit copies | file copies | none: tasks hold no copies |
+
+The Windows column is written against Task Scheduler's documented behaviour
+and tested with schtasks faked; it has not been run on a Windows host yet.
+
 **A reachable server: as a paired device of it.** For any other NAME, it
 calls that host's `POST /services/restart` (server contract §6.6). The exit
 code is the remote run's; 1 also covers not paired, not reachable, a refused

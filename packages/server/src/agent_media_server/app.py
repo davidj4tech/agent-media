@@ -93,6 +93,8 @@ device gets its token):
                   the same on the phone, down its jobs worker's own stream
                   (phone_jobs.py, §6.21a); host token or may_admin. 404
                   not_a_device, 400 another field, 503 offline / no answer
+  GET  /jobs/devices → the jobs workers this server knows (the phone's, and
+                  every `pair --device NAME --jobs` one), connected or not
   POST /jobs/update {"device", "only"?, "after"?, "force"?, "dry_run"?} →
                   `git pull --ff-only` on that device, then its restart when
                   HEAD moved (10 s out by default); the same gates and
@@ -571,7 +573,7 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         from . import phone_jobs
 
         kinds = ",".join(parse_qs(query).get("kinds") or []).split(",")
-        return phone_jobs.serve(h, auth.device_id(_bearer(h)),
+        return phone_jobs.serve(h, auth.jobs_device_id(_bearer(h)),
                                 [k.strip() for k in kinds if k.strip()])
     if path == "/phone/ask":
         # An agent's tool waiting on the phone's answer (§6.21): the host's
@@ -778,6 +780,18 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
 
         ok, detail = shell_signin.listing(_bearer(h))
         _json(h, 200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
+    elif path == "/jobs/devices":
+        # The devices that may hold a jobs stream here (phone_jobs.workers,
+        # §6.21a), and which are connected: `media jobs list`. The host's
+        # token, else a caller that may_admin.
+        from . import phone_jobs
+
+        if not (_TOKEN_OK is not None and _TOKEN_OK(h)):
+            user, err = auth.may_admin(_bearer(h))
+            if not user:
+                _json(h, err.pop("status", 403), {"ok": False, **err})
+                return True
+        _json(h, 200, {"ok": True, "devices": phone_jobs.workers()})
     elif path == "/setup":
         # This machine's wiring: `media-setup status --json`, row by row,
         # so the Coding agents page can offer what would fix it.
@@ -1064,7 +1078,10 @@ def _pair(h: BaseHTTPRequestHandler) -> None:
         server["lookup"] = lookup
     _json(h, 200, {"ok": True, "token": got["token"], "device_id": got["device_id"],
                    "name": got["name"], "enrol": bool(got.get("enrol")),
-                   "server": server})
+                   "server": server,
+                   # Only for a jobs-only device (`pair --jobs`): `media jobs
+                   # pair` checks it; the app's answer is unchanged.
+                   **({"jobs": True} if got.get("jobs") else {})})
 
 
 def _services_restart(h: BaseHTTPRequestHandler) -> None:
@@ -1599,7 +1616,7 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
     elif path == "/jobs/result":
         from . import phone_jobs
 
-        ok, detail = phone_jobs.result(auth.device_id(_bearer(h)), _read_json(h))
+        ok, detail = phone_jobs.result(auth.jobs_device_id(_bearer(h)), _read_json(h))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path in ("/speech/state", "/music/state", "/handoff/state", "/book/state"):
         # The phone's players, reported back while they play from frames

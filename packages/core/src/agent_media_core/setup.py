@@ -1977,6 +1977,16 @@ def _row_pi(args, *, check_only: bool):
     return ("installed" if ok else "failed"), detail
 
 
+def _row_jobs(args, *, check_only: bool):
+    """This host's jobs worker (jobs_worker.py): restarted and updated down its
+    own connection to a server. Absent until paired (`media jobs pair`, which
+    installs it too); ok when installed for this host's init; missing when
+    paired and not installed."""
+    from . import jobs_worker
+
+    return jobs_worker.row(check_only=check_only, dry_run=getattr(args, "dry_run", False))
+
+
 #: name, one line for a person, kind, and the function that checks or installs.
 PROFILE_ROWS = (
     ("speech", "the hooks that speak a reply and record the turn", "core", _row_speech),
@@ -1990,6 +2000,8 @@ PROFILE_ROWS = (
      "core", _row_restart),
     ("services", "this host's services, by its roles", "core", _row_services),
     ("shell", "the tmux popup and control surface on PATH", "core", _row_shell),
+    ("jobs", "this host restarted and updated down its own connection to a server "
+     "(its jobs worker)", "extra", _row_jobs),
     ("mail", "agent mail announced at the top of a turn", "extra",
      _hook_row(_MAIL_HOOK, "agent-mail-inbox-hook")),
     ("catchup", "what landed in the shared trees since a session last looked",

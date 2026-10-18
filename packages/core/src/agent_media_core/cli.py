@@ -8348,6 +8348,60 @@ def cmd_update(a) -> int:
     return int(res["rc"])
 
 
+def cmd_jobs(a) -> int:
+    """`media jobs pair|install|status|list`: this host as a jobs worker of a
+    server (jobs_worker.py), and, on a server, the workers it knows."""
+    from . import jobs_worker
+
+    if a.jobs_cmd == "pair":
+        try:
+            rec = jobs_worker.pair(a.link, server=a.server or "")
+        except jobs_worker.JobsError as e:
+            print(f"jobs pair: {e}", file=sys.stderr)
+            return 1
+        print(f"paired with {rec['server']} as {rec.get('name')!r} (device "
+              f"{rec.get('device_id')}); kept in {jobs_worker.config_path()}")
+        if rec.get("warning"):
+            print(f"warning: {rec['warning']}", file=sys.stderr)
+        if a.no_install:
+            return 0
+        ok = jobs_worker.install(dry_run=a.dry_run)
+        if ok:
+            first = str(rec.get("name") or "").split()[:1]
+            print("the worker is installed and connects within a minute. From the "
+                  f"server: media update --host {first[0] if first else rec.get('device_id')}"
+                  " --dry-run")
+        return 0 if ok else 1
+    if a.jobs_cmd == "install":
+        if jobs_worker.config() is None and not jobs_worker.phone_worker():
+            print("jobs install: not paired yet: media jobs pair '<link>' (it installs "
+                  "the worker too)", file=sys.stderr)
+            return 1
+        return 0 if jobs_worker.install(dry_run=a.dry_run) else 1
+    if a.jobs_cmd == "list":
+        from . import restart_services
+
+        status, ans = restart_services._device_get("/jobs/devices")
+        if status != 200 or not isinstance(ans, dict):
+            print(f"jobs list: this host's server answered {status or 'nothing'}"
+                  f"{': ' + str(ans.get('error')) if isinstance(ans, dict) and ans.get('error') else ''}",
+                  file=sys.stderr)
+            return 1
+        rows = ans.get("devices") or []
+        if not rows:
+            print("no jobs workers: pair one with media-visual-canvas pair --device "
+                  "\"<host> jobs\" --jobs")
+        for d in rows:
+            print(f"{d.get('id'):<16} {d.get('name') or '-':<24} "
+                  f"{'connected' if d.get('connected') else 'offline':<10} "
+                  f"takes {','.join(d.get('takes') or d.get('may') or []) or '-'}"
+                  f"{'  (the phone: commands too)' if d.get('phone') else ''}")
+        return 0
+    for line in jobs_worker.status_lines():
+        print(line)
+    return 0
+
+
 def cmd_peer(a) -> int:
     """`media peer pair NAME LINK` and `media peer list`: this host's device
     tokens for other hosts' servers (peer_link.py), which `restart-services
@@ -9572,6 +9626,30 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="fetch and say what a pull would bring and what would "
                          "restart; pull and restart nothing")
     up.set_defaults(func=cmd_update)
+
+    jb = sub.add_parser(
+        "jobs",
+        help="this host as a jobs worker of a server (restarted and updated down "
+             "its own connection), or, on a server, the workers it knows")
+    jsub = jb.add_subparsers(dest="jobs_cmd", required=True)
+    jp = jsub.add_parser(
+        "pair", help="pair with a server as its jobs worker and install the worker",
+        description="Trade the code from `media-visual-canvas pair --device NAME "
+                    "--jobs` (on the server) for a token, keep it in "
+                    "~/.config/agent-media/jobs-worker.json, and install the worker "
+                    "for this host's init, started: a systemd --user unit, a runit "
+                    "service link, or a Windows logon task.")
+    jp.add_argument("link", help="the sasonica://pair?server=…&code=… link (or a code "
+                                 "with --server)")
+    jp.add_argument("--server", default="", help="the server's URL, with a bare code")
+    jp.add_argument("--no-install", action="store_true", help="pair only")
+    jp.add_argument("--dry-run", action="store_true",
+                    help="pair, then say how the worker would be installed")
+    ji = jsub.add_parser("install", help="install (or keep) the worker service here")
+    ji.add_argument("--dry-run", action="store_true")
+    jsub.add_parser("status", help="whether this host is paired and its worker installed")
+    jsub.add_parser("list", help="on a server: its jobs workers, connected or not")
+    jb.set_defaults(func=cmd_jobs)
 
     pe = sub.add_parser(
         "peer",

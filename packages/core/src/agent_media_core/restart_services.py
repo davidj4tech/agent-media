@@ -111,6 +111,8 @@ class Service:
 
 
 def short_name(name: str) -> str:
+    # A Windows task is named with its folder (`Sasonica\\canvas`).
+    name = name.rsplit("\\", 1)[-1]
     for p in PREFIXES:
         if name.startswith(p):
             name = name[len(p):]
@@ -122,12 +124,50 @@ def short_name(name: str) -> str:
 
 
 def services() -> list[Service]:
-    """Everything this checkout owns, as selfcheck enumerates it."""
+    """Everything this checkout owns, as selfcheck enumerates it; on Windows,
+    the Task Scheduler tasks agent-media and Sasonica register."""
     from . import cli
 
     root = cli._checkout_root()
     return ([Service(n, s, "runit") for n, s in cli._runit_service_states(root)]
-            + [Service(n, s, "systemd") for n, s in cli._systemd_service_states()])
+            + [Service(n, s, "systemd") for n, s in cli._systemd_service_states()]
+            + [Service(n, s, "schtasks") for n, s in schtasks_states()])
+
+
+#: Task Scheduler folders whose tasks are ours (Windows): `sasonica install`'s
+#: (canvas, sessiond, quick-tunnel, speech) and `media jobs pair`'s
+#: (jobs-worker).
+TASK_FOLDERS = ("\\Sasonica\\", "\\agent-media\\")
+_TASK_STATE = {"running": "up", "ready": "down", "disabled": "parked", "queued": "down"}
+
+
+def _schtasks_query(*args: str) -> str:
+    try:
+        r = subprocess.run(["schtasks", "/Query", "/FO", "CSV", "/NH", *args],
+                           capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return r.stdout if r.returncode == 0 else ""
+
+
+def _parse_tasks(text: str) -> "list[tuple[str, str]]":
+    import csv
+
+    out, seen = [], set()
+    for row in csv.reader(text.splitlines()):
+        if len(row) < 3 or not row[0].startswith(TASK_FOLDERS) or row[0] in seen:
+            continue
+        seen.add(row[0])
+        out.append((row[0].lstrip("\\"), _TASK_STATE.get(row[2].strip().lower(),
+                                                         row[2].strip().lower() or "down")))
+    return out
+
+
+def schtasks_states() -> "list[tuple[str, str]]":
+    """(task, state) for our Task Scheduler tasks; [] off Windows."""
+    if os.name != "nt":
+        return []
+    return _parse_tasks(_schtasks_query())
 
 
 def resolve(only: "Optional[list[str]]", svcs: list[Service]
@@ -246,6 +286,18 @@ def _svdir() -> "Optional[Path]":
 
 
 def _restart_one(s: Service) -> "tuple[bool, str]":
+    if s.kind == "schtasks":
+        # End (it may not be running: fine), then Run. Task Scheduler has no
+        # restart verb.
+        try:
+            subprocess.run(["schtasks", "/End", "/TN", s.name], capture_output=True,
+                           text=True, timeout=60)
+            r = subprocess.run(["schtasks", "/Run", "/TN", s.name], capture_output=True,
+                               text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError) as e:
+            return False, str(e)
+        detail = (r.stdout or r.stderr or "").strip().replace("\n", " ")
+        return r.returncode == 0, "" if r.returncode == 0 else detail
     if s.kind == "runit":
         svdir = _svdir()
         cmd = ["sv", "restart", str(Path(svdir or ".") / s.name)]
@@ -262,6 +314,8 @@ def _restart_one(s: Service) -> "tuple[bool, str]":
 
 
 def _is_up(s: Service) -> bool:
+    if s.kind == "schtasks":
+        return any(st == "up" for _, st in _parse_tasks(_schtasks_query("/TN", s.name)))
     try:
         if s.kind == "runit":
             svdir = _svdir()
@@ -352,6 +406,11 @@ def own_services(selected: list[Service]) -> list[Service]:
     cgroup = _own_cgroup()
     out = []
     for s in selected:
+        if s.kind == "schtasks":
+            # Task Scheduler does not say which process a task runs: count every
+            # task as possibly this one, so a restart of it is detached.
+            out.append(s)
+            continue
         if s.kind == "systemd" and f"/{s.name}.service" in cgroup:
             out.append(s)
             continue
@@ -497,14 +556,29 @@ def schedule(selected: list[Service], after: float, force: bool) -> dict:
     env = {k: v for k, v in os.environ.items() if k != "MEDIA_SESSIOND_SESSION"}
     env["MEDIA_RESTART_DELAY_S"] = str(n)
     kw: dict = {}
+    flags = 0
     if os.name == "nt":
-        kw["creationflags"] = (getattr(subprocess, "DETACHED_PROCESS", 0x8)
-                               | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200))
+        flags = (getattr(subprocess, "DETACHED_PROCESS", 0x8)
+                 | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200))
     else:
         kw["start_new_session"] = True
     with open(log, "a") as fh:
-        p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=fh, stderr=fh,
-                             env=env, close_fds=True, **kw)
+        p = None
+        if os.name == "nt":
+            # Out of the task's job object too, where Task Scheduler allows it:
+            # ending the task (the restart itself) would otherwise end this.
+            try:
+                p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=fh, stderr=fh,
+                                     env=env, close_fds=True, creationflags=flags
+                                     | getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB",
+                                               0x01000000))
+            except OSError:
+                p = None
+        if p is None:
+            if flags:
+                kw["creationflags"] = flags
+            p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=fh, stderr=fh,
+                                 env=env, close_fds=True, **kw)
     return {"how": "detached", "unit": f"pid {p.pid}", "log": str(log)}
 
 
@@ -687,6 +761,25 @@ def _device_post(path: str, body: dict, timeout: float) -> "tuple[int, Optional[
         phone_run._base() + path, data=json.dumps(body).encode(),
         method="POST", headers={"Content-Type": "application/json",
                                 "X-Auth-Token": phone_run._token()})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read() or b"{}")
+        except ValueError:
+            return e.code, {}
+    except (OSError, ValueError):
+        return 0, None
+
+
+def _device_get(path: str, timeout: float = 15.0) -> "tuple[int, Optional[dict]]":
+    """`GET path` on this host's own canvas with the host's token
+    (`/jobs/devices`)."""
+    from . import phone_run
+
+    req = urllib.request.Request(phone_run._base() + path,
+                                 headers={"X-Auth-Token": phone_run._token()})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.status, json.loads(r.read() or b"{}")

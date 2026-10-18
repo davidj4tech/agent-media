@@ -271,7 +271,7 @@ def test_not_a_device_is_404_and_the_cli_tries_a_peer(server, host, monkeypatch)
 def test_only_a_restarts_fields_are_queued(server, host, monkeypatch, body, why):
     _, dev = _device("p8a Termux jobs")
     monkeypatch.setenv("MEDIA_PHONE_JOBS_DEVICE", dev)
-    phone_jobs._WORKERS[1] = {"at": 0, "kinds": {"cmd", "restart"}}
+    phone_jobs._WORKERS[1] = {"at": 0, "device": dev, "kinds": {"cmd", "restart"}}
     r = call(server, "POST", "/jobs/restart", {"device": "p8a", **body},
              {"X-Auth-Token": "hosttok"})
     assert r[0].status == 400 and why in r[1]["error"]
@@ -299,7 +299,7 @@ def test_a_job_nobody_takes_is_given_up_after_pickup(server, host, monkeypatch):
     _, dev = _device("p8a Termux jobs")
     monkeypatch.setenv("MEDIA_PHONE_JOBS_DEVICE", dev)
     monkeypatch.setattr(phone_jobs, "PICKUP_S", 0.2)
-    phone_jobs._WORKERS[1] = {"at": 0, "kinds": {"cmd", "restart"}}   # a stream gone quiet
+    phone_jobs._WORKERS[1] = {"at": 0, "device": dev, "kinds": {"cmd", "restart"}}   # a stream gone quiet
     status, ans = phone_jobs.restart("p8a", {"only": ["canvas"]}, timeout=5)
     assert status == 503 and "no phone worker took it" in ans["lines"][0]
     assert _empty()
@@ -310,7 +310,7 @@ def test_a_job_taken_but_not_answered_times_out_and_a_late_answer_is_dropped(
     _, dev = _device("p8a Termux jobs")
     monkeypatch.setenv("MEDIA_PHONE_JOBS_DEVICE", dev)
     monkeypatch.setattr(phone_jobs, "ANSWER_MARGIN_S", 0.0)
-    phone_jobs._WORKERS[1] = {"at": 0, "kinds": {"cmd", "restart"}}
+    phone_jobs._WORKERS[1] = {"at": 0, "device": dev, "kinds": {"cmd", "restart"}}
     taken = []
 
     def take():
@@ -455,7 +455,7 @@ def test_update_not_a_device_is_1_with_how(server, host, monkeypatch, capsys):
 def test_a_worker_too_old_for_updates_is_never_handed_one(server, host, monkeypatch):
     _, dev = _device("p8a Termux jobs")
     monkeypatch.setenv("MEDIA_PHONE_JOBS_DEVICE", dev)
-    phone_jobs._WORKERS[1] = {"at": 0, "kinds": {"cmd", "restart"}}  # 18 Oct's worker
+    phone_jobs._WORKERS[1] = {"at": 0, "device": dev, "kinds": {"cmd", "restart"}}  # 18 Oct's worker
     status, ans = phone_jobs.update("p8a", {})
     assert status == 503 and "too old to take an update" in ans["lines"][0]
     assert _empty()
@@ -464,7 +464,7 @@ def test_a_worker_too_old_for_updates_is_never_handed_one(server, host, monkeypa
 def test_only_an_updates_fields_are_queued(server, host, monkeypatch):
     _, dev = _device("p8a Termux jobs")
     monkeypatch.setenv("MEDIA_PHONE_JOBS_DEVICE", dev)
-    phone_jobs._WORKERS[1] = {"at": 0, "kinds": {"cmd", "restart", "update"}}
+    phone_jobs._WORKERS[1] = {"at": 0, "device": dev, "kinds": {"cmd", "restart", "update"}}
     r = call(server, "POST", "/jobs/update", {"device": "p8a", "ref": "evil"},
              {"X-Auth-Token": "hosttok"})
     assert r[0].status == 400 and "ref" in r[1]["error"]
@@ -504,3 +504,133 @@ def test_doctor_fix_falls_back_to_ssh_for_any_other_host(server, host, monkeypat
     monkeypatch.setattr(subprocess, "run", lambda argv, **k: ran.append(argv) or R())
     ok, lines = core_cli._fix_host("homer")
     assert ok and ran[0][:1] == ["ssh"] and lines == ["fix=agent-media already at abc"]
+
+
+# --- any host as a jobs worker, several at once (David, 18 Oct 2026) ------------
+#
+# The laptop (pn) and the speaker (sp4) are jobs-only devices: paired with
+# `pair --device "pn jobs" --jobs`, each holding its own stream with the same
+# worker script in its generic mode. A restart or update goes to the device it
+# names and no other; a command only ever to the phone; a jobs-only token opens
+# no other route.
+
+from agent_media_server import devices  # noqa: E402
+
+
+def _jobs_device(name: str) -> "tuple[dict, str, str]":
+    """A jobs-only device: (headers, device id, token)."""
+    code, _ = devices.mint_code(name, jobs=True)
+    got = devices.redeem(code, name)
+    assert got["jobs"] is True
+    return {"Authorization": f"Bearer {got['token']}"}, got["device_id"], got["token"]
+
+
+def _generic_worker(server, tmp_path, token, monkeypatch):
+    """The worker script in its generic mode, paired by jobs-worker.json."""
+    mod = _worker_module()
+    cfg = tmp_path / "jobs-worker.json"
+    cfg.write_text('{"server": "http://%s:%d", "token": "%s"}' % (*server, token))
+    monkeypatch.setattr(mod, "CONFIG_FILE", cfg)
+    mod.GENERIC = True
+    threading.Thread(target=lambda: _forever(mod), daemon=True).start()
+    return mod
+
+
+@pytest.fixture()
+def pn(server, worker, monkeypatch, tmp_path):
+    """The phone's worker (the `worker` fixture) and pn's, both connected."""
+    headers, dev, token = _jobs_device("pn jobs")
+    _generic_worker(server, tmp_path, token, monkeypatch)
+    assert _wait(lambda: phone_jobs.connected(dev))
+    return headers, dev
+
+
+def test_a_restart_goes_to_the_device_it_names_and_no_other(pn, host, fake_py):
+    res = rs.run_device("pn", ["canvas"])
+    assert res["rc"] == 0 and res["device"] == "pn jobs", res
+    assert fake_py().count("argv --json --only canvas") == 1
+    res = rs.run_device("p8a", ["sink-speech"])
+    assert res["device"] == "p8a Termux jobs"
+    assert fake_py().count("argv --json --only sink-speech") == 1
+    assert _empty()
+
+
+def test_a_jobs_only_device_never_gets_a_command(server, host, monkeypatch, tmp_path):
+    _, dev, token = _jobs_device("pn jobs")
+    monkeypatch.setenv("MEDIA_PHONE_JOBS_DEVICE", "d_phone_not_here")
+    _generic_worker(server, tmp_path, token, monkeypatch)
+    assert _wait(lambda: phone_jobs.connected(dev))
+    rc, _, err = phone_run.run("id", timeout=5)
+    assert rc == 255 and "no phone worker" in err
+    with phone_jobs._COND:
+        kinds = [w["kinds"] for w in phone_jobs._WORKERS.values()]
+    assert kinds == [{"restart", "update"}]
+
+
+def test_a_jobs_only_token_opens_no_other_route(server, host, monkeypatch):
+    headers, _, _ = _jobs_device("pn jobs")
+    for method, path, body in (("POST", "/jobs/restart", {"device": "pn"}),
+                               ("POST", "/services/restart", {"dry_run": True}),
+                               ("GET", "/jobs/devices", None)):
+        r = call(server, method, path, body, headers)
+        assert r[0].status in (401, 403, 502, 503) and r[1].get("rc") is None, (path, r)
+
+
+def test_a_worker_cannot_answer_another_devices_job(server, host, monkeypatch):
+    _, phone = _device("p8a Termux jobs")
+    _, pn_dev, _ = _jobs_device("pn jobs")
+    monkeypatch.setenv("MEDIA_PHONE_JOBS_DEVICE", phone)
+    job = phone_jobs._new("restart", 5, device=phone, restart={})
+    phone_jobs._JOBS[job["id"]] = job
+    ok, detail = phone_jobs.result(pn_dev, {"id": job["id"], "rc": 0})
+    assert not ok and detail["status"] == 403 and not job["done"]
+    ok, _ = phone_jobs.result("d_stranger", {"id": job["id"], "rc": 0})
+    assert not ok
+
+
+def test_jobs_devices_lists_every_worker(pn, host, server, capsys):
+    r = call(server, "GET", "/jobs/devices", None, {"X-Auth-Token": "hosttok"})
+    assert r[0].status == 200
+    by = {d["name"]: d for d in r[1]["devices"]}
+    assert by["pn jobs"]["connected"] and by["pn jobs"]["takes"] == ["restart", "update"]
+    assert by["p8a Termux jobs"]["phone"] and "cmd" in by["p8a Termux jobs"]["takes"]
+    assert core_cli.main(["jobs", "list"]) == 0
+    out = capsys.readouterr().out
+    assert "pn jobs" in out and "connected" in out and "the phone" in out
+
+
+def test_revoking_a_jobs_device_ends_its_stream(server, monkeypatch, tmp_path):
+    monkeypatch.setattr(phone_jobs, "PING_S", 0.2)
+    _, dev, token = _jobs_device("pn jobs")
+    _generic_worker(server, tmp_path, token, monkeypatch)
+    assert _wait(lambda: phone_jobs.connected(dev))
+    devices.set_jobs(dev, False)
+    assert dev not in phone_jobs.jobs_devices()
+    assert _wait(lambda: not phone_jobs.connected(dev))
+
+
+def test_media_jobs_pair_trades_a_jobs_code(server, monkeypatch, tmp_path):
+    from agent_media_core import jobs_worker
+
+    monkeypatch.setattr(jobs_worker, "config_path", lambda: tmp_path / "jw.json")
+    code, _ = devices.mint_code("pn jobs", jobs=True)
+    link = "sasonica://pair?server=http%%3A%%2F%%2F%s%%3A%d&code=%s" % (*server, code)
+    rec = jobs_worker.pair(link)
+    assert rec["name"] == "pn jobs" and "warning" not in rec
+    assert (tmp_path / "jw.json").stat().st_mode & 0o777 == 0o600
+    assert jobs_worker.config()["server"] == "http://%s:%d" % server
+    row = next(d for d in devices.list_devices() if d["id"] == rec["device_id"])
+    assert devices.is_jobs_worker(row)
+    # A code minted without --jobs is a full device: said, so it can be fixed.
+    code, _ = devices.mint_code("sp4 jobs")
+    rec = jobs_worker.pair(code, server="http://%s:%d" % server)
+    assert "media-visual-canvas devices --jobs" in rec["warning"]
+
+
+def test_the_devices_cli_sets_the_jobs_bit(capsys):
+    _, dev = _device("sp4 jobs")
+    assert devices.cli_devices(["--jobs", dev]) == 0
+    assert devices.cli_devices([]) == 0
+    assert "[jobs worker]" in capsys.readouterr().out
+    assert devices.cli_devices(["--no-jobs", dev]) == 0
+    assert dev not in phone_jobs.jobs_devices()

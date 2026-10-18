@@ -49,7 +49,19 @@ def set_client_ip(ip: str) -> None:
 
 
 def _device(bearer: str) -> dict | None:
-    return devices.lookup(bearer, getattr(_REQ, "ip", ""))
+    """The device this bearer is — never a jobs-only one (`pair --jobs`):
+    another host's worker token takes jobs down its stream and is no way in
+    to anything else (it falls through to ABS, which refuses it)."""
+    dev = devices.lookup(bearer, getattr(_REQ, "ip", ""))
+    return None if devices.is_jobs_worker(dev) else dev
+
+
+def jobs_device_id(bearer: str) -> str:
+    """The id of any paired device, jobs-only ones included: what the jobs
+    worker routes (`/jobs/events`, `/jobs/result`) ask, and then check
+    against the devices that may take jobs (phone_jobs.jobs_devices)."""
+    dev = devices.lookup(bearer, getattr(_REQ, "ip", ""))
+    return str(dev.get("id") or "") if dev else ""
 
 
 def _owner(dev: dict) -> dict:

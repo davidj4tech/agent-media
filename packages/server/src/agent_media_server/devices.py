@@ -346,7 +346,27 @@ def may_enrol(device: dict | None) -> bool:
 
 # --- pairing ----------------------------------------------------------------------
 
-def mint_code(name: str, enrol: bool = False) -> tuple[str, float]:
+def set_jobs(device_id: str, on: bool = True) -> bool:
+    """Make a paired device a jobs worker (or not), from the shell: what
+    `pair --device NAME --jobs` does at pairing. False for an unknown id."""
+    with _locked():
+        rows = _load(fresh=True)
+        hit = next((d for d in rows if d.get("id") == device_id), None)
+        if hit is None:
+            return False
+        if bool(hit.get("jobs")) != on:
+            _save([{**d, "jobs": on} if d is hit else d for d in rows])
+        return True
+
+
+def is_jobs_worker(device: dict | None) -> bool:
+    """A jobs-only device (`pair --device NAME --jobs`): another host's jobs
+    worker (phone_jobs.py), which takes restart and update jobs down its own
+    stream and may use no other route — its token restarts nothing here."""
+    return bool((device or {}).get("jobs"))
+
+
+def mint_code(name: str, enrol: bool = False, jobs: bool = False) -> tuple[str, float]:
     """A fresh pairing code for a device called `name`: `(code, expires)`.
 
     Several may be outstanding at once (pairing a phone and a tablet in the
@@ -364,6 +384,10 @@ def mint_code(name: str, enrol: bool = False) -> tuple[str, float]:
                  if isinstance(v, dict) and float(v.get("expires") or 0) > now}
         codes[code] = {"name": " ".join((name or "").split())[:80],
                        "expires": round(expires, 3), "enrol": bool(enrol)}
+        if jobs:
+            # Like `enrol`, granted by whoever mints: a device cannot make
+            # itself a jobs worker any more than it can name itself.
+            codes[code]["jobs"] = True
         _write(codes_path(), codes)
     return code, expires
 
@@ -419,9 +443,11 @@ def redeem(code: str, device: str, ip: str = "") -> dict | None:
         row = {"id": "d_" + secrets.token_hex(6), "name": name, "sha256": _hash(token),
                "created": round(now, 3), "last_seen": round(now, 3), "last_ip": ip or "",
                "enrol": bool(entry.get("enrol"))}
+        if entry.get("jobs"):
+            row["jobs"] = True
         _save(list(_load(fresh=True)) + [row])
     return {"token": token, "device_id": row["id"], "name": name,
-            "enrol": bool(row["enrol"])}
+            "enrol": bool(row["enrol"]), "jobs": bool(row.get("jobs"))}
 
 
 #: Fields that never leave the store: the token's hash, and an account's
@@ -552,6 +578,10 @@ def cli_devices(argv: list[str]) -> int:
     act.add_argument("--enrol", metavar="ID",
                      help="let this device pair and revoke devices from the app (Settings → Devices)")
     act.add_argument("--no-enrol", metavar="ID", help="take that right back")
+    act.add_argument("--jobs", metavar="ID",
+                     help="make this device a jobs worker: restart/update jobs down "
+                          "its own stream, and no other route (phone_jobs.py)")
+    act.add_argument("--no-jobs", metavar="ID", help="no longer a jobs worker")
     act.add_argument("--revoke-account", metavar="WHO",
                      help="forget every device an account enrolled (its sub, or its email)")
     args = ap.parse_args(argv)
@@ -559,6 +589,13 @@ def cli_devices(argv: list[str]) -> int:
         n = revoke_account(args.revoke_account)
         print(f"revoked {n} device(s) of {args.revoke_account}" if n else f"no devices of {args.revoke_account}")
         return 0 if n else 1
+    if args.jobs or args.no_jobs:
+        device_id, on = (args.jobs, True) if args.jobs else (args.no_jobs, False)
+        if set_jobs(device_id, on):
+            print(f"{device_id} {'is' if on else 'is no longer'} a jobs worker")
+            return 0
+        print(f"no device {device_id}", flush=True)
+        return 1
     if args.enrol or args.no_enrol:
         device_id, on = (args.enrol, True) if args.enrol else (args.no_enrol, False)
         if set_enrol(device_id, on):
@@ -584,5 +621,6 @@ def cli_devices(argv: list[str]) -> int:
         print(f"{d.get('id'):<16} {d.get('name', ''):<24} paired {when(d.get('created'))}"
               f"  seen {when(d.get('last_seen'))} from {d.get('last_ip') or '-'}"
               f"{'  [enrols]' if may_enrol(d) else ''}"
+              f"{'  [jobs worker]' if is_jobs_worker(d) else ''}"
               f"{'  account ' + d['account'] if d.get('account') else ''}")
     return 0

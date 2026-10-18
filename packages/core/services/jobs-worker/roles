@@ -1,0 +1,5 @@
+# Any host that is paired as a jobs worker with a server: `media jobs pair`
+# writes ~/.config/agent-media/jobs-worker.json, and installs this service
+# itself. The gate keeps it off every host that is not (red5, the server, and
+# the phone, whose worker is deploy/phone/service/phone-jobs).
+requires-config: jobs-worker.json

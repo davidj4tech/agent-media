@@ -3578,6 +3578,28 @@ then restart.
   deploys a host that is one of this server's jobs devices this way instead
   of over ssh, and also one ssh could not reach.
 
+**Any host, several workers** (built 18 Oct 2026). Any host can run the
+same worker (`packages/core/services/jobs-worker/jobs-worker.py --generic`,
+installed by `media jobs pair` for systemd --user, runit or a Windows logon
+task), each its own device:
+
+- A **jobs-only device** is paired with `media-visual-canvas pair --device
+  "pn jobs" --jobs` (the bit rides on the code, like `--enrol`, and the
+  redeemed row carries `jobs: true`; `POST /pair` adds `jobs: true` to its answer
+  for such a code only), or made
+  one with `media-visual-canvas devices --jobs ID`. `MEDIA_JOBS_DEVICES`
+  (ids) also counts. It takes `restart` and `update` jobs and never a
+  command, and its token is refused by every other route (the gate leaves it
+  out, so it falls through to ABS, which refuses it).
+- `MEDIA_PHONE_JOBS_DEVICE` stays the phone: the one device that takes
+  commands (`/jobs/run`), and restarts and updates too.
+- Every job names its device. A stream takes only its own device's jobs,
+  and `POST /jobs/result` for another device's job is 403. `device` in
+  `/jobs/restart` and `/jobs/update` matches any of these devices by id or
+  whole name first, then by the first word of its name.
+- `GET /jobs/devices` (host token, else may_admin): `{devices: [{id, name,
+  phone, may, connected, takes}]}`; `media jobs list` on the server.
+
 `canvas` names the canvas wherever it runs: `canvas-local` on the phone,
 `agent-media-visual-canvas` on red5, `sasonica-canvas` on an Android
 install. So restarting the phone's canvas, on red5, is:

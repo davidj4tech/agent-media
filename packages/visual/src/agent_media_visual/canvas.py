@@ -619,7 +619,15 @@ def _cmd_pair(argv: list[str]) -> int:
                     help="with --device: let this device pair others from the app "
                          "(list them, mint a code, revoke one). Off by default — "
                          "the shell is the only way in until a device is given it")
+    ap.add_argument("--jobs", action="store_true",
+                    help="with --device: another host's jobs worker (media jobs pair "
+                         "there), restarted and updated down its own connection "
+                         "(media restart-services / media update --host). Its token "
+                         "takes jobs and opens no other route")
     args = ap.parse_args(argv)
+    if args.jobs and (args.device is None or args.enrol):
+        print("pair: --jobs goes with --device NAME, and not with --enrol", file=sys.stderr)
+        return 2
     tunnelled, lookup = False, ""
     if args.device is not None and not args.server and not args.host:
         # A quick tunnel (sasonica install) before a tailnet address: it is
@@ -635,7 +643,8 @@ def _cmd_pair(argv: list[str]) -> int:
 
     if args.device is not None:
         return _cmd_pair_device(args.device, args.host, args.port, enrol=args.enrol,
-                                server=args.server, tunnelled=tunnelled, lookup=lookup)
+                                server=args.server, tunnelled=tunnelled, lookup=lookup,
+                                jobs=args.jobs)
 
     if not _amux_token():
         print("no amux token on this host (~/.amux/auth_token) — nothing to pair.",
@@ -656,7 +665,7 @@ def _cmd_pair(argv: list[str]) -> int:
 
 def _cmd_pair_device(name: str, host: str, port: int, enrol: bool = False,
                      server: str = "", tunnelled: bool = False,
-                     lookup: str = "") -> int:
+                     lookup: str = "", jobs: bool = False) -> int:
     """`pair --device NAME`: a code the app trades for a device token at
     `POST /pair`. The code lives in the server package's own store
     (agent_media_server.devices), NOT the spool's `pair-code` above — the two
@@ -668,8 +677,16 @@ def _cmd_pair_device(name: str, host: str, port: int, enrol: bool = False,
     if not name:
         print("--device needs a name, e.g. --device \"Pixel 8a\"", file=sys.stderr)
         return 2
-    code, _expires = _devices.mint_code(name, enrol=enrol)
+    code, _expires = _devices.mint_code(name, enrol=enrol, jobs=jobs)
     app_link, web_link = _devices.links(code, host, port, server, lookup)
+    if jobs:
+        # Not the app: the host's own command line takes this one.
+        print(f"\n  Pair {name!r} as a jobs worker (valid {_devices.pair_ttl() // 60} min, "
+              "one-time). On that host, run:\n")
+        print(f"    media jobs pair '{app_link}'\n")
+        print("  It pairs, installs the worker service for that host's init and starts\n"
+              "  it. Then from here: media update --host <its first word> --dry-run\n")
+        return 0
     # The app link first, on its own: it is what gets copied into the app's
     # pairing screen, and the http form below it was being copied instead.
     print(f"\n  Pair {name!r} with Sasonica (valid {_devices.pair_ttl() // 60} min, "

@@ -1,0 +1,26 @@
+#!/bin/sh
+# jobs-worker — this host, restarted and updated down a connection it opens
+# to a server (David, 18 Oct 2026: "I don't want to have to rely on
+# tailscale"). It holds GET /jobs/events open on that server and takes two
+# kinds of job: a restart (`media restart-services --host <this host>` there)
+# and an update (`media update --host <this host>`: git pull --ff-only, then
+# restart). Never a command. See jobs-worker.py and contract §6.21a.
+#
+# Installed by `media jobs pair '<link>'` (agent_media_core/jobs_worker.py),
+# which pairs and then links this dir into runit's service dir, or writes a
+# systemd --user unit that runs this file. Linked, never copied: an update
+# pulls this very file.
+#
+# The system python first: the worker is stdlib only, and is what repairs a
+# host whose venv is broken. MEDIA_JOBS_WORKER_PYTHON overrides.
+exec 2>&1
+[ -f "$HOME/.config/agent-media.env" ] && . "$HOME/.config/agent-media.env"
+export MEDIA_JOBS_SERVER MEDIA_JOBS_TOKEN MEDIA_PHONE_JOBS_PYTHON MEDIA_JOBS_CHECKOUT
+here=$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")
+for py in "${MEDIA_JOBS_WORKER_PYTHON:-}" /usr/bin/python3 "${PREFIX:-/nonexistent}/bin/python3" python3; do
+  if [ -n "$py" ] && command -v "$py" >/dev/null 2>&1; then
+    exec "$py" "$here/jobs-worker.py" --generic
+  fi
+done
+echo "jobs-worker: no python3 on PATH"
+exit 1

@@ -23,11 +23,24 @@ by `MEDIA_PHONE_JOBS_DEVICE`. stdin is not carried: the two callers that pipe
 a file in (seeding the Termux player from red5) fail and fall back, as they
 do when ssh does.
 
+**Several workers, each its own device** (David, 18 Oct 2026). Besides the
+phone's, any host can hold a stream: the laptop, the speaker, a Windows box
+(`packages/core/services/jobs-worker`, `media jobs pair` there). Each is a
+jobs-only device, paired with `media-visual-canvas pair --device "pn jobs"
+--jobs` (devices.is_jobs_worker; or an id in `MEDIA_JOBS_DEVICES`). Every
+job names its device and goes down that device's stream only. A jobs-only
+device takes restarts and updates and never a command — commands stay the
+phone's (`MEDIA_PHONE_JOBS_DEVICE`) alone — and its token opens no other
+route (auth._device leaves it out): a stolen laptop token restarts nothing.
+
     run(cmd, timeout)       → {rc, out, err}; rc 255 with no worker / on timeout
     serve(h, device, kinds) → the worker's stream (`job` frames)
     result(device, body)    → the worker's answer
     restart(name, body)     → (status, answer): `media restart-services --host
                               <the phone>` (POST /jobs/restart)
+    update(name, body)      → (status, answer): `media update --host NAME`
+                              (POST /jobs/update: pull, then restart)
+    workers()               → GET /jobs/devices
 
 **A restart is a job of its own kind** (David, 18 Oct 2026: "I don't want to
 have to rely on tailscale"). `media restart-services --host NAME` used to
@@ -90,12 +103,34 @@ _NEXT = 0
 
 
 def worker_device() -> str:
+    """The phone's worker: the one device that takes commands (`cmd` jobs)."""
     return os.environ.get("MEDIA_PHONE_JOBS_DEVICE", "").strip()
 
 
-def connected() -> bool:
+def jobs_devices() -> dict[str, set[str]]:
+    """Every device that may hold a jobs stream here, and the kinds it may
+    take: the phone (`MEDIA_PHONE_JOBS_DEVICE`) commands and every kind; a
+    jobs-only device (`pair --device NAME --jobs`, devices.is_jobs_worker, or
+    an id in `MEDIA_JOBS_DEVICES`) restarts and updates only — never a
+    command, which stays the phone's alone, as ssh to it was."""
+    from . import devices
+
+    out: dict[str, set[str]] = {}
+    phone = worker_device()
+    if phone:
+        out[phone] = {"cmd", *KINDS}
+    for d in devices.list_devices():
+        if devices.is_jobs_worker(d) and d.get("id"):
+            out.setdefault(str(d["id"]), set(KINDS))
+    for i in os.environ.get("MEDIA_JOBS_DEVICES", "").replace(",", " ").split():
+        out.setdefault(i, set(KINDS))
+    return out
+
+
+def connected(device: str = "") -> bool:
+    """A worker stream is up (that device's, when named)."""
     with _COND:
-        return bool(_WORKERS)
+        return any(not device or w.get("device") == device for w in _WORKERS.values())
 
 
 def _submit(job: dict, timeout: float) -> dict | None:
@@ -134,10 +169,11 @@ def run(cmd: str, timeout: float = DEFAULT_TIMEOUT_S) -> dict:
     timeout = max(1.0, min(float(timeout or DEFAULT_TIMEOUT_S), MAX_TIMEOUT_S))
     if not cmd or not isinstance(cmd, str):
         return {"rc": 2, "out": "", "err": "no command"}
+    phone = worker_device()
     with _COND:
-        if not _WORKERS:
+        if not phone or not any(w.get("device") == phone for w in _WORKERS.values()):
             return {"rc": 255, "out": "", "err": "no phone worker connected"}
-        job = _new("cmd", timeout, cmd=cmd)
+        job = _new("cmd", timeout, cmd=cmd, device=phone)
         if _submit(job, timeout) is None:
             return {"rc": 255, "out": "", "err": job["why"]}
         return {"rc": job["rc"], "out": job["out"], "err": job["err"]}
@@ -173,21 +209,26 @@ def restart_spec(body) -> tuple[dict | None, str]:
 
 
 def device_for(name: str) -> dict | None:
-    """The paired device NAME names, when it is this server's jobs worker:
-    its id, its whole name, or the first word of its name, any case
-    ("p8a" for "p8a Termux jobs"). None otherwise: NAME is then not a host
-    this server can reach down a stream, and the caller tries it as a peer."""
+    """The paired device NAME names, when it is one of this server's jobs
+    workers (jobs_devices): its id, its whole name, or the first word of its
+    name, any case ("p8a" for "p8a Termux jobs", "pn" for "pn jobs"). An id
+    or a whole name wins over a first word. None otherwise: NAME is then not
+    a host this server can reach down a stream, and the caller tries it as a
+    peer."""
     from . import devices
 
-    wid = worker_device()
+    ids = jobs_devices()
     n = (name or "").strip().casefold()
-    if not wid or not n:
+    if not ids or not n:
         return None
-    for d in devices.list_devices():
-        if d.get("id") != wid:
-            continue
+    rows = [d for d in devices.list_devices() if d.get("id") in ids]
+    for d in rows:
         full = str(d.get("name") or "").strip().casefold()
-        if n in (wid.casefold(), full) or (full.split() and full.split()[0] == n):
+        if n in (str(d.get("id")).casefold(), full):
+            return d
+    for d in rows:
+        full = str(d.get("name") or "").strip().casefold().split()
+        if full and full[0] == n:
             return d
     return None
 
@@ -209,18 +250,20 @@ def _device_job(kind: str, name: str, body, timeout: float) -> tuple[int, dict |
     if spec is None:
         return 400, None, {"ok": False, "error": why}
     label = str(dev.get("name") or dev.get("id"))
+    did = str(dev.get("id"))
+    svc = "phone-jobs" if did == worker_device() else "jobs-worker"
     timeout = max(1.0, min(float(timeout), MAX_TIMEOUT_S))
     with _COND:
-        if not _WORKERS:
-            return 503, None, _fail([f"{label} is offline: its jobs worker is not "
-                                     "connected to this server (phone-jobs on the phone)"],
-                                    device=label)
-        if not any(kind in w["kinds"] for w in _WORKERS.values()):
+        mine = [w for w in _WORKERS.values() if w.get("device") == did]
+        if not mine:
+            return 503, None, _fail([f"{label} is offline: its jobs worker ({svc}) is "
+                                     "not connected to this server"], device=label)
+        if not any(kind in w["kinds"] for w in mine):
             return 503, None, _fail([f"{label}'s jobs worker is too old to take "
                                      f"{'a restart' if kind == 'restart' else 'an update'}: "
-                                     "pull agent-media on the phone and restart its "
-                                     "phone-jobs service"], device=label)
-        job = _new(kind, timeout, **{kind: spec})
+                                     f"pull agent-media there and restart its {svc} "
+                                     "service"], device=label)
+        job = _new(kind, timeout, device=did, **{kind: spec})
         if _submit(job, timeout) is None:
             return 503, None, _fail([f"{label}: {job['why']} (waited {timeout:g} s); "
                                      "nothing is left queued"], device=label)
@@ -271,14 +314,16 @@ def update(name: str, body, timeout: float = UPDATE_TIMEOUT_S) -> tuple[int, dic
 
 
 def result(device: str, body) -> tuple[bool, dict]:
-    if not worker_device() or device != worker_device():
-        return False, {"status": 403, "error": "not the phone's worker"}
+    if not device or device not in jobs_devices():
+        return False, {"status": 403, "error": "not a jobs worker of this server"}
     if not isinstance(body, dict):
         return False, {"status": 400, "error": "a JSON object, please"}
     with _COND:
         job = _JOBS.get(str(body.get("id") or ""))
         if job is None:
             return True, {"late": True}
+        if job.get("device") != device:
+            return False, {"status": 403, "error": "not this worker's job"}
         try:
             job["rc"] = int(body.get("rc", 255))
         except (TypeError, ValueError):
@@ -335,21 +380,44 @@ def _frame(job: dict) -> dict:
     return {"id": job["id"], "cmd": job["cmd"], "timeout": job["timeout"]}
 
 
+def _mine(job: dict | None, device: str, kinds: set[str]) -> bool:
+    return bool(job) and job.get("device") == device and job["kind"] in kinds
+
+
+def workers() -> list[dict]:
+    """`GET /jobs/devices`: every device that may hold a jobs stream, its
+    name, the kinds it may take, and whether (and with which kinds) it is
+    connected now."""
+    from . import devices
+
+    ids = jobs_devices()
+    names = {d.get("id"): d.get("name") for d in devices.list_devices()}
+    with _COND:
+        live: dict[str, set[str]] = {}
+        for w in _WORKERS.values():
+            live.setdefault(w.get("device"), set()).update(w["kinds"])
+    return [{"id": i, "name": names.get(i) or "", "phone": i == worker_device(),
+             "may": sorted(k), "connected": i in live, "takes": sorted(live.get(i, ()))}
+            for i, k in sorted(ids.items(), key=lambda kv: str(names.get(kv[0]) or kv[0]))]
+
+
 def serve(h, device: str, kinds=()) -> bool:
     """The worker's stream: each queued job once, as a `job` frame. A
     command goes to any worker; another kind only to a stream that named it
     in `kinds` (`?kinds=restart`)."""
     from .app import _json
 
-    if not worker_device() or device != worker_device():
-        _json(h, 403, {"ok": False, "error": "not the phone's worker"})
+    allowed = jobs_devices().get(device) if device else None
+    if not allowed:
+        _json(h, 403, {"ok": False, "error": "not a jobs worker of this server"})
         return True
     global _NEXT
     with _COND:
         _NEXT += 1
         token = _NEXT
-        _WORKERS[token] = {"at": time.monotonic(),
-                           "kinds": {"cmd", *(k for k in kinds if k in KINDS)}}
+        _WORKERS[token] = {"at": time.monotonic(), "device": device,
+                           "kinds": ({"cmd"} & allowed)
+                           | {k for k in kinds if k in KINDS and k in allowed}}
         mine = _WORKERS[token]["kinds"]
     h.close_connection = True
     try:
@@ -364,19 +432,19 @@ def serve(h, device: str, kinds=()) -> bool:
         last = time.monotonic()
         while True:
             with _COND:
-                _COND.wait_for(lambda: any(_JOBS.get(j, {}).get("kind") in mine
+                _COND.wait_for(lambda: any(_mine(_JOBS.get(j), device, mine)
                                            for j in _QUEUE),
                                timeout=max(0.01, PING_S - (time.monotonic() - last)))
-                # No longer the named worker (the setting moved): take nothing
-                # more, and let the stream go.
-                if device != worker_device():
+                # No longer a jobs worker (the setting moved, the device was
+                # revoked): take nothing more, and let the stream go.
+                if device not in jobs_devices():
                     return True
                 out = []
                 for jid in list(_QUEUE):
                     job = _JOBS.get(jid)
                     if job is None:
                         _QUEUE.remove(jid)
-                    elif job["kind"] in mine:
+                    elif _mine(job, device, mine):
                         _QUEUE.remove(jid)
                         job["taken"] = time.monotonic()
                         out.append(_frame(job))
