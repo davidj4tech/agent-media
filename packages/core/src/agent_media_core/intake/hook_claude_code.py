@@ -470,8 +470,8 @@ def _format_ask_question(tool_input: dict) -> str:
     A multiple-choice question goes out as a *tool call*, so its text never
     lands in the assistant's spoken reply — the user would otherwise only hear
     the generic "waiting for input" notification. Speak the question(s) and
-    their option labels so the choice is audible. Option descriptions are
-    omitted (too verbose for TTS); the labels carry the gist.
+    each option's label and description, so the choice is audible with what
+    picking it means (David, 18 Oct 2026: the labels alone left out the why).
     """
     questions = tool_input.get("questions") or []
     blocks: list[str] = []
@@ -481,10 +481,14 @@ def _format_ask_question(tool_input: dict) -> str:
         if not qtext:
             continue
         lead = f"Question {i}. " if multi else ""
-        opts = q.get("options") or []
-        labels = [(o.get("label") or "").strip() for o in opts]
-        labels = [l for l in labels if l]
-        choice = "".join(f" Option {n}: {l}." for n, l in enumerate(labels, 1))
+        spoken_opts = []
+        for o in q.get("options") or []:
+            label = (o.get("label") or "").strip()
+            if not label:
+                continue
+            desc = (o.get("description") or "").strip().rstrip(".")
+            spoken_opts.append(f"{label}: {desc}" if desc else label)
+        choice = "".join(f" Option {n}: {s}." for n, s in enumerate(spoken_opts, 1))
         tail = " You can pick more than one." if q.get("multiSelect") else ""
         blocks.append(f"{lead}{qtext}{choice}{tail}")
     return " ".join(blocks)
@@ -665,7 +669,7 @@ def ask_structure(tool_input: dict) -> list:
 
 
 def _emit_ask(ask: str, payload: dict, lead: str = "", structure: list | None = None) -> int:
-    """Speak a synthesized AskUserQuestion (question + option labels).
+    """Speak a synthesized AskUserQuestion (question + options, each with its description).
 
     Prefixes the hierarchical host/session/pane label, bypasses focus-
     suppression and the notif/stop cooldown windows (the user explicitly wants

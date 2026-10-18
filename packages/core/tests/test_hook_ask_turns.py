@@ -63,6 +63,15 @@ def test_the_question_is_kept_as_structure_not_just_a_sentence():
     assert H.ask_structure({"questions": [{"question": "  "}]}) == []
 
 
+def test_each_option_is_spoken_with_its_description():
+    got = H._format_ask_question(TOOL_INPUT)
+    assert got == ("Which case do you mean? Option 1: In the app: red5 started it here."
+                   " Option 2: On red5: the rooms.")
+    bare = {"questions": [{"question": "Q?", "options": [{"label": "A"},
+                                                         {"label": "B", "description": "ends here."}]}]}
+    assert H._format_ask_question(bare) == "Q? Option 1: A. Option 2: B: ends here."
+
+
 def test_the_spoken_question_carries_the_structure(monkeypatch):
     seen = {}
     monkeypatch.setattr(H, "_emit_ask",
