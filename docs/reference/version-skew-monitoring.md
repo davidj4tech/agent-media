@@ -291,23 +291,49 @@ media restart-services --only sessiond --after 10
 The turn ends, and ten seconds later sessiond restarts. The chat resumes on
 its next message.
 
-### Restarting another host, through its own server
+### Restarting another host
 
-`--host NAME` does the same on another host without ssh (David, 18 Oct
-2026). It calls that host's `POST /services/restart` (server contract §6.6),
-which runs `restart_services.run()` there with the same options, busy checks
-and health check, and prints its lines. `--dry-run` shows that host's busy
-checks. The exit codes are the remote run's; 1 also covers not paired, not
-reachable, a refused token, and a server too old to have the route.
+`--host NAME` does the same on another host without ssh and without
+Tailscale (David, 18 Oct 2026: "I don't want to have to rely on
+tailscale"). It runs `restart_services.run()` there with the same options,
+busy checks and health check, prints that run's lines and exits with its
+code. `--dry-run` shows that host's busy checks. There are two ways there,
+tried in this order.
+
+**The phone: down its own connection.** The phone's canvas listens on
+loopback only, so nothing can POST to it. Its Termux jobs worker
+(`deploy/phone/service/phone-jobs`) already holds a connection open to
+red5's server through the tunnel. On red5, when NAME names that worker's
+device, the restart is queued on red5's own server (`POST /jobs/restart`,
+contract §6.21a) and goes down that connection as a `restart` job. The
+worker runs `run()` on the phone and answers with its result. To restart
+the phone's canvas, on red5:
 
 ```
 media restart-services --host p8a --only canvas
-media restart-services --host p8a --only sessiond --dry-run
+media restart-services --host p8a --only canvas --dry-run
 ```
 
-A server that restarts itself (the phone's canvas, under runit) always does
-it detached, 10 s later by default, so its answer gets out before it is
-killed.
+NAME is the worker device's id, its whole name (`p8a Termux jobs`) or the
+first word of its name, in any case: `p8a`. The device must be red5's
+`MEDIA_PHONE_JOBS_DEVICE`. `canvas` means the canvas wherever it runs: the
+phone's `canvas-local` here, red5's `agent-media-visual-canvas`. The caller
+waits up to 60 s for the phone to say it did, scheduled or refused the
+restart. A restart now waits out its 20 s health check first. If the
+worker itself (`--only phone-jobs`) is among the services, it restarts
+detached, 10 s later. Exit 1 when the worker is not connected (offline),
+too old to take a restart (pull on the phone, then `sv restart
+$PREFIX/var/service/phone-jobs`), or does not answer in time. Nothing is
+left queued in any of these cases. The worker takes only the four fields
+`only`, `after`, `force` and `dry_run`. It runs no command.
+
+**A reachable server: as a paired device of it.** For any other NAME, it
+calls that host's `POST /services/restart` (server contract §6.6). The exit
+code is the remote run's; 1 also covers not paired, not reachable, a refused
+token, and a server too old to have the route.
+
+A server that restarts itself always does it detached, 10 s later by
+default, so its answer gets out before it is killed.
 
 The credential is a device token for the other host's server, the same kind
 the Sasonica app and the phone's Termux worker hold (contract §9). Pair once
@@ -320,7 +346,7 @@ media-visual-canvas pair --device "red5 media"
 Then on the asking host, with the `sasonica://pair?…` link it printed:
 
 ```
-media peer pair phone 'sasonica://pair?server=…&code=…'
+media peer pair homer 'sasonica://pair?server=…&code=…'
 ```
 
 NAME is a `[peers.*]` alias in config.toml, a peer's `host`, or a role. The

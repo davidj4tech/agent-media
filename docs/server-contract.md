@@ -3510,6 +3510,59 @@ waits and times out rather than saying `no_phone`.
 title, at, status, device, settled_at, a photo's path, an error. No
 coordinates.
 
+### 6.21a Restarting the phone's services — down the connection it opens (built 18 Oct 2026)
+
+`media restart-services --host p8a` on red5 must not need Tailscale or any
+connection into the phone (David, 18 Oct 2026: "I don't want to have to rely
+on tailscale"). The phone's canvas listens on 127.0.0.1 only, so §6.6's
+`POST /services/restart` cannot reach it. Instead the restart rides the
+phone's own outgoing connection: the stream its Termux jobs worker holds open
+to red5 (`GET /jobs/events`, `agent_media_server/phone_jobs.py`,
+`deploy/phone/service/phone-jobs/phone-jobs.py`; it reaches red5 through the
+tunnel, see `docs/proposals/2026-10-03-off-the-tailnet.md`).
+
+It is a new kind of job on that channel, not on §6.21's asks. An ask waits
+for David's yes on the phone, and is answered by the Sasonica app. A restart
+needs no one at the phone. It is the jobs worker that runs agent-media's own
+code in Termux, and it is already paired with red5. What it carries is
+narrowed to a restart's four fields: no command.
+
+- `POST /jobs/restart {device, only?, after?, force?, dry_run?}`: the host's
+  own token (`media restart-services --host` on this host:
+  `restart_services.run_device`), else a caller `auth.may_admin` lets in.
+  `device` names the jobs worker (`MEDIA_PHONE_JOBS_DEVICE`) by its id, its
+  whole name or the first word of its name, in any case (`p8a` for
+  `p8a Termux jobs`).
+  - **404** `code: not_a_device`: not that device. The CLI then tries NAME as
+    a §6.6 peer.
+  - **400**: any other field, or one of the wrong shape. `only` is a list of
+    service names (`[A-Za-z0-9][A-Za-z0-9@._-]*`), `after` is 0 to 86400 s,
+    `force` and `dry_run` are booleans.
+  - **503**, with `rc` 1 and `lines`: no worker connected (offline); a worker
+    whose stream did not ask for restarts (too old: pull on the phone, then
+    restart phone-jobs); not taken within 10 s; or not answered within 60 s.
+    The job is gone from the queue in every case.
+  - **200**: the phone's `restart_services.run()` dict (`rc`, `lines`,
+    `selected`, `busy`, `unknown`, `scheduled`, `own`, `after`, `host`), and
+    `device`, the device's name.
+- The worker's stream asks for the kind: `GET /jobs/events?kinds=restart`. A
+  restart is handed only to such a stream. The frame is `event: job`,
+  `{id, kind: "restart", restart: {only, after, force, dry_run}, timeout}`.
+  A command's frame is unchanged: `{id, cmd, timeout}`, no `kind`.
+- The worker checks the fields again, runs `python -m
+  agent_media_core.restart_services --json …` (the checkout's
+  `.venv/bin/python`, else `MEDIA_PHONE_JOBS_PYTHON`), which is `run(…,
+  caller="", detach_own=True)`, and answers `POST /jobs/result {id, rc,
+  result, err}`. It refuses a restart with another field, or a job of a kind
+  it does not know, with rc 2, and runs nothing. A restart of the worker's own
+  service is detached, 10 s out, so the answer gets back first.
+
+`canvas` names the canvas wherever it runs: `canvas-local` on the phone,
+`agent-media-visual-canvas` on red5, `sasonica-canvas` on an Android
+install. So restarting the phone's canvas, on red5, is:
+
+    media restart-services --host p8a --only canvas
+
 ### 6.22 Can David be spoken to now — device reports, gated read (built 2 Oct 2026)
 
 The phone reports what only it can see; red5 answers "free or busy, and
