@@ -171,7 +171,29 @@ signed.
 - **Insurance**: professional indemnity and cyber cover before the
   pilot, more so if we host.
 
+## Other ways to work with them
+
+David, 19 Oct 2026: "I'm not sure whether I want to go down that
+consulting route but I am curious." The quoting advice above assumes
+consulting. These are the alternatives. Discovery (a short, paid look at
+what they need) fits in front of any of them.
+
+| Route | What they buy | For South Pen Labs | Needs first |
+|---|---|---|---|
+| **Product subscription** | Sasonica at a set monthly price per venue or per seat, a small setup fee, no custom work | scales best; one codebase; revenue recurs | a polished, documented product, self-serve setup, support process, the official connectors |
+| **Fixed-price package** | one well-defined thing (e.g. AI-drafted replies to guest enquiries, staff approve) set up for a known price, plus a small monthly fee | repeatable for other venues; bounded effort; a stepping stone to the product | one connector done well, a setup checklist |
+| **Through their IT provider** | the provider resells it and owns the relationship and first-line support | less client work; reach to the provider's other clients | a reseller price (provider margin about 20–30%), partner docs, second-line support terms |
+| **Trial, paid if it works** | free or cheap pilot for 4–6 weeks, then a subscription if it meets the agreed measure | easiest yes for them; we carry the risk | a cap on our time, the success measure in writing up front |
+| **Consulting** (above) | our time: discovery, a pilot, a retainer | most income per client early; most custom work; does not scale | nothing new: start now |
+
+A blend is common: consult on the first venue to learn the workflows, but
+build every piece as part of the product, keep the IP (see "In the
+contract"), and turn what worked into the fixed-price package for the
+next venue.
+
 ## Open questions for David
+
+- Which route, or which blend?
 
 - Staff side (Teams, internal procedures), guest side (enquiries, bookings,
   WhatsApp, Messenger, Instagram, SMS) or both? Discovery answers this;
