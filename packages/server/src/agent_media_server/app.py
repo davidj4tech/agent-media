@@ -196,6 +196,17 @@ device gets its token):
   POST /contacts/google/finish {"state", "code" | "url"} → the token kept
                   in the caller's book, and a sync of it
   POST /contacts/google/signout → the book forgets Google
+  GET  /bridges → the mautrix bridges on this host: each one's sign-ins
+                  and their state, and the ways to sign in (bridges.py,
+                  §6.26; the owner only, as every /bridges route)
+  GET  /bridges/<id>/icon → the bridge's network icon (`?access_token=`
+                  for an <img>)
+  POST /bridges/<id>/login {"flow"} → a sign-in (a login process), its
+                  first step; GET /bridges/<id>/login/<process> → it now
+                  (a QR or code is waited on by the server: poll this)
+  POST /bridges/<id>/login/<process>/step {"txn_id", "values"} → a form
+                  or cookies submitted; …/cancel → cancelled at the bridge
+  POST /bridges/<id>/logout/<login id> → that sign-in signed out
   POST /alerts    {"id", "level", "kind"?, "title"?, "detail"?, "fix"?,
                    "host"?, "step"?, "confirm"?, "every_s"?} → a watcher
                   says what is true now; the store answers what changed and
@@ -276,7 +287,7 @@ CORS_PATHS = frozenset({
     "/share", "/upload", "/dashboard",
     "/sessions/events", "/search", "/contacts",
     "/contacts/google", "/contacts/google/login", "/contacts/google/finish",
-    "/contacts/google/signout",
+    "/contacts/google/signout", "/bridges",
     "/mic/ask", "/mic/cancel",
     "/phone/ask", "/phone/answer", "/phone/cancel",
     "/notes", "/notes/clear",
@@ -336,6 +347,13 @@ CONTACT = re.compile(r"/contacts/([0-9a-f-]{36})")
 # Their timeline, and a note on it (timeline.py, §6.25a).
 CONTACT_TIMELINE = re.compile(r"/contacts/([0-9a-f-]{36})/timeline")
 CONTACT_NOTES = re.compile(r"/contacts/([0-9a-f-]{36})/notes")
+# A bridge's icon, its sign-ins and signing out (bridges.py, §6.26).
+BRIDGE_ICON = re.compile(r"/bridges/([A-Za-z0-9_.-]+)/icon")
+BRIDGE_LOGIN = re.compile(r"/bridges/([A-Za-z0-9_.-]+)/login")
+BRIDGE_PROC = re.compile(r"/bridges/([A-Za-z0-9_.-]+)/login/([A-Za-z0-9_.-]+)")
+BRIDGE_PROC_ACT = re.compile(r"/bridges/([A-Za-z0-9_.-]+)/login/([A-Za-z0-9_.-]+)/(step|cancel)")
+BRIDGE_LOGOUT = re.compile(r"/bridges/([A-Za-z0-9_.-]+)/logout/([^/]+)")
+BRIDGE_ROUTES = (BRIDGE_ICON, BRIDGE_LOGIN, BRIDGE_PROC, BRIDGE_PROC_ACT, BRIDGE_LOGOUT)
 
 
 def cors_path(path: str) -> bool:
@@ -344,7 +362,8 @@ def cors_path(path: str) -> bool:
     return path in CORS_PATHS or any(r.fullmatch(path)
                                      for r in (THREAD_EVENTS, THREAD_AGENTS, AGENT_LOG,
                                                         AGENT_ACT, CONTACT,
-                                                        CONTACT_TIMELINE, CONTACT_NOTES))
+                                                        CONTACT_TIMELINE, CONTACT_NOTES,
+                                                        *BRIDGE_ROUTES))
 
 
 # Long enough that a chat page's polling is not preceded by a preflight every
@@ -521,6 +540,9 @@ def dispatch(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
         return _alerts(h, method, path)
     if path in FREE_PATHS and method in ("GET", "POST"):
         return _free(h, method, path)
+    if (path == "/bridges" or any(r.fullmatch(path) for r in BRIDGE_ROUTES)) \
+            and method in ("GET", "POST"):
+        return _bridges(h, method, path)
     if method == "GET":
         # The web app's own files (web_app.py, roadmap 21): no credential,
         # and nothing under /app is an API route.
@@ -650,6 +672,86 @@ def _contacts_google(h: BaseHTTPRequestHandler, act: str) -> None:
               {"ok": False, "error": str(e), **({"no_client": True} if no_client else {})})
     except (OSError, contacts.SyncError) as e:
         _json(h, 502, {"ok": False, "error": f"could not reach Google ({e})"})
+
+
+def _bridges(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
+    """Every /bridges route (§6.26): gated, and the owner's alone. False for
+    a method and path that is not one of them (the caller's 404)."""
+    from urllib.parse import unquote
+
+    from . import bridges
+
+    query = h.path.partition("?")[2]
+    bearer = _bearer(h)
+    icon = BRIDGE_ICON.fullmatch(path) if method == "GET" else None
+    if icon and not bearer:
+        # An <img> cannot set a header.
+        bearer = ((parse_qs(query).get("access_token") or [""])[0]).strip()
+        auth.set_request_bearer(bearer)
+    user, err = auth.gate(bearer)
+    if not user:
+        _json(h, err.pop("status", 403), {"ok": False, **err})
+        return True
+    if auth.request_account() != "":
+        _json(h, 403, {"ok": False, "error": "bridges are the owner's"})
+        return True
+    proc = BRIDGE_PROC.fullmatch(path)
+    act = BRIDGE_PROC_ACT.fullmatch(path)
+    login = BRIDGE_LOGIN.fullmatch(path)
+    logout = BRIDGE_LOGOUT.fullmatch(path)
+    try:
+        if method == "GET" and path == "/bridges":
+            _json(h, 200, {"ok": True, "bridges": bridges.listing()})
+        elif icon:
+            got = bridges.icon(icon.group(1))
+            if got is None:
+                _json(h, 404, {"ok": False, "error": "no icon"})
+            else:
+                data, ctype = got
+                h.send_response(200)
+                h.send_header("Content-Type", ctype)
+                h.send_header("Content-Length", str(len(data)))
+                h.send_header("Cache-Control", "private, max-age=86400")
+                h.send_header("X-Content-Type-Options", "nosniff")
+                _cors(h)
+                h.end_headers()
+                h.wfile.write(data)
+        elif method == "GET" and proc:
+            _json(h, 200, {"ok": True, "login": bridges.get(proc.group(1), proc.group(2))})
+        elif method == "POST" and login:
+            body = _read_json(h)
+            flow = str((body or {}).get("flow") or "") if isinstance(body, dict) else ""
+            _json(h, 200, {"ok": True, "login": bridges.start(login.group(1), flow)})
+        elif method == "POST" and act and act.group(3) == "step":
+            body = _read_json(h)
+            body = body if isinstance(body, dict) else {}
+            values = body.get("values") if isinstance(body.get("values"), dict) else {}
+            try:
+                got = bridges.submit(act.group(1), act.group(2),
+                                     str(body.get("txn_id") or ""), values)
+            except bridges.Conflict as e:
+                _json(h, 409, {"ok": False, "error": str(e),
+                               "login": bridges.get(act.group(1), act.group(2))})
+                return True
+            _json(h, 200, {"ok": True, "login": got})
+        elif method == "POST" and act:
+            _json(h, 200, {"ok": True, "login": bridges.cancel(act.group(1), act.group(2))})
+        elif method == "POST" and logout:
+            got = bridges.logout(logout.group(1), unquote(logout.group(2)))
+            _json(h, 200, {"ok": True, "bridge": got})
+        else:
+            return False
+    except KeyError:
+        _json(h, 404, {"ok": False, "error": "no such sign-in (start again)"})
+    except LookupError as e:
+        _json(h, 404, {"ok": False, "error": str(e)})
+    except ValueError as e:
+        _json(h, 400, {"ok": False, "error": str(e)})
+    except bridges.BridgeError as e:
+        _json(h, 404 if e.status == 404 else 502, {"ok": False, "error": str(e)})
+    except bridges.Unreachable as e:
+        _json(h, 502, {"ok": False, "error": f"the bridge did not answer ({e})"})
+    return True
 
 
 def _sealed(h: BaseHTTPRequestHandler, session: str) -> bool:

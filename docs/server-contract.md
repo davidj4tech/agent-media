@@ -4251,6 +4251,144 @@ A note on them, today: kept, and written to the CRM. `{"ok": true, "note":
 contact, 403 when `notes` is switched off. A note is at most 4000
 characters (cut, not refused).
 
+### 6.26 Bridges: signing in from the app — gated, owner only (19 Oct 2026)
+
+David: "Can we create a way to login to bridges from sasonica?" The
+Matrix rooms (§6.1 "Matrix rows") come from mautrix bridges on this host
+(Google Messages, Meta, Instagram, Teams, …). Each speaks the standard
+bridgev2 provisioning API (`/_matrix/provision/v3`, bearer = its
+`provisioning.shared_secret`, `?user_id=` the owner's Matrix id). The
+server relays it so the app can see each bridge's sign-ins and sign in,
+sign in again or sign out, without the bot chat. The app stays generic: it
+draws whatever step a bridge sends (`bridges.py`; pinned by
+`packages/server/tests/test_bridges.py`).
+
+**Which bridges.** Found from their config files: `MATRIX_BRIDGES` (a
+comma-separated list of paths or globs; default
+`~/.local/share/mautrix-*/config.yaml`), reading only `appservice.id`,
+`appservice.hostname`/`port`, `provisioning.shared_secret` and
+`homeserver.address` (for the icon); a file without a secret (or with
+mautrix's `generate`/`disable`) is skipped, and a wildcard hostname
+(`0.0.0.0`) is asked on loopback. The id is the bridge's `appservice.id`.
+The secret never leaves the server. The Matrix user is `MATRIX_OWNER_ID`
+(as §6.1).
+
+**Who.** Every route is `auth.gate`d and answers only the owner's account
+(`auth.request_account() == ""`); any other caller gets 403 `"bridges are
+the owner's"`. With no bridges configured, `GET /bridges` is `{"ok": true,
+"bridges": []}`.
+
+#### `GET /bridges`
+
+```json
+{"ok": true,
+ "bridges": [
+   {"id": "msteams", "name": "Microsoft Teams", "network": "teams",
+    "icon": "/bridges/msteams/icon", "reachable": true, "error": null,
+    "flows": [{"id": "device_code", "name": "Work or school account",
+               "description": "…"}],
+    "logins": [
+      {"id": "…", "name": "david@example.com",
+       "state": "CONNECTED", "error": null, "message": null,
+       "since": 1792339271}]}]}
+```
+
+- One per bridge, in `name` order. `name` (`network.displayname`),
+  `network` (`network.network_id`, else `network.beeper_bridge_type`,
+  else the id) and `flows` come from the bridge's `whoami`; `icon` is its
+  `network_icon` served through the server (`GET /bridges/<id>/icon`, the
+  image bytes, fetched once from the homeserver's media with
+  `MATRIX_OWNER_TOKEN` and kept; null when it has none; 404 when it
+  cannot be had). The icon route takes `?access_token=` in place of the
+  bearer, for an `<img>`.
+- `logins[].state` is the bridge state event as the bridge says it
+  (`CONNECTED`, `CONNECTING`, `BACKFILLING`, `TRANSIENT_DISCONNECT`,
+  `BAD_CREDENTIALS`, `UNKNOWN_ERROR`, `LOGGED_OUT`, …); `error` its error
+  code, `message` its text, `since` its timestamp (s). **Needs you**:
+  `BAD_CREDENTIALS`, `LOGGED_OUT` and `UNKNOWN_ERROR` — the app marks them
+  and offers Sign in again.
+- A bridge that does not answer (or refuses) is listed with `reachable:
+  false`, `error` saying why, its id as `name` and `network`, no `icon`
+  and empty `flows`/`logins`; the others still answer (they are asked at
+  once, 5 s each).
+
+#### Signing in: one login process, polled
+
+A sign-in is a **login process** the server holds (in memory, for as long
+as the bridge does; forgotten 30 min after its last step). Its shape, as
+every route below answers:
+
+```json
+{"ok": true,
+ "login": {"id": "<process id>", "bridge": "msteams",
+           "status": "step" | "waiting" | "complete" | "failed" | "cancelled",
+           "error": null,
+           "step": { …the bridge's LoginStep, as it sent it… }}}
+```
+
+- `step` is the bridgev2 `LoginStep` verbatim (`type`, `step_id`,
+  `txn_id`, `instructions`, and exactly one of `user_input`, `cookies`,
+  `display_and_wait`, `complete`, `client_http`, `webauthn`), minus
+  `login_id`, which is `login.id`. The app draws `user_input` (a form:
+  `fields[]` with `type`, `id`, `name`, `description`, `default_value`,
+  `pattern`, `options` for `select`), `display_and_wait` (`type` `qr`
+  (`data` the QR's text), `code` or `emoji` (`data`, `image_url`),
+  `nothing`; URLs in `instructions` are links), `cookies` (below) and
+  `complete` (`complete.user_login_id`). It does not do `client_http` or
+  `webauthn`: it says the sign-in needs the bridge bot and offers Cancel.
+- **`display_and_wait` is waited on by the server**, not the app: on that
+  step the server starts the bridge's wait in the background and answers
+  at once with `status: "waiting"`; the app polls `GET` (every 2 s) and
+  can leave to a browser and come back. When the wait ends the next step
+  (or `complete`, or the error) is there. A QR that changes is a new step
+  (a new `txn_id`).
+- `status: "failed"` carries `error`, the bridge's message (e.g. a wrong
+  password); the process is over and a new sign-in starts again.
+
+`POST /bridges/<id>/login {"flow"}` — starts `flow` (one of the bridge's
+`flows[].id`); answers the process. 404 for no such bridge, 400 for no
+such flow, 502 when the bridge refuses (its message in `error`).
+
+`GET /bridges/<id>/login/<process>` — the process now. 404 when the server
+no longer holds it.
+
+`POST /bridges/<id>/login/<process>/step {"txn_id", "values"}` — submits
+the current step: `values` is `{field id: string}` for `user_input` and
+`cookies` (a `display_and_wait` step is not submitted). A `txn_id` that is
+not the current step's is 409 (`"step moved on"`, with the process as it
+is), as is a submit while another is still with the bridge; a
+`display_and_wait` (or `complete`) step submitted is 400. Answers the
+process after the bridge's reply.
+
+`POST /bridges/<id>/login/<process>/cancel` — cancels it at the bridge;
+`status: "cancelled"`.
+
+`POST /bridges/<id>/logout/<login id>` — signs that login out at the
+bridge; answers `{"ok": true, "bridge": …}`, `GET /bridges`' entry for
+the bridge. 404 when the bridge has no such login.
+
+#### A `cookies` step in the app
+
+The bridge wants cookies from a real sign-in page (Facebook, Instagram,
+Google Messages). `cookies` is `{url, user_agent?, fields[], extract_js?,
+wait_for_url_pattern?, hidden?}`; each field has `id`, `required` and
+`sources[]` (`type` `cookie` with `name` and `cookie_domain`;
+`local_storage`; `request_header`; `request_body`; `special`), any one of
+which is enough.
+
+- **On Android** the app opens `url` in a native, full-screen WebView of
+  its own (with `user_agent` when given), the user signs in, and the app
+  reads the `cookie` sources from Android's cookie store for
+  `https://<cookie_domain>` (HttpOnly ones included), `local_storage`
+  ones and `extract_js` by script. It submits when every required field
+  has a value and the page's URL matches `wait_for_url_pattern` (or when
+  the user taps Done with every required field found). It then removes
+  those domains' cookies from the WebView, so the app holds no session of
+  its own. `request_header`/`request_body` sources are not read.
+- **Anywhere else** (a browser) the app cannot read another site's
+  cookies: it shows the step's `instructions` and a box for the JSON of
+  the cookies (what the bridge bot takes), submitted as `values`.
+
 ## 7. `/events` (v0) — canvas-wide, not the app's stream
 
 One SSE stream for every screen. The canvas page, the wake watcher and the
