@@ -4859,7 +4859,10 @@ writes nothing to tmux.
   under `lost`: the thread shows no approval, `/session/answer` for it is
   409 `code: "lost"`, and the next message resumes the session (the model
   sees its tool call interrupted and asks again if it still wants it). At
-  start-up any child a crashed instance left running is terminated.
+  start-up any child a crashed instance left running is terminated. To restart it from inside one
+  of its own sessions, use `media restart-services --only sessiond --after
+  10` (docs/reference/version-skew-monitoring.md). It waits until no other
+  session is busy, and the asking turn ends first.
 - **Permissions** (`MEDIA_HEADLESS_PERMISSIONS`, per host): `strict`
   (default) keeps every settings source — hooks, speech — and adds a
   `--settings` overlay whose `ask` rules name every tool but a read-only list

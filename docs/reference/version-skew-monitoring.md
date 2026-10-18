@@ -239,6 +239,58 @@ touch). It restarts only what selfcheck is willing to grade: services
 symlinked into the checkout plus the adopted Termux apps, never sshd or
 snapclient, and never a runit service parked with a `down` file.
 
+### Restarting safely, and from inside a chat
+
+`media restart-services` is safe for an agent to run unattended (David,
+18 Oct 2026). Its logic is `agent_media_core.restart_services.run()`, a plain
+function that a server route on any host could call as well.
+
+```
+media restart-services [--only NAME …] [--after SECONDS] [--force] [--dry-run]
+```
+
+- `--only` restarts just those services. Short names work (`sessiond`,
+  `canvas`, `tts-shim`, `sink-speech`, `speech-state`, `clips`, …), matched
+  against the units listed above. An unknown name exits 2 and lists the
+  known ones.
+- **Busy checks** (exit 3, skipped by `--force`; `--dry-run` shows them):
+  - **sessiond** is refused while any live session other than the caller's
+    is working or starting, waiting on an approval, holding queued messages,
+    or has `tasks` in flight. The caller is the session named by
+    `MEDIA_SESSIOND_SESSION`, which sessiond puts in its children's
+    environment. That session is also refused when it has more than one
+    task: the one tolerated is the command itself, or the subagent that ran
+    it. A restart of sessiond *now* from inside one of its sessions is
+    refused as well, because it would end that chat.
+  - **speech services** (tts-shim, sink-speech, speech-state, clips, the
+    speech fifo) are refused while a reply is being spoken.
+- `--after SECONDS` runs the restart later and returns at once with the unit
+  name. Under systemd it is a transient user unit (`systemd-run --user
+  --on-active=N --collect`), outside every caller's cgroup, so it survives
+  the caller being killed; read it with `journalctl --user -u
+  media-restart-…`. Elsewhere (runit, Windows) it is a detached child in its
+  own session, logging to `$XDG_STATE_HOME/agent-media/restart-services.log`.
+  When it fires it checks again, and this time the caller's session counts
+  too, so a turn still going is waited for. While busy it retries every 15 s
+  (`MEDIA_RESTART_RETRY_S`) for up to 10 min (`MEDIA_RESTART_WAIT_MAX_S`),
+  then gives up and raises the alert below.
+- **Health check:** every restarted service must be up within 20 s
+  (`MEDIA_RESTART_HEALTH_S`), and a canvas must also answer HTTP. A timer's
+  job is not checked. A failure raises the host alert
+  `restart-services.<host>` (§6.17, via `agent-alert`, else the store
+  in-process), which the phone sees. A clean restart reports it ok, which
+  clears it.
+
+From a phone-started chat, the form to use (and the one a permission rule can
+allow) is:
+
+```
+media restart-services --only sessiond --after 10
+```
+
+The turn ends, and ten seconds later sessiond restarts. The chat resumes on
+its next message.
+
 ## Applying to Other Packages
 
 To drop this into `agent-sessions`, `agent-workspace`, or `pi-workspace`:
