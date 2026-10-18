@@ -1398,7 +1398,7 @@ def sync_bridges() -> dict:
 IMPORT_MAX = 64 * 1024 * 1024
 
 
-def import_export(data: bytes, name: str = "") -> dict:
+def import_export(data: bytes, name: str = "", *, via: str = "") -> dict:
     """A Facebook or Instagram data export (contacts_import.py) into this
     book, as the `import` source: each export's people replace that
     export's last import (a Join or a "Not the same" holds, being kept by
@@ -1437,6 +1437,14 @@ def import_export(data: bytes, name: str = "") -> dict:
     _fresh()
     log.info("contacts[%s]: imported %s", account() or "owner",
              ", ".join(f"{k} {v}" for k, v in sorted(counts.items())))
+    # The reminder clock and the export alerts (contacts_exports.py); `via`
+    # names where an automatic import found the file, which is then said.
+    from . import contacts_exports
+
+    try:
+        contacts_exports.note_import(found.keys(), counts, via=via)
+    except Exception as e:  # noqa: BLE001 — the import itself is done
+        log.warning("contacts: export bookkeeping failed (%s)", e)
     return {"imported": counts, "people": people, "joined": joined, "contacts": total}
 
 
@@ -2019,6 +2027,18 @@ def _sync_book(key: str) -> None:
         for s, e in got["errors"].items():
             # The phone off Wi-Fi is the usual one: the last copy serves.
             print(f"{who}: {s} unread ({e})", file=sys.stderr)
+        if not key:
+            # The export cycle (contacts_exports.py): files in Downloads,
+            # the "ready" mail, the reminder. The owner's book only.
+            from . import contacts_exports
+
+            x = contacts_exports.run()
+            w = x.get("watch") or {}
+            bad = {k: v for k, v in (w.get("errors") or {}).items() if k != "phone"}
+            if w.get("imported") or bad:
+                # The phone off Wi-Fi is said by its own source already.
+                print(f"{who}: exports: {len(w.get('imported') or [])} imported, "
+                      f"{len(bad)} not ({'; '.join(bad.values())[:200]})", file=sys.stderr)
         if (os.environ.get("MEDIA_TIMELINE") or "1").strip() != "0":
             from . import timeline
 
