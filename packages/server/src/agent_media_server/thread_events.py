@@ -171,6 +171,17 @@ def snapshot(session: str, limit: int | None = None) -> tuple[bool, dict]:
     return True, env
 
 
+def move_status(session: str) -> dict:
+    """The `move` event (§6.15, §11): `{"move_pending", "move_failed",
+    "project", "cwd"}` — a waiting move, one that failed, and where the
+    thread is now, so an open thread follows a move that lands while it
+    is on screen."""
+    row: dict = {"session": session}
+    sessions.add_projects([row])
+    return {"move_pending": row.get("move_pending"), "move_failed": row.get("move_failed"),
+            "project": row.get("project"), "cwd": row.get("cwd")}
+
+
 def agent_counts(session: str, live: bool) -> dict:
     """`{"running", "total"}` of the session's background agents (§6.12);
     zeros when it has none, or they cannot be read."""
@@ -322,7 +333,8 @@ class Watcher:
                "suggestion": {"text": env.get("suggestion") or ""},
                "state": st, "pending": {"pending": bool(env.get("pending"))},
                "recap": env.get("recap"), "context": env.get("context"),
-               "agents": agent_counts(self.session, st["session_live"])}
+               "agents": agent_counts(self.session, st["session_live"]),
+               "move": move_status(self.session)}
         for name, value in now.items():
             self._update(name, value, emit)
         self._busy = bool(env.get("working")) or bool(live) or st["state"] == "working"

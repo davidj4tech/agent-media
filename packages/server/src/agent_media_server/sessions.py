@@ -388,6 +388,10 @@ def add_projects(rows: list[dict], folders: dict[str, str] | None = None) -> lis
         # its transcript and its shelf folder still say (moves.py).
         r["project"] = (layout.canonical_project(moves.moved_project(sid))
                         or project_of(cwd, folders.get(sid, "")))
+        # A move waiting for the session to be free, or one that failed
+        # when it ran (§6.15): only on a thread that has one.
+        if sid:
+            moves.add_status(r, sid)
     return rows
 
 

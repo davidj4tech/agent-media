@@ -1173,6 +1173,20 @@ def test_relocate_refuses_a_session_mid_turn_or_holding_a_question(host, tmp_pat
     assert host.sup.get(sid)["cwd"] == str(host.work)
 
 
+def test_relocate_refuses_a_session_with_background_work(host, tmp_path):
+    """Its turn is over, its subagent's work is not: parking it would kill
+    the agent (19 Oct 2026), so the move waits."""
+    import time
+
+    sid = start(host, "reply: a")
+    wait_for(lambda: state(host, sid) == "waiting")
+    host.sup.sessions[sid].tasks["agent-1"] = time.time()
+    why = driver.headless_driver().relocate(sid, str(tmp_path))
+    assert "background task" in why
+    assert host.sup.get(sid)["live"] and host.sup.get(sid)["cwd"] == str(host.work)
+    assert driver.headless_driver().view(sid)["tasks"] == 1
+
+
 def test_relocate_with_sessiond_down_rewrites_the_record(host, tmp_path):
     sid = start(host, "reply: a")
     wait_for(lambda: state(host, sid) == "waiting")

@@ -1114,7 +1114,9 @@ class Supervisor:
         directory it runs in, so a move that left this alone came back in
         the old directory and went on writing there. A live idle session is
         parked first, so its next message respawns it in the new one; one
-        mid-turn or holding a question is refused (the move waits for it)."""
+        mid-turn, holding a question, with a message queued or with
+        background work in flight (a subagent, a background Bash: parking
+        would kill it) is refused as `busy` (the move waits for it)."""
         cwd = (cwd or "").strip()
         if not cwd or not os.path.isdir(cwd):
             raise Refused(f"no such directory {cwd!r}", "bad_cwd")
@@ -1126,8 +1128,13 @@ class Supervisor:
                 return {"session": session, "cwd": s.cwd, "relocated": False,
                         **self._brief(s)}
             if s.live:
-                if s.state in ("working", "starting", "approval") or s.pending:
+                if s.state in ("working", "starting", "approval") or s.pending \
+                        or s.queued:
                     raise Refused(f"session {session[:8]} is working", "busy")
+                n = s.active_tasks()
+                if n:
+                    raise Refused(f"session {session[:8]} has {n} background "
+                                  f"task{'s' if n != 1 else ''} running", "busy")
                 self._park(s)
                 self._await_exit(s)
             s.cwd = cwd

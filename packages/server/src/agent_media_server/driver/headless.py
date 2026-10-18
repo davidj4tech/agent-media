@@ -234,13 +234,19 @@ class HeadlessDriver:
         return {**rec, "live": False, "pending": [], "down": r.get("code") == "down"}
 
     def view(self, session: str) -> dict:
-        """`{"state", "live", "pane": None, "approval", "pid", "raw"}`."""
+        """`{"state", "live", "pane": None, "approval", "pid", "raw", "tasks",
+        "queued"}` — `tasks`: background work sessiond still hears from (a
+        subagent, a background Bash); `queued`: messages waiting behind the
+        turn (both what a move waits out, moves.py)."""
         v = self._get(session)
         pending = v.get("pending") or []
-        return {"state": contract_state(v), "live": bool(v.get("live")), "pane": None,
-                "approval": approval_of(pending[0]) if pending and v.get("live") else None,
+        live = bool(v.get("live"))
+        return {"state": contract_state(v), "live": live, "pane": None,
+                "approval": approval_of(pending[0]) if pending and live else None,
                 "pid": v.get("pid"), "raw": v.get("state"),
-                "lost": v.get("lost") or [], "down": bool(v.get("down"))}
+                "lost": v.get("lost") or [], "down": bool(v.get("down")),
+                "tasks": int(v.get("tasks") or 0) if live else 0,
+                "queued": bool(v.get("queued")) if live else False}
 
     def rows(self) -> list[dict]:
         """Every session sessiond holds, as its views (the socket's `list`,

@@ -145,7 +145,10 @@ device gets its token):
                   another project: file it there, move its transcript and its
                   library folder, and bring a live session back in that
                   directory, restarting it (moves.py, §6.15). While it is
-                  working the move waits for the turn to end (`pending`)
+                  busy (a turn, a question, background agents) the move
+                  waits until it is free (`pending`, `why_waiting`)
+  POST /session/move/cancel {"session"} → drop the move waiting on that
+                  session, and any failure it left (§6.15)
   POST /session/answer {"session", "choice", "key"} → answer the dialog that
                   session is stopped on (a permission prompt); refused unless
                   that same question, fingerprinted by `key`, is still on its
@@ -277,7 +280,7 @@ CORS_PATHS = frozenset({
     "/reply", "/ask", "/focus", "/session/resume", "/session/close", "/draft",
     "/session/answer", "/session/archive", "/session/seal", "/session/pin", "/session/priority", "/session/pocket",
     "/session/stop",
-    "/session/retract", "/session/move", "/session/settings",
+    "/session/retract", "/session/move", "/session/move/cancel", "/session/settings",
     "/speech/now", "/speech/ctl", "/speech/sentences", "/speech/clip", "/speech/default", "/speech/voice",
     "/settings/language",
     "/sessions/state", "/commands", "/rename",
@@ -1996,6 +1999,13 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         if not ok:
             print(f"move: refused ({detail.get('error')}) for "
                   f"{str(body.get('session'))[:8]}", file=sys.stderr, flush=True)
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/session/move/cancel":
+        # Drop a move waiting for its session to be free (moves.py, §6.15).
+        from . import moves
+
+        body = _read_json(h) or {}
+        ok, detail = moves.cancel(str(body.get("session") or ""), bearer=_bearer(h))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/follow/trace":
         # The app's bold, move by move, beside the row (follow_trace.py).

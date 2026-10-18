@@ -21,12 +21,16 @@ What a move does, in order:
    `--resume` in the new directory, in the tmux session the new project
    uses. Claude Code cannot change its own cwd mid-session, so this is the
    only honest way to do it: the conversation continues, the process does
-   not. A session working on something is not interrupted — that turn
-   would lose whatever it had not written yet — so its move waits: it is
-   kept in `<state_dir>/moves_pending.json` and carried out the moment the
-   turn ends (`_wait_then_move`), and a server restart picks it up again
-   (`start`). David, 15 Oct 2026: move a thread mid-turn without having to
-   end the session first.
+   not. A session busy with something is not interrupted — a turn would
+   lose whatever it had not written yet, a question its asker, a background
+   agent or task its work — so its move waits (`waiting_on` says for what):
+   it is kept in `<state_dir>/moves_pending.json` and carried out the
+   moment the session is free (`_wait_then_move`, woken by sessiond's events
+   for a headless session), and a server restart picks it up again
+   (`start`). A later move replaces it; `cancel` drops it; one that fails
+   when it runs is kept with why in `moves_failed.json`. David, 15 Oct 2026:
+   move a thread mid-turn without having to end the session first; 19 Oct
+   2026: background agents count as busy, and so does a question.
 
    A headless session (sessiond) has no pane to reopen: sessiond is told
    its new directory (`relocate`, which parks it if it sits idle), and its
@@ -60,11 +64,17 @@ from . import auth, panes, sessions
 from ._jsonmap import JsonMap
 
 MOVES = JsonMap("moved.json")
-# Moves asked for mid-turn, {session: {project, cwd, at}}, until the turn ends.
+# Moves asked for while the session was busy, {session: {project, cwd, at,
+# why_waiting}}, until it is free (`waiting_on`).
 PENDING = JsonMap("moves_pending.json")
-# How often a waiting move looks at its session, and how long it waits for a
-# turn to end before it gives up (a turn that has run this long is stuck).
+# Waiting moves that could not be carried out, {session: {project, cwd, at,
+# failed_at, error}}, until the next move or a cancel.
+FAILED = JsonMap("moves_failed.json")
+# How often a waiting move looks at a pane session; how long it waits on a
+# headless one's events before it looks anyway; and how long it waits for a
+# session to be free before it gives up (busy that long is stuck).
 POLL_S = 3.0
+BACKSTOP_S = 15.0
 WAIT_MAX_S = 6 * 3600.0
 _WAITING: set[str] = set()
 _WAITING_LOCK = threading.Lock()
@@ -261,17 +271,68 @@ def _destination(project: str, cwd: str) -> tuple[str, str, str]:
     return project, found, ""
 
 
-def _busy(session: str, pane: str) -> bool:
-    """Whether that session is mid-turn, and so must not be moved.
+def _agents_running(session: str) -> bool:
+    """Whether a background agent of the session is still at work (§6.12),
+    read off its transcript's subagent files. A move closes or parks the
+    process, and an agent running in it would die with it."""
+    from . import agents
 
-    `sessions.activity_of` is the one place that is answered, with a pane or
-    without one: a headless session has no screen to read, and sessiond
-    answers for it from the agent's own events. It used to be read off the
-    pane here, and a session with no pane skipped the gate altogether — so
-    the very thing the gate is for, a turn losing what it had not written
-    yet, happened to exactly the sessions the app cannot see a pane for.
+    try:
+        return agents.counts(agents.agents(session, live=True))["running"] > 0
+    except Exception:  # noqa: BLE001 — unreadable is not running
+        return False
+
+
+def waiting_on(session: str, pane: str = "") -> str:
+    """What a move of that session has to wait for, or "" when it may go now.
+
+    - `"turn"`: a turn is running (or starting, or a message is queued
+      behind one) — interrupted, it loses whatever it had not written yet.
+    - `"question"`: it is stopped on a permission or a question somebody
+      has to answer; parked, that request is lost.
+    - `"agents"`: its turn is over but background work is not — a subagent,
+      or for a headless session any task sessiond still hears from (a
+      background Bash too). Parking or closing the process kills them.
+
+    `sessions.activity_of` answers for the turn with a pane or without one;
+    sessiond (`headless_state`) answers for its own sessions, including the
+    tasks it counts. A pane session's background Bash is not knowable from
+    here, so for one only its subagents hold a move. A session that is not
+    running has nothing to lose.
     """
-    return sessions.activity_of(session, pane)["state"] == "working"
+    from . import driver
+
+    if not pane:
+        hl = driver.headless_state(session)
+        if hl is None or not hl.get("live"):
+            return ""
+        raw = str(hl.get("raw") or hl.get("state") or "")
+        if raw in ("working", "starting") or hl.get("state") == "working" \
+                or hl.get("queued"):
+            return "turn"
+        if hl.get("approval") or raw == "approval" or hl.get("state") == "approval":
+            return "question"
+        if int(hl.get("tasks") or 0) > 0 or _agents_running(session):
+            return "agents"
+        return ""
+    st = sessions.activity_of(session, pane)["state"]
+    if st == "working":
+        return "turn"
+    if st == "approval":
+        return "question"
+    return "agents" if _agents_running(session) else ""
+
+
+def _busy(session: str, pane: str) -> bool:
+    """Whether that session must not be moved now (`waiting_on`)."""
+    return bool(waiting_on(session, pane))
+
+
+def _pending_answer(session: str, row: dict, pane: str) -> dict:
+    return {"session": session, "project": row.get("project") or None, "cwd": row["cwd"],
+            "pending": True, "why_waiting": row.get("why_waiting") or "turn",
+            "move_pending": pending_view(session), "restarted": False,
+            "pane": pane or None, "live": True, "folder": None}
 
 
 def move(session: str, project: str = "", cwd: str = "",
@@ -279,7 +340,9 @@ def move(session: str, project: str = "", cwd: str = "",
     """Move a conversation to another project. `(ok, detail)`.
 
     `detail` carries `project`, `cwd`, whether the session was restarted and
-    the pane it came back in, so the app can offer a link to it.
+    the pane it came back in, so the app can offer a link to it. A session
+    that cannot be moved now (`waiting_on`) is answered `pending: true` with
+    `why_waiting`, and moved by a waiter the moment it can be.
     """
     session = (session or "").strip()
     if not sessions._SESSION.fullmatch(session):
@@ -293,24 +356,48 @@ def move(session: str, project: str = "", cwd: str = "",
     if not sessions.session_exists(session):
         return False, {"error": f"session {session[:8]} has no transcript", "status": 404}
 
-    # Pane or no pane: a running turn is a running turn. It is left to
-    # finish; the move is kept and carried out once it has.
+    # A new ask is a new start: an earlier one's failure is not news now.
+    FAILED.drop(session)
     pane = sessions.live_sessions().get(session, "")
-    if _busy(session, pane):
-        at = round(time.time(), 3)
-        PENDING.put(session, {"project": project, "cwd": dest, "at": at})
-        _watch(session)
-        return True, {"session": session, "project": project or None, "cwd": dest,
-                      "pending": True, "restarted": False, "pane": pane or None,
-                      "live": True, "folder": None}
-    # A move asked for now replaces one still waiting.
-    PENDING.drop(session)
-    return _carry_out(session, project, dest)
+    waiting = waiting_on(session, pane)
+    if not waiting:
+        # A move asked for now replaces one still waiting.
+        PENDING.drop(session)
+        ok, detail = _carry_out(session, project, dest)
+        waiting = str(detail.pop("busy", "") or "")
+        if not waiting:
+            return ok, detail
+    # Pane or no pane: a running turn, a question or background work is left
+    # to finish; the move is kept and carried out once it has. A second
+    # move replaces the first.
+    now = round(time.time(), 3)
+    row = {"project": project, "cwd": dest, "at": now, "why_waiting": waiting}
+    PENDING.put(session, row)
+    _watch(session)
+    return True, _pending_answer(session, row, pane)
+
+
+def cancel(session: str, bearer: str = "") -> tuple[bool, dict]:
+    """Drop the move waiting on that session, and any failure it left.
+    `{"session", "cancelled": bool}` — false when nothing was waiting."""
+    session = (session or "").strip()
+    if not sessions._SESSION.fullmatch(session):
+        return False, {"error": "not a session id", "status": 400}
+    user, err = auth.gate(bearer)
+    if not user:
+        return False, err
+    had = PENDING.drop(session)
+    FAILED.drop(session)
+    return True, {"session": session, "cancelled": bool(had)}
 
 
 def _carry_out(session: str, project: str, dest: str) -> tuple[bool, dict]:
-    """The move itself, on a session that is not mid-turn: close a live one,
-    file it, move its transcript and folder, and reopen it in `dest`."""
+    """The move itself, on a session that is free to move: close a live one,
+    file it, move its transcript and folder, and reopen it in `dest`.
+
+    `detail["busy"]` (with ok False) when the session turned out to be busy
+    after all — sessiond refused to park it because a turn started between
+    the look and the move — so the caller keeps the move waiting."""
     from . import send
 
     pane = sessions.live_sessions().get(session, "")
@@ -328,6 +415,9 @@ def _carry_out(session: str, project: str, dest: str) -> tuple[bool, dict]:
     if driver.owned_headless(session):
         why = driver.headless_driver().relocate(session, dest)
         if why:
+            busy = waiting_on(session, "")
+            if busy:
+                return False, {"busy": busy, "error": why}
             return False, {"error": why, "project": project, "cwd": dest,
                            "restarted": False, "status": 503}
 
@@ -368,9 +458,70 @@ def _carry_out(session: str, project: str, dest: str) -> tuple[bool, dict]:
 
 
 def pending(session: str) -> dict:
-    """The move waiting on that session's turn, `{project, cwd, at}`, or {}."""
+    """The move waiting on that session, `{project, cwd, at, why_waiting}`, or {}."""
     row = PENDING.get(session)
     return row if isinstance(row, dict) else {}
+
+
+def failed(session: str) -> dict:
+    """The last waiting move that could not be carried out, `{project, cwd,
+    at, failed_at, error}`, or {} — until the next move or a cancel."""
+    row = FAILED.get(session)
+    return row if isinstance(row, dict) else {}
+
+
+def pending_view(session: str) -> dict | None:
+    """`move_pending` as a thread shows it (§6.15): `{project, cwd, since,
+    why_waiting}`, or None."""
+    row = pending(session)
+    if not row:
+        return None
+    return {"project": row.get("project") or None, "cwd": row.get("cwd") or "",
+            "since": row.get("at"), "why_waiting": row.get("why_waiting") or "turn"}
+
+
+def failed_view(session: str) -> dict | None:
+    """`move_failed` as a thread shows it: `{project, cwd, at, error}`, or None."""
+    row = failed(session)
+    if not row:
+        return None
+    return {"project": row.get("project") or None, "cwd": row.get("cwd") or "",
+            "at": row.get("failed_at") or row.get("at"), "error": row.get("error") or ""}
+
+
+def add_status(row: dict, session: str) -> None:
+    """`move_pending` / `move_failed` on a thread row or envelope, in place,
+    each only when there is one (old apps never see a new key they would
+    have to ignore on a thread that has none)."""
+    p = pending_view(session)
+    if p:
+        row["move_pending"] = p
+    else:
+        row.pop("move_pending", None)
+    f = failed_view(session)
+    if f:
+        row["move_failed"] = f
+    else:
+        row.pop("move_failed", None)
+
+
+def _fail(session: str, row: dict, error: str) -> None:
+    FAILED.put(session, {"project": row.get("project") or "", "cwd": row.get("cwd") or "",
+                         "at": row.get("at"), "failed_at": round(time.time(), 3),
+                         "error": error})
+    print(f"move: {session[:8]} to {row.get('project') or row.get('cwd')} failed: {error}",
+          file=sys.stderr, flush=True)
+
+
+def _same(a: dict, b) -> bool:
+    """The same asked-for move, whatever `why_waiting` says by now."""
+    return isinstance(b, dict) and all(a.get(k) == b.get(k) for k in ("project", "cwd", "at"))
+
+
+def _take(session: str, row: dict) -> bool:
+    """Drop `row` from the waiting moves if it is still the one there."""
+    return PENDING.update(lambda rows: _same(row, rows.get(session))
+                          and rows.pop(session, None) is not None)
 
 
 def _watch(session: str) -> None:
@@ -383,12 +534,47 @@ def _watch(session: str) -> None:
                      name=f"move-{session[:8]}", daemon=True).start()
 
 
+def _events_seq(session: str) -> int | None:
+    """sessiond's event count for a headless session, None for the rest
+    (or with sessiond down)."""
+    from . import driver
+
+    if not driver.owned_headless(session):
+        return None
+    from .driver.headless import call
+
+    r = call("events", session=session, since=1 << 62, timeout=3.0)
+    return int(r["seq"]) if r.get("ok") else None
+
+
+def _pause(session: str, seq: int | None) -> None:
+    """Until something may have changed. A headless session is watched on
+    sessiond's own events (a turn ending, a task finishing, a question
+    answered all are one), so the move goes the moment the session is free;
+    `BACKSTOP_S` bounds the wait, for what changes without an event (a task
+    gone stale). A pane session is looked at every `POLL_S`."""
+    if seq is not None:
+        from .driver.headless import call
+
+        t0 = time.monotonic()
+        r = call("events", session=session, since=seq, wait=BACKSTOP_S,
+                 timeout=BACKSTOP_S + 5.0)
+        if r.get("ok") or time.monotonic() - t0 >= POLL_S:
+            return
+    time.sleep(POLL_S)
+
+
 def _wait_then_move(session: str) -> None:
-    """Wait for the turn to end, then carry out the move still asked for.
+    """Wait until the session is free (`waiting_on`), then carry out the
+    move still asked for.
 
     The row is read again on every look, so a later move replaces the
-    destination and a move carried out meanwhile (it dropped the row) ends
-    the wait. Auth was checked when the move was asked for.
+    destination, a cancel or a move carried out meanwhile (each drops the
+    row) ends the wait, and a message sent meanwhile only means more
+    waiting. Auth was checked when the move was asked for. A move that
+    cannot be carried out — its directory gone, a step refused, or a
+    session still busy after `WAIT_MAX_S` — is kept in `moves_failed.json`
+    with why, and the thread shows it (`move_failed`).
     """
     try:
         while True:
@@ -396,25 +582,47 @@ def _wait_then_move(session: str) -> None:
             if not row:
                 return
             if time.time() - float(row.get("at") or 0) > WAIT_MAX_S:
-                PENDING.drop(session)
-                print(f"move: {session[:8]} still working after "
-                      f"{WAIT_MAX_S / 3600:.0f}h; its move to "
-                      f"{row.get('project') or row.get('cwd')} was dropped",
-                      file=sys.stderr, flush=True)
+                if PENDING.update(lambda rows: _same(row, rows.get(session))
+                                  and rows.pop(session, None) is not None):
+                    _fail(session, row, f"still busy after {WAIT_MAX_S / 3600:.0f} hours "
+                          f"({row.get('why_waiting') or 'turn'}); the move was dropped")
                 return
+            seq = _events_seq(session)
             pane = sessions.live_sessions().get(session, "")
-            if _busy(session, pane):
-                time.sleep(POLL_S)
+            why = waiting_on(session, pane)
+            if why:
+                if why != row.get("why_waiting"):
+                    PENDING.update(lambda rows: _same(row, rows.get(session))
+                                   and rows.__setitem__(session, {**row, "why_waiting": why})
+                                   is None)
+                _pause(session, seq)
                 continue
-            # Take only the row read here: one asked for since is read again.
-            if PENDING.update(lambda rows: rows.get(session) == row
-                              and rows.pop(session, None) is not None):
-                break
-        ok, detail = _carry_out(session, str(row.get("project") or ""),
-                                str(row.get("cwd") or ""))
-        print(f"move: {session[:8]} to {row.get('project') or row.get('cwd')} "
-              f"after its turn: {'done' if ok else detail.get('error')}",
-              file=sys.stderr, flush=True)
+            # Carry out only the row read here: one asked for since (or a
+            # cancel) is read again. It stays recorded until the move is over.
+            if not _same(row, pending(session)):
+                continue
+            dest = str(row.get("cwd") or "")
+            if not os.path.isdir(dest):
+                if _take(session, row):
+                    _fail(session, row, f"{dest} is no longer a directory on this host")
+                return
+            ok, detail = _carry_out(session, str(row.get("project") or ""), dest)
+            busy = str(detail.pop("busy", "") or "")
+            if busy:
+                # Busy again between the look and the move: back to waiting.
+                PENDING.update(lambda rows: _same(row, rows.get(session))
+                               and rows.__setitem__(session, {**row, "why_waiting": busy})
+                               is None)
+                continue
+            replaced = not _take(session, row)
+            if replaced:
+                continue                # another move came in: that one next
+            if ok:
+                print(f"move: {session[:8]} to {row.get('project') or row.get('cwd')} "
+                      f"once it was free: done", file=sys.stderr, flush=True)
+            else:
+                _fail(session, row, str(detail.get("error") or "the move failed"))
+            return
     except Exception as e:  # a waiter must not take the server down
         print(f"move: waiting on {session[:8]} failed: {e}", file=sys.stderr, flush=True)
     finally:

@@ -189,8 +189,8 @@ def test_the_waiting_move_happens_when_the_turn_ends(
         shelf, claude, dest, windows, monkeypatch):
     moves.PENDING.put(SID2, {"project": "p-agent-mail", "cwd": dest, "at": 1e12})
     monkeypatch.setattr(sessions, "live_sessions", lambda: {SID2: "%42"})
-    looks = iter(["working", "working", "input"])
-    monkeypatch.setattr(moves, "_busy", lambda s, p: next(looks) == "working")
+    looks = iter(["turn", "turn", ""])
+    monkeypatch.setattr(moves, "waiting_on", lambda s, p="": next(looks))
     monkeypatch.setattr(moves, "POLL_S", 0)
     monkeypatch.setattr(moves.time, "time", lambda: 1e12)
     moves._wait_then_move(SID2)
@@ -218,23 +218,23 @@ def test_a_move_asked_for_while_waiting_is_the_one_carried_out(
     monkeypatch.setattr(moves, "POLL_S", 0)
     first = [True]
 
-    def busy(s, p):
+    def busy(s, p=""):
         if first[0]:                            # a new move lands mid-wait
             first[0] = False
             moves.PENDING.put(SID2, {"project": "p-agent-mail", "cwd": dest, "at": 1e12})
-            return False
-        return False
+        return ""
 
-    monkeypatch.setattr(moves, "_busy", busy)
+    monkeypatch.setattr(moves, "waiting_on", busy)
     moves._wait_then_move(SID2)
     assert windows[-1] == ("open", SID2, dest, True, "p-agent-mail")
 
 
 def test_a_turn_that_never_ends_drops_its_move(shelf, claude, dest, windows, monkeypatch):
     moves.PENDING.put(SID2, {"project": "p-agent-mail", "cwd": dest, "at": 0.0})
-    monkeypatch.setattr(moves, "_busy", lambda s, p: True)
+    monkeypatch.setattr(moves, "waiting_on", lambda s, p="": "turn")
     moves._wait_then_move(SID2)
     assert windows == [] and moves.pending(SID2) == {}
+    assert "still busy" in moves.failed(SID2)["error"]      # and says why
 
 
 def test_a_shelved_session_with_no_pane_still_moves(
@@ -402,3 +402,228 @@ def test_a_headless_session_sessiond_will_not_move_stays_put(
     assert moves.moved(SID) == {}
     assert (claude / moves.encoded_dir("/home/ryer/projects/agent-media")
             / f"{SID}.jsonl").exists()
+
+
+# --- busy is more than a turn (19 Oct 2026) -------------------------------------
+
+def _headless_view(**kw):
+    return {"state": "waiting", "live": True, "pane": None, "raw": "waiting",
+            "approval": None, "tasks": 0, "queued": False, **kw}
+
+
+@pytest.fixture()
+def live_headless(monkeypatch, headless):
+    """SID is a live headless session; `view` is what sessiond says of it."""
+    from agent_media_server import driver
+
+    view = {"now": _headless_view()}
+    monkeypatch.setattr(driver, "headless_state", lambda s: view["now"] if s == SID else None)
+    # sessiond's events are not waited on here: `_pause` is replaced.
+    monkeypatch.setattr(moves, "_events_seq", lambda s: None)
+    return view, headless[0]
+
+
+def test_what_a_move_waits_for(live_headless, monkeypatch):
+    view, _log = live_headless
+    assert moves.waiting_on(SID) == ""
+    view["now"] = _headless_view(state="working", raw="starting")
+    assert moves.waiting_on(SID) == "turn"
+    view["now"] = _headless_view(queued=True)
+    assert moves.waiting_on(SID) == "turn"
+    view["now"] = _headless_view(state="approval", raw="approval", approval={"id": "r1"})
+    assert moves.waiting_on(SID) == "question"
+    view["now"] = _headless_view(tasks=2)
+    assert moves.waiting_on(SID) == "agents"
+    view["now"] = _headless_view()
+    monkeypatch.setattr(moves, "_agents_running", lambda s: True)   # a subagent's file
+    assert moves.waiting_on(SID) == "agents"
+    view["now"] = _headless_view(live=False, tasks=3)               # parked: nothing runs
+    assert moves.waiting_on(SID) == ""
+
+
+def test_idle_with_background_agents_waits_and_is_not_parked(
+        server, shelf, signed_in, claude, dest, windows, waiters, live_headless):
+    view, relocated = live_headless
+    view["now"] = _headless_view(tasks=1)
+    res, obj = call(server, "POST", "/session/move",
+                    {"session": SID, "project": "p-agent-mail"}, AUTH)
+    assert res.status == 200 and obj["ok"] is True and obj["pending"] is True
+    assert obj["why_waiting"] == "agents"
+    assert obj["move_pending"] == {"project": "p-agent-mail", "cwd": dest,
+                                   "since": moves.pending(SID)["at"], "why_waiting": "agents"}
+    assert relocated == []                      # sessiond was never told: not parked
+    assert moves.moved(SID) == {}
+    assert waiters == [SID]
+
+
+def test_a_pane_session_with_a_subagent_running_waits(
+        server, shelf, signed_in, claude, dest, windows, waiters, idle, monkeypatch):
+    monkeypatch.setattr(moves, "_agents_running", lambda s: s == SID2)
+    _res, obj = call(server, "POST", "/session/move",
+                     {"session": SID2, "project": "p-agent-mail"}, AUTH)
+    assert obj["pending"] is True and obj["why_waiting"] == "agents"
+    assert windows == []                        # the pane was not closed
+
+
+def test_a_pending_question_waits_too(
+        server, shelf, signed_in, claude, dest, windows, waiters, live_headless):
+    view, relocated = live_headless
+    view["now"] = _headless_view(state="approval", raw="approval", approval={"id": "r1"})
+    _res, obj = call(server, "POST", "/session/move",
+                     {"session": SID, "project": "p-agent-mail"}, AUTH)
+    assert obj["pending"] is True and obj["why_waiting"] == "question"
+    assert relocated == []
+
+
+def test_the_pending_move_runs_the_moment_the_work_is_done(
+        shelf, claude, dest, windows, live_headless, monkeypatch):
+    view, relocated = live_headless
+    moves.PENDING.put(SID, {"project": "p-agent-mail", "cwd": dest, "at": 1e12,
+                            "why_waiting": "turn"})
+    monkeypatch.setattr(moves.time, "time", lambda: 1e12)
+    # A turn, then a message sent meanwhile (another turn), then its agents,
+    # then free: each look waits once on the session's events.
+    script = iter([_headless_view(state="working"), _headless_view(state="working"),
+                   _headless_view(tasks=1), _headless_view()])
+    whys: list = []
+
+    def pause(session, seq):
+        whys.append(moves.pending(session).get("why_waiting"))
+        view["now"] = next(script)
+
+    view["now"] = next(script)
+    monkeypatch.setattr(moves, "_pause", pause)
+    moves._wait_then_move(SID)
+    assert whys == ["turn", "turn", "agents"]   # it said why at every step
+    assert relocated == [(SID, dest)]
+    assert moves.moved(SID)["project"] == "p-agent-mail"
+    assert moves.pending(SID) == {} and moves.failed(SID) == {}
+    assert (claude / moves.encoded_dir(dest) / f"{SID}.jsonl").exists()
+
+
+def test_a_session_busy_again_at_the_last_moment_keeps_waiting(
+        shelf, claude, dest, windows, live_headless, monkeypatch):
+    """sessiond refused to park it (a turn started between the look and the
+    move): the move goes back to waiting, it does not fail."""
+    view, relocated = live_headless
+    moves.PENDING.put(SID, {"project": "p-agent-mail", "cwd": dest, "at": 1e12})
+    monkeypatch.setattr(moves.time, "time", lambda: 1e12)
+    from agent_media_server import driver
+
+    tries = []
+
+    class Racy:
+        def relocate(self, session, cwd):
+            tries.append(cwd)
+            if len(tries) == 1:
+                view["now"] = _headless_view(state="working")
+                return "session is working"
+            return ""
+
+    monkeypatch.setattr(driver, "headless_driver", lambda: Racy())
+    monkeypatch.setattr(moves, "_pause", lambda s, q: view.__setitem__("now", _headless_view()))
+    moves._wait_then_move(SID)
+    assert tries == [dest, dest]
+    assert moves.moved(SID)["project"] == "p-agent-mail" and moves.failed(SID) == {}
+
+
+def test_a_waiting_move_is_on_disk_and_a_restart_picks_it_up(
+        server, shelf, signed_in, claude, dest, windows, waiters, live_headless):
+    view, _ = live_headless
+    view["now"] = _headless_view(tasks=1)
+    call(server, "POST", "/session/move", {"session": SID, "project": "p-agent-mail"}, AUTH)
+    on_disk = json.loads(moves.PENDING.path().read_text())
+    assert on_disk[SID]["cwd"] == dest and on_disk[SID]["why_waiting"] == "agents"
+    # A fresh process: a new map over the same file, and `start` watches it.
+    from agent_media_server._jsonmap import JsonMap
+
+    assert JsonMap("moves_pending.json").get(SID)["project"] == "p-agent-mail"
+    waiters.clear()
+    moves.start()
+    assert waiters == [SID]
+
+
+def test_a_second_move_replaces_the_waiting_one(
+        server, shelf, signed_in, claude, dest, windows, waiters, live_headless, tmp_path):
+    view, _ = live_headless
+    view["now"] = _headless_view(state="working")
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    call(server, "POST", "/session/move", {"session": SID, "project": "p-agent-mail"}, AUTH)
+    _res, obj = call(server, "POST", "/session/move", {"session": SID, "cwd": str(other)}, AUTH)
+    assert obj["pending"] is True and moves.pending(SID)["cwd"] == str(other)
+    assert len(moves.PENDING.all()) == 1
+
+
+def test_a_waiting_move_can_be_cancelled(
+        server, shelf, signed_in, claude, dest, windows, waiters, live_headless):
+    view, relocated = live_headless
+    view["now"] = _headless_view(state="working")
+    call(server, "POST", "/session/move", {"session": SID, "project": "p-agent-mail"}, AUTH)
+    res, obj = call(server, "POST", "/session/move/cancel", {"session": SID}, AUTH)
+    assert res.status == 200 and obj == {"ok": True, "session": SID, "cancelled": True}
+    assert moves.pending(SID) == {}
+    # The waiter, waking, finds nothing to do.
+    view["now"] = _headless_view()
+    moves._wait_then_move(SID)
+    assert relocated == [] and moves.moved(SID) == {}
+    _res, obj = call(server, "POST", "/session/move/cancel", {"session": SID}, AUTH)
+    assert obj["cancelled"] is False
+
+
+def test_cancel_needs_a_paired_device(server, shelf, claude):
+    moves.PENDING.put(SID, {"project": "p-agent-mail", "cwd": "/x", "at": 1.0})
+    res, _obj = call(server, "POST", "/session/move/cancel", {"session": SID}, AUTH)
+    assert res.status == 401 and moves.pending(SID)
+
+
+def test_a_vanished_directory_is_recorded_and_shown(
+        shelf, claude, tmp_path, windows, live_headless, monkeypatch):
+    view, relocated = live_headless
+    gone = tmp_path / "gone"
+    moves.PENDING.put(SID, {"project": "p-gone", "cwd": str(gone), "at": 1e12})
+    monkeypatch.setattr(moves.time, "time", lambda: 1e12)
+    moves._wait_then_move(SID)
+    assert relocated == [] and moves.moved(SID) == {}
+    assert moves.pending(SID) == {}
+    assert "no longer a directory" in moves.failed(SID)["error"]
+    rows = [{"session": SID}]
+    sessions.add_projects(rows)
+    assert rows[0]["move_failed"]["project"] == "p-gone"
+    assert "no longer a directory" in rows[0]["move_failed"]["error"]
+    assert "move_pending" not in rows[0]
+
+
+def test_a_move_that_fails_when_it_runs_is_recorded(
+        shelf, claude, dest, windows, live_headless, monkeypatch):
+    view, _ = live_headless
+    moves.PENDING.put(SID, {"project": "p-agent-mail", "cwd": dest, "at": 1e12})
+    monkeypatch.setattr(moves.time, "time", lambda: 1e12)
+    from agent_media_server import driver
+
+    class Broken:
+        def relocate(self, session, cwd):
+            return "could not record its new directory: disk full"
+
+    monkeypatch.setattr(driver, "headless_driver", lambda: Broken())
+    moves._wait_then_move(SID)
+    assert "disk full" in moves.failed(SID)["error"]
+    assert moves.pending(SID) == {} and moves.moved(SID) == {}
+
+
+def test_a_thread_row_shows_its_waiting_move(
+        server, shelf, signed_in, claude, dest, windows, waiters, live_headless):
+    view, _ = live_headless
+    rows = [{"session": SID}]
+    sessions.add_projects(rows)
+    assert "move_pending" not in rows[0]            # additive: absent when none
+    view["now"] = _headless_view(state="working")
+    call(server, "POST", "/session/move", {"session": SID, "project": "p-agent-mail"}, AUTH)
+    rows = [{"session": SID}]
+    sessions.add_projects(rows)
+    assert rows[0]["move_pending"]["project"] == "p-agent-mail"
+    assert rows[0]["move_pending"]["why_waiting"] == "turn"
+    from agent_media_server import thread_events
+
+    ev = thread_events.move_status(SID)
+    assert ev["move_pending"]["cwd"] == dest and ev["move_failed"] is None

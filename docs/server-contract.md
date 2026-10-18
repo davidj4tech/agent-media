@@ -3129,13 +3129,14 @@ rows) and shown on screen, `?show=&project=&agent=`. The server is asked for
 everything regardless: the narrowing is applied to the hits, which already
 carry `project`, `harness`, `live` and `archived`.
 
-### 6.15 Move a thread to another project — gated (built 23 Sep 2026; waits out a turn since 15 Oct 2026)
+### 6.15 Move a thread to another project — gated (built 23 Sep 2026; waits out a turn since 15 Oct 2026; waits out questions and background agents, cancellable, since 19 Oct 2026)
 
 #### `POST /session/move` — gated
 
 `{"session", "project"?, "cwd"?}` → `{"ok": true, "session", "project",
 "cwd", "restarted": bool, "pane": null | "%23", "live": bool, "folder":
-null | "…", "folder_error"?: "…", "pending"?: true}`.
+null | "…", "folder_error"?: "…", "pending"?: true, "why_waiting"?:
+"turn" | "question" | "agents", "move_pending"?: {…}}`.
 
 A thread has no project field to set: `project` on a `/targets` row is read
 off the directory the session ran in and the shelf folder it is filed under
@@ -3170,15 +3171,57 @@ Name the destination either way: `project` (its directory is the one that
 project's newest conversation ran in, `sessions.project_target`) or `cwd`
 (any directory on this host, whose project is whatever the layout calls it).
 
-**Mid-turn, the move waits** (15 Oct 2026; it was a 409 before). A move
-restarts the session, and an interrupted turn loses whatever it had not
-written, so a working session is left to finish: the answer is `ok: true,
-pending: true` with nothing moved yet, the move is kept in
-`<state_dir>/moves_pending.json`, and the server carries it out (all four
-steps) the moment the turn ends. A later move replaces a waiting one; a
-server restart picks waiting ones up again; one still waiting after six
-hours is dropped and logged. 400 for an unknown project or a directory that
-is not there, 404 when no harness still holds the session, 401 unpaired.
+**A busy session's move waits** (15 Oct 2026 for a turn, it was a 409
+before; 19 Oct 2026 for the rest). A move closes or parks the session's
+process, so it is never made while that would lose something. The session
+is busy, and `why_waiting` says with what, while:
+
+| `why_waiting` | What would be lost |
+| --- | --- |
+| `"turn"` | a turn running, starting, or a message queued behind one — whatever it had not written yet |
+| `"question"` | a permission dialog or a question (`approval`) — the request itself |
+| `"agents"` | background work after the turn: a subagent still running (§6.12, read off its transcript, any session), or for a headless session any task sessiond still hears from (`tasks`, a background Bash included). A pane session's background Bash cannot be seen from the server, so only its subagents hold the move |
+
+A session that is not running is never busy. Busy, the answer is `ok:
+true, pending: true, why_waiting, move_pending` with nothing moved yet; the
+move is kept in `<state_dir>/moves_pending.json` (so a canvas or sessiond
+restart keeps it) and the server carries it out (all four steps) the moment
+the session is free — woken by sessiond's own events for a headless session
+(a 15 s look as the backstop), every 3 s for a pane. A message sent
+meanwhile only means more waiting, and `why_waiting` follows what it is
+waiting on now. sessiond itself refuses to park a session for a move while
+any of this is true (`busy`); a turn that starts between the look and the
+move puts the move back to waiting. A later move replaces a waiting one
+(one per thread); a server restart picks waiting ones up again.
+
+**When a waiting move cannot be made** — its directory is gone, a step was
+refused, or the session was still busy six hours on — it is dropped and
+kept with why in `<state_dir>/moves_failed.json` until the next move of
+that thread or a cancel, and the thread shows it (`move_failed`). The
+answer to the original `POST` was already sent, so this is the only place
+it is said; nothing is raised as an alert.
+
+400 for an unknown project or a directory that is not there, 404 when no
+harness still holds the session, 401 unpaired.
+
+**How a thread shows it** (additive: absent when there is none, so old apps
+see nothing new). Every `/targets` row and the thread snapshot (§11) carry
+
+- `move_pending: {"project": "…" | null, "cwd", "since": <epoch s>,
+  "why_waiting"}` while a move waits, and
+- `move_failed: {"project": "…" | null, "cwd", "at": <epoch s>, "error"}`
+  after one failed,
+
+and the thread stream sends a `move` event (`{"move_pending",
+"move_failed", "project", "cwd"}`, nulls when none) when either changes or
+the move lands.
+
+#### `POST /session/move/cancel` — gated
+
+`{"session"}` → `{"ok": true, "session", "cancelled": bool}`: the waiting
+move is dropped (`cancelled: false` when none was waiting) and any
+`move_failed` with it. A move already under way is not undone. 401 unpaired,
+400 for something that is not a session id.
 
 **What the folder move costs.** Audiobookshelf reads a folder that moved as
 a *new* item — new id, no progress, the old one left behind (the same reason
@@ -3189,7 +3232,8 @@ app on its way out. The title part of the folder is kept exactly as it was:
 only the project above it changes.
 
 Clients: the chat app's thread ⋯ menu ("Move to project…") and a long press
-on a row in the thread list.
+on a row in the thread list; a waiting move shows on the row and in the
+thread's header, which offers Cancel.
 
 ### 6.16 Every harness's conversations — gated (built 23 Sep 2026)
 
@@ -4893,7 +4937,7 @@ increasing `id`, and `retry: 2000` first.
 
 | Event | Data | When |
 | --- | --- | --- |
-| `snapshot` | `{"ok": true}`, the `/conversation/log?session=` envelope — `messages` (the newest **30**, or `?limit=`), `older`, `lines` (deprecated; only those of the page, below), `pending`, `working`, `approval`, `suggestion`, `recap` — plus `{"state", "session_live": bool, "live": bool (deprecated alias of `session_live`), "pane", "resumable"}`, and (22 Sep 2026) `"agents": {"running", "total"}` (§6.12), `"project"`, `"cwd"` (§6.1) | first frame on every connection |
+| `snapshot` | `{"ok": true}`, the `/conversation/log?session=` envelope — `messages` (the newest **30**, or `?limit=`), `older`, `lines` (deprecated; only those of the page, below), `pending`, `working`, `approval`, `suggestion`, `recap` — plus `{"state", "session_live": bool, "live": bool (deprecated alias of `session_live`), "pane", "resumable"}`, and (22 Sep 2026) `"agents": {"running", "total"}` (§6.12), `"project"`, `"cwd"` (§6.1), and (19 Oct 2026) `"move_pending"?`, `"move_failed"?` (§6.15, only when there is one) | first frame on every connection |
 | `message` | `{"op": "append" \| "replace", "message": <message>}` (§6.2.2) | a message appears, or one (matched by `id`) changes: grows a part, a tool finishes, its turn ends, it gains or loses `spoken` |
 | `live` | `{"id", "at", "sentences", "sentence", "offsets", "elapsed", "server_time", "delay", "paused"}` — the message being spoken, by `id` — or `null` when nothing is | a new reply starts, the sentence changes, pause or resume, or the clock jumps (more than 1 s from where it should be: a skip) — **not** at 1 Hz; the client runs the clock between frames |
 | `working` | the `working` object, or `null` | a step starts, or the turn ends |
@@ -4904,6 +4948,7 @@ increasing `id`, and `retry: 2000` first.
 | `recap` | `{"text", "at", "source"}` or `null` | a newer recap is written |
 | `context` | `{"used", "window"}` or `null` (7 Oct 2026) | a reply changes it (checked on the 1 s / 3 s re-read) |
 | `agents` | `{"running", "total"}` — the thread's background agents (§6.12) | an agent starts, ends or resumes (checked on the 1 s / 3 s re-read) |
+| `move` | `{"move_pending", "move_failed", "project", "cwd"}` (19 Oct 2026) — a move waiting for the session to be free, one that failed when it ran (each `null` when none), and where the thread is now (§6.15) | a move is asked for, starts waiting on something else, lands, fails or is cancelled (checked on the 1 s / 3 s re-read) |
 | `ping` | `{}` | 15 s of silence |
 
 `isRunning` is `state == "working"`, `pending`, or the last message's
