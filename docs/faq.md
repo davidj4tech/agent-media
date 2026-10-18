@@ -126,6 +126,18 @@ path and leaves `~/.cache/agent-media/audio` as a link to the new folder (the
 clip server for the phone serves it from there). Deleting the link is
 harmless: it is made again on the next reply.
 
+### Are my own typed messages saved as audio?
+
+No, not since 18 Oct 2026. A message you type (or send from the app, or an
+option you pick) is kept as a speech-history row with its text, which is what
+the thread, its "thinking" line and `/conversation/log` read. When Replay
+reads your question before the answer, it reads it out then, in the listener's
+voice (`MEDIA_LISTENER_VOICE`, an edge voice): the phone is sent the words
+when it renders speech itself (`MEDIA_SPEECH_RENDER_<TARGET>=device`), and
+anywhere else the server renders it as the replay starts and keeps that file
+beside the other clips. If it cannot be voiced, the reply plays on its own.
+The `*-listener-*.mp3` clips made before then still play while they last.
+
 ### I changed `agent-media.env` and nothing changed.
 
 The env file only fills in variables that are **not already set**. Anything

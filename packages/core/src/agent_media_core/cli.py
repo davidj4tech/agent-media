@@ -3379,11 +3379,14 @@ def _do_replay(index: int, session: Optional[str] = None) -> int:
             print(f"media: picking up where it was stopped "
                   f"(sentence {resume + 1})", file=sys.stderr)
             return _replay_row(row, from_sentence=resume)
-        if question is not None:
+        playable = _question_to_play(question) if question is not None else None
+        if playable is not None:
             # The question, then its answer: the question's follower starts
             # the reply when the question has played out (`replay-track
-            # --then-id`), so a Stop in the question stops both.
-            return _replay_row(question, then_id=int(row["id"]))
+            # --then-id`), so a Stop in the question stops both. A question
+            # that cannot be voiced here (no render) leaves the reply alone.
+            if _replay_row(playable, then_id=int(row["id"])) == 0:
+                return 0
         return _replay_row(row)
     print("media: no clip to replay", file=sys.stderr)
     return 1
@@ -3473,8 +3476,8 @@ def _question_before(row: dict) -> Optional[dict]:
     that it reads my message, but it should also read the reply that
     follows"). It is the question only when it is the conversation's row
     right before this one — a second reply to the same question is heard on
-    its own. A row with no per-clip durations gets no follower to chain from,
-    so it is not offered."""
+    its own. The row as stored: a listener row has no audio of its own since
+    18 Oct 2026, and `_question_to_play` gives it some."""
     rid = row.get("id")
     session = (row.get("extras") or {}).get("source_session")
     if rid is None or not session:
@@ -3490,13 +3493,63 @@ def _question_before(row: dict) -> Optional[dict]:
             continue
         if ex.get("kind") == "notif":
             continue
-        if r.get("source") != "listener" or not _row_has_audio(r):
-            return None
-        uris = ex.get("clip_uris") or [r.get("uri")]
-        if len(ex.get("clip_durations_s") or []) != len(uris):
+        if r.get("source") != "listener" or not (r.get("text") or "").strip():
             return None
         return r
     return None
+
+
+#: Where a question read live keeps its sentences: beside the replies' clips,
+#: so the clip server's /audio/ and a remote target's prefetch (one folder)
+#: find it, and swept by the same prune.
+_QUESTION_CLIP_PREFIX = "question-"
+
+
+def _question_to_play(question: dict) -> Optional[dict]:
+    """`question` (a listener row) as a row `_replay_row` can play, or None.
+
+    A row from before 18 Oct 2026 whose clip is still here plays that clip.
+    Otherwise it is read live, the way a reply is rendered on the fly: each
+    sentence of its text becomes a device clip (`.tts`, render/device.py) in
+    the listener's voice, so a target that renders on the device is handed
+    the words (`sinks.speech._clip_uri_for`), and one that does not has them
+    rendered here as the replay starts (`render_device_clips`), once. Nothing
+    to say: None, and the reply plays alone."""
+    ex = question.get("extras") if isinstance(question.get("extras"), dict) else {}
+    uris = [str(u) for u in (ex.get("clip_uris") or [])]
+    durs = ex.get("clip_durations_s") or []
+    if (uris and len(durs) == len(uris)
+            and all(os.path.isfile(u) for u in uris)):
+        return question
+    text = str(question.get("text") or "").strip()
+    if text.startswith("You: "):
+        text = text[len("You: "):].strip()
+    rid = question.get("id")
+    if not text or rid is None:
+        return None
+    from ._paths import speech_audio_dir
+    from .book_tracks import LISTENER_VOICE
+    from .intake.submit import _split_sentences
+    sentences = [t for t in _split_sentences(text) if t.strip()] or [text]
+    voice = os.environ.get("MEDIA_LISTENER_VOICE") or LISTENER_VOICE
+    try:
+        d = speech_audio_dir()
+        clips = []
+        for i, said in enumerate(sentences):
+            clip = d / f"{_QUESTION_CLIP_PREFIX}{int(rid)}-{i:03d}{device_voice.SUFFIX}"
+            if not (clip.is_file() and clip.read_text(encoding="utf-8") == said):
+                ok, err = device_voice.write_clip(said, clip)
+                if not ok:
+                    raise OSError(err)
+            device_voice.set_clip_voice(clip, f"edge:{voice}")
+            clips.append(str(clip))
+    except OSError as e:
+        print(f"media replay: the question cannot be read ({e})", file=sys.stderr)
+        return None
+    return {**question, "uri": clips[0],
+            "extras": {**ex, "clip_uris": clips, "clip_sentences": sentences,
+                       "clip_durations_s": [device_voice.estimate_duration(c)
+                                            for c in clips]}}
 
 
 def replay_sentence_map(row: dict) -> list[str]:

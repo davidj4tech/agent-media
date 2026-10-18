@@ -200,16 +200,24 @@ def folder_for(session: str, turns: list, manifest: dict) -> Optional[Path]:
 # and a chapter list of answers to invisible questions is a worse record than
 # no record.
 #
-# So a typed reply is rendered to speech and written to speech history like any
-# other turn. It is not *played*: nobody wants their own message read at them
-# as they send it. The row is what matters — the exporter reads history, so the
-# turn lands in order, in the right item, with a chapter of its own, and the
-# audio is there for whoever plays the conversation back later.
+# So a typed reply is written to speech history like any other turn. It is not
+# *played*: nobody wants their own message read at them as they send it. The
+# row is what matters — the transcript, the thread's `pending` and the log read
+# history, so the turn lands in order, beside the reply it asked for.
+#
+# It is not rendered either (David, 18 Oct 2026). It used to be, to an mp3 in
+# the listener's voice, so the shelf had both sides and a replay could read the
+# question before its answer; nearly all of those clips were never heard. A
+# replay now reads the question live, from the row's text, the way a reply is
+# rendered on the fly (`cli._question_to_play`): sentence text to a target
+# that renders on the device, a render made at replay time for one that does
+# not. A row from before still has its clip, and that is played while it lasts.
 #
 # In a different voice, deliberately. The whole representation is audio, so the
 # only way to hear who is speaking is to hear it.
 
-#: Australian, and not the assistant's. Override with MEDIA_LISTENER_VOICE.
+#: Australian, and not the assistant's. Override with MEDIA_LISTENER_VOICE
+#: (an edge voice; MEDIA_LISTENER_ENGINE is no longer read).
 LISTENER_VOICE = "en-AU-WilliamNeural"
 
 
@@ -309,11 +317,13 @@ def _listener_turn_recently(store, session: str, text: str, now: float) -> bool:
 
 def record_listener_turn(session: str, text: str, *, store=None,
                          extras: Optional[dict] = None) -> bool:
-    """Render a reply the listener typed and add it to the conversation.
+    """Add a reply the listener typed to the conversation, as a history row.
 
-    Returns whether the turn was recorded. A failed render is not fatal to the
-    reply itself — the words still reached the session, which is the point of
-    the feature; they just do not appear on the shelf.
+    Returns whether the turn was recorded. Nothing is rendered: the row is the
+    turn (text and metadata, no audio), and a replay that reads it out renders
+    it then (see the note above). A failed write is not fatal to the reply
+    itself — the words still reached the session, which is the point of the
+    feature; they just do not appear in the transcript.
     """
     import time as _time
 
@@ -326,8 +336,6 @@ def record_listener_turn(session: str, text: str, *, store=None,
     text = tidy_lines(text)
     if not text or not session:
         return False
-    from ._paths import speech_audio_dir
-    from .render.engines import render_text
     from .state.store import StateStore
 
     at = _time.time()
@@ -342,37 +350,21 @@ def record_listener_turn(session: str, text: str, *, store=None,
         return True
     if not _claim_listener_turn(session, text, at, st):
         return True
-    try:
-        d = speech_audio_dir()
-    except OSError as e:
-        log.warning("book-tracks: no clip dir (%s)", e)
-        return False
-    stamp = _time.strftime("%Y%m%dT%H%M%S", _time.localtime(at))
-    out = d / f"{stamp}-listener-{safe_name(session, 8)}.mp3"
-
-    engine = os.environ.get("MEDIA_LISTENER_ENGINE") or "edge"
-    voice = os.environ.get("MEDIA_LISTENER_VOICE") or LISTENER_VOICE
-    ok, err = render_text(text, out, engine=engine, voice=voice,
-                          edge_voice=voice)
-    if not ok or not out.is_file():
-        log.warning("book-tracks: could not render a listener turn (%s)", err)
-        return False
-    dur = _ffprobe(out)
 
     try:
         st.add_history(
-            sink="speech", uri=str(out), started_at=at, ended_at=at + dur,
-            # Never played anywhere: the row exists to be archived, not routed.
-            target="none", source="listener", content_type="audio/mpeg",
+            # No clip: the uri is empty (the column is NOT NULL), and every
+            # reader of a listener row copes with that (session_feed.turns
+            # keeps it, cli._row_has_audio says there is nothing to play).
+            sink="speech", uri="", started_at=at, ended_at=at,
+            # Never played anywhere: the row exists to be read, not routed.
+            target="none", source="listener", content_type=None,
             # The chapter title comes from this text, so it carries the speaker
             # label — a chapter list is read, not heard, and without it the
-            # questions and the answers look alike. The audio says only the
+            # questions and the answers look alike. A replay reads only the
             # reply; the label is not spoken.
             text=f"You: {text}",
             extras={"source_session": session, "listener": True,
-                    "engine": engine, "voice": voice,
-                    "clip_uris": [str(out)], "clip_sentences": [text],
-                    "clip_durations_s": [dur],
                     # A slash command rides along as `command`, so the chat can
                     # show it as the instruction it is rather than a sentence
                     # somebody said out loud.
@@ -380,16 +372,6 @@ def record_listener_turn(session: str, text: str, *, store=None,
     except Exception as e:  # noqa: BLE001 — the reply already landed
         log.warning("book-tracks: could not record a listener turn (%s)", e)
         return False
-
-    # Put it on the shelf on the same schedule as a spoken turn, rather than
-    # waiting for the answer to arm one: a question that appears after its
-    # answer is worse than one that appears late.
-    try:
-        from . import feed_debounce
-
-        feed_debounce.arm()
-    except Exception:  # noqa: BLE001 — the poll will catch it
-        pass
     return True
 
 
@@ -427,6 +409,10 @@ def export_session(session: str, *, store=None) -> tuple[Optional[Path], int]:
     for turn in turns:
         at = float(turn.at)
         if at in done:
+            continue
+        if not turn.clips:
+            # A listener turn, which is a row with no audio (18 Oct 2026):
+            # nothing to place, and it must not stop the turns after it.
             continue
         if any(device_voice.is_clip(c) for c in turn.clips):
             # Said in the device's own voice: there is no audio to place.

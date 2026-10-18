@@ -1195,9 +1195,8 @@ def _handle_posttooluse(payload: dict) -> int:
 
     An answer is a turn: it is what the person said, and without it the
     transcript jumps from a question to a reply that acts on an instruction
-    nobody can see. It goes down the same path as a typed prompt, so it is
-    rendered in the listener's voice and lands in the conversation exactly
-    like one.
+    nobody can see. It goes down the same path as a typed prompt, so it
+    lands in the conversation exactly like one (a history row, no audio).
 
     PostToolUseFailure comes here too: a question answered by typing a
     message instead of choosing ends as a failed tool call, so PostToolUse
@@ -1239,9 +1238,9 @@ def _handle_user_prompt(payload: dict, record: bool = True) -> int:
     A reply sent from the player is recorded as a listener turn by the canvas
     (reply.py) and shows up in the transcript; a prompt typed into the terminal
     went nowhere, so a conversation read back from the shelf had every answer
-    and none of the questions. This records it by the same path — rendered in
-    the listener's voice, one history row, the shelf publish armed — so the
-    transcript reads the same whichever way the words arrived.
+    and none of the questions. This records it by the same path — one history
+    row, not rendered (a replay reads it live) — so the transcript reads the
+    same whichever way the words arrived.
 
     Not everything arriving here was said by anyone: the harness staples task
     notifications and system reminders into the prompt stream, and those were
@@ -1307,8 +1306,8 @@ def _record_listener_text(session: str, text: str,
                           extras: "dict | None" = None) -> int:
     """Add `text` to the conversation as a listener turn, off the hook's clock.
 
-    Detached like playback: the render takes a second or two and must not sit
-    in front of the prompt, and the hook is killed at its timeout.
+    Detached like playback: the store write must not sit in front of the
+    prompt, and the hook is killed at its timeout.
     """
 
     # The tmux session and pane, as the spoken turns carry them: a

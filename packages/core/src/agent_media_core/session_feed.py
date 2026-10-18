@@ -142,6 +142,12 @@ def turns(session: str, *, store=None) -> list[Turn]:
       whole reason this feature exists), so every path is checked and a turn
       whose audio is entirely gone is dropped rather than faked.
 
+    Except a **listener turn**, which is kept with no clips: since 18 Oct 2026
+    the listener's own words are a row and nothing else (book_tracks), and the
+    transcript, a thread's `pending` and the log need it whether or not there
+    is audio. Anything that wants audio (`build`, `export_session`) skips a
+    turn with no clips.
+
     A turn that was rendered but never heard — muted pane, flushed by a
     barge-in — *is* included. The words were written and spoken by the
     renderer; whether the room was listening is not what the archive is about.
@@ -182,7 +188,7 @@ def turns(session: str, *, store=None) -> list[Turn]:
             # swept clip takes its offset with it rather than shifting every
             # later sentence onto the wrong audio.
             at_s.append(began[i] if i < len(began) else None)
-        if not clips:
+        if not clips and not ex.get("listener"):
             continue
         out.append(Turn(at=float(row.get("started_at") or 0),
                         text=(row.get("text") or ""),
@@ -453,8 +459,10 @@ def build(ts: list[Turn], out: Path) -> Optional[Path]:
     are: other things replay them, and this is a copy of the conversation, not
     a move of it.
     """
-    # A turn said in the device's own voice has only words here.
-    ts = [t for t in ts if not any(device_voice.is_clip(c) for c in t.clips)]
+    # A turn said in the device's own voice has only words here, and a
+    # listener turn has no audio at all.
+    ts = [t for t in ts
+          if t.clips and not any(device_voice.is_clip(c) for c in t.clips)]
     if not ts:
         return None
     chapters, clock = [], 0.0
@@ -635,5 +643,8 @@ def publish(session: str, *, name: Optional[str] = None,
             return None
         return feedmod.publish(
             name, built, guid=f"session:{session}",
-            title=title_for(session, ts), description=notes(ts),
+            title=title_for(session, ts),
+            # The chapters `build` made: turns with audio of their own.
+            description=notes([t for t in ts if t.clips
+                               and not any(device_voice.is_clip(c) for c in t.clips)]),
             published=max(t.at for t in ts), source=session)

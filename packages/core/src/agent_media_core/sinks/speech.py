@@ -316,7 +316,8 @@ def _clip_uri_for(uri: str, target: Target, prefer_url: bool = False) -> str:
     if device_voice.is_clip(uri):
         # The device renders it in its own voice: hand it the words.
         try:
-            return device_voice.tts_uri(uri, device_voice.voice_for(target.name))
+            return device_voice.tts_uri(uri, device_voice.clip_voice(uri)
+                                        or device_voice.voice_for(target.name))
         except OSError:
             return uri
     localdir = os.environ.get(_env_key("MEDIA_SPEECH_CLIP_LOCALDIR", target.name))

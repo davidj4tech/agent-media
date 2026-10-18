@@ -235,10 +235,16 @@ def test_only_the_first_reply_to_a_question_gets_it(env):
     assert cli._question_before(_row("A3")) is None
 
 
-def test_a_question_with_no_timings_is_not_chained(env):
+def test_a_question_with_no_clip_is_read_live(env):
+    """No timings, no clip on this host (since 18 Oct 2026 a listener turn
+    has none): still the question, read from its text."""
     _listener(env, 10.0, "aaa", durations=())
     _reply(env, 11.0, "aaa", "A4")
-    assert cli._question_before(_row("A4")) is None
+    q = cli._question_before(_row("A4"))
+    assert q is not None and q["text"] == "You: why?"
+    live = cli._question_to_play(q)
+    assert live["extras"]["clip_sentences"] == ["why?"]
+    assert live["uri"].endswith(".tts")
 
 
 def _reply_of(st, at, session, text, n=4):

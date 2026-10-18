@@ -342,6 +342,32 @@ def write_clip(text: str, outfile: Path, **_ignored) -> tuple[bool, Optional[str
     return True, None
 
 
+#: Beside a clip, the voice it is to be said in when that is not the
+#: target's: a question read back in the listener's voice (cli
+#: `_question_to_play`). One line, a voice as `tts_uri` takes it
+#: ("edge:<ShortName>" or one of Google's).
+VOICE_SUFFIX = ".voice"
+
+
+def set_clip_voice(path: "str | Path", voice: str) -> None:
+    """Have `path` said in `voice` wherever it is said (raises OSError)."""
+    side = Path(path).with_suffix(VOICE_SUFFIX)
+    try:
+        if side.read_text(encoding="utf-8").strip() == voice:
+            return
+    except OSError:
+        pass
+    side.write_text(voice, encoding="utf-8")
+
+
+def clip_voice(path: "str | Path") -> Optional[str]:
+    """The voice `set_clip_voice` gave this clip, or None (the target's)."""
+    try:
+        return Path(path).with_suffix(VOICE_SUFFIX).read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
+
+
 def estimate_duration(path: "str | Path") -> float:
     """Seconds the device will take to say this clip at 1.0, or 0.0."""
     try:

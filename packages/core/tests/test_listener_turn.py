@@ -6,15 +6,40 @@ from pathlib import Path
 from agent_media_core import book_tracks
 
 
-def test_render_failure_records_nothing(tmp_path, monkeypatch):
+def test_a_turn_is_recorded_without_rendering(tmp_path, monkeypatch):
+    """The row is the turn (David, 18 Oct 2026): nothing is rendered, so an
+    engine that cannot render does not keep it out of the conversation."""
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
     # Or the claim lands in the real state dir, and a rerun inside
     # LISTENER_REPEAT_S finds it and calls "hello" a repeat.
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-    monkeypatch.setattr(book_tracks, "render_text", None, raising=False)
     import agent_media_core.render.engines as eng
-    monkeypatch.setattr(eng, "render_text", lambda *a, **k: (False, "no engine"))
-    assert book_tracks.record_listener_turn("s1", "hello") is False
+
+    def boom(*a, **k):
+        raise AssertionError("a listener turn is never rendered")
+
+    monkeypatch.setattr(eng, "render_text", boom)
+    store = _Store([])
+    assert book_tracks.record_listener_turn("s1", "hello", store=store,
+                                            extras={"source_pane": "%1"}) is True
+    row, = store.added
+    assert row["uri"] == "" and row["source"] == "listener"
+    assert row["text"] == "You: hello"
+    ex = row["extras"]
+    assert ex["listener"] and ex["source_session"] == "s1" and ex["source_pane"] == "%1"
+    assert "clip_uris" not in ex
+    # And no clip was written anywhere.
+    assert not list(tmp_path.rglob("*.mp3"))
+
+
+def test_a_failed_write_is_not_a_turn(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+    class _Broken(_Store):
+        def add_history(self, **row):
+            raise OSError("disk full")
+
+    assert book_tracks.record_listener_turn("s1", "hello", store=_Broken([])) is False
 
 
 def test_empty_text_is_not_a_turn():
@@ -60,9 +85,10 @@ def test_the_same_words_later_or_elsewhere_are_a_new_turn(tmp_path, monkeypatch)
     monkeypatch.setattr(eng, "render_text", lambda *a, **k: (False, "no"))
     old = _Store([_row("s1", "hello", time.time() - book_tracks.LISTENER_REPEAT_S - 5)])
     other = _Store([_row("s2", "again", time.time() - 1)])
-    # Not a repeat, so it goes on to render — and the failed render says False.
-    assert book_tracks.record_listener_turn("s1", "hello", store=old) is False
-    assert book_tracks.record_listener_turn("s1", "again", store=other) is False
+    # Not a repeat, so each is recorded.
+    assert book_tracks.record_listener_turn("s1", "hello", store=old) is True
+    assert book_tracks.record_listener_turn("s1", "again", store=other) is True
+    assert len(old.added) == 1 and len(other.added) == 1
 
 
 def test_two_recorders_at_once_make_one_turn(tmp_path, monkeypatch):
@@ -112,8 +138,9 @@ def test_the_same_answer_after_a_reply_is_a_new_turn(tmp_path, monkeypatch):
         os.utime(p, (now - 60, now - 60))
     store = _Store([_reply("s1", "Done, and pushed.", now - 30),
                     _row("s1", "y", now - 60)])
-    # Not a repeat, so it goes on to render — and the failed render says False.
-    assert book_tracks.record_listener_turn("s1", "y", store=store) is False
+    # Not a repeat, so it is recorded.
+    assert book_tracks.record_listener_turn("s1", "y", store=store) is True
+    assert len(store.added) == 1
 
 
 def test_another_sessions_reply_does_not_break_a_repeat(tmp_path, monkeypatch):
@@ -128,16 +155,8 @@ def test_another_sessions_reply_does_not_break_a_repeat(tmp_path, monkeypatch):
 
 def test_line_breaks_survive_into_the_turn(tmp_path, monkeypatch):
     """A reply typed over several lines reads that way in the transcript."""
-    import agent_media_core.render.engines as eng
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-
-    def fake(text, out, **k):
-        Path(out).write_bytes(b"x")
-        return True, ""
-
-    monkeypatch.setattr(eng, "render_text", fake)
-    monkeypatch.setattr(book_tracks, "_ffprobe", lambda p: 1.0)
     store = _Store([])
     assert book_tracks.record_listener_turn("s1", "first  line\n\n\n\nsecond\n", store=store)
     assert store.added[0]["text"] == "You: first line\n\nsecond"

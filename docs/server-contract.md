@@ -1732,7 +1732,8 @@ Actions (`_APP_SPEECH_ACTIONS`): `toggle`, `skip-`, `skip+`, `para-`,
 - `arg` is the turn index for `prev` and `replay` (1 = latest, clamped
   1–999), or a history row id for `replay-id` (not clamped).
 - `session` on `replay` (25 Sep 2026): the thread the Replay was pressed
-  in — its own newest reply (and the question before it), never another
+  in — its own newest reply (and the question before it, read out from
+  its text: the listener's turns have no audio since 18 Oct 2026), never another
   thread's. Without it, `replay` is the newest reply of all, as the desk
   popup's `r`. Not uuid-shaped: 400 `"not a session id"`. Send it from
   inside a thread; with replies held rather than spoken, "the newest of

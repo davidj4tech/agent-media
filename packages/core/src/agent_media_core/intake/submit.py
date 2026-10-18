@@ -2825,13 +2825,18 @@ def render_device_clips(clip_uris: list) -> tuple[list, list[float]]:
             durs.append(_clip_duration(Path(str(u))))
             continue
         src = Path(str(u))
-        audio = src.with_suffix("." + _ext_for(engine))
+        # A clip with a voice of its own (a question read back in the
+        # listener's) is rendered in it when it is a Microsoft one.
+        own = device_voice.clip_voice(src) or ""
+        eng, v = ("edge", own[len("edge:"):]) if own.startswith("edge:") else (engine, voice)
+        audio = src.with_suffix("." + _ext_for(eng))
         if not (audio.is_file() and audio.stat().st_size > 0):
             try:
                 text = src.read_text(encoding="utf-8")
             except OSError:
                 continue
-            ok, err = render_text(text, audio, engine=engine, voice=voice)
+            ok, err = render_text(text, audio, engine=eng, voice=v,
+                                  **({"edge_voice": v} if eng == "edge" and v else {}))
             if not ok:
                 log.warning("replay: rendering %s failed: %s", src.name, err)
                 continue
