@@ -1244,7 +1244,12 @@ ahead.
     2026** (§6.25a: `GET /contacts/<id>/timeline`, `POST
     /contacts/<id>/notes`); live steps in the proposal. **App, to do:** the
     card's timeline (newest day first, a service badge per channel, "not in
-    the CRM yet" when `synced` is false) and a note box.
+    the CRM yet" when `synced` is false) and a note box. **Google per
+    account, built 18 Oct 2026** (§6.25 "Google, per book"; sasonica-app
+    `1a509de`): Settings → Contacts signs this account's own book in to
+    Google (a loopback listener on the phone, the browser for consent),
+    Sign in again when the testing-mode 7 days are up, Sign out. The Google
+    project stays in testing: David adds each person as a test user.
 
 ## Loose ends
 
