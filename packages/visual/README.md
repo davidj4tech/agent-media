@@ -28,33 +28,15 @@ Design premises (from the discussion that spawned this):
   cadence) broadcasts `{"kind":"state", speaking, pos, dur}` over the SSE
   stream. Synthesized sound effects (WebAudio, no assets): a whoosh when a
   new image lands, a chime up/down when speech starts/stops — toggled with
-  the 🔈 button, persisted per device.
-- **Focus ring** — taps and Tab walk the same ring:
-  passive → input (reply box) → agents (tree cursor) → control → passive.
-  Esc / q bail out to passive from anywhere; idle modes unwind on their
-  own (control 15s, input/agents 30s — a reply draft is never discarded).
-  The first few taps toast a hint teaching the walk.
-- **Audio controller** — the ring's CONTROL stop: a touch version of the
-  tmux popup (`prefix a`), docked at the bottom: channel cycle
-  (speech ⇆ music ⇆ book — the `n` key or the channel button), marquee
-  title, live clock, prev/play-pause/next, volume, and on speech mute +
-  speed. Every button runs the same `media` CLI verb the popup's hotkey
-  runs — one code path — including the popup's ⏮ replay-cursor semantics
-  on speech. **Popup-parity key bindings** for canvases with a keyboard:
-  n channel · Space play/pause · h/l H/L sentence/paragraph ·
-  </> prev/next · -/= vol · m mute · [/] speed, 0 reset · r replay ·
-  Enter input box · Esc close · ? help. One monochrome inline-SVG icon
-  set (currentColor) — no emoji, so buttons render identically on every
-  device. The page itself ships as real files
+  the `f` key, persisted per device.
+- **Two keys and one button** — the page is a picture with a caption;
+  replying, transport, agents and the transcript are Sasonica's. `c` toggles
+  the captions, `f` the sound, each persisted per device (`?reset=1` clears
+  them). The one control is a fullscreen button, invisible until someone
+  moves or taps. The page ships as real files
   (`static/canvas.{html,css,js}`), assembled into one self-contained
-  response at import.
-- **Input box** — the canvas talks back. The keyboard button (or Enter)
-  opens a reply bar; the default target is *whoever just spoke* (resolved
-  from the speech history's source pane, probed live so dead panes are
-  skipped), with a tap-to-cycle picker of amux sessions (`amux send`
-  delivery). `POST /input` / `GET /sessions` require amux's own auth token
-  (`~/.amux/auth_token`) — one credential for both dashboards; the page
-  prompts once and remembers per device.
+  response at import. `/status`, `/ctl`, `/agents` and `/input` still
+  answer on the server, for the tmux popup and the `media` CLI.
 - `media-visual "text"` — shapes the reply into an image prompt (one chat
   call to the same gateway the summary/describe path uses, fallback: raw
   text), generates it, spools the webp, GCs the spool, and pushes to every
