@@ -487,7 +487,11 @@ def _format_ask_question(tool_input: dict) -> str:
             if not label:
                 continue
             desc = (o.get("description") or "").strip().rstrip(".")
-            spoken_opts.append(f"{label}: {desc}" if desc else label)
+            # A full stop, not a colon, between label and description: after
+            # a label ending "(Recommended)" a colon was read with no pause
+            # at all (David, 19 Oct 2026).
+            label = label.rstrip(".:")
+            spoken_opts.append(f"{label}. {desc[:1].upper()}{desc[1:]}" if desc else label)
         choice = "".join(f" Option {n}: {s}." for n, s in enumerate(spoken_opts, 1))
         tail = " You can pick more than one." if q.get("multiSelect") else ""
         blocks.append(f"{lead}{qtext}{choice}{tail}")
