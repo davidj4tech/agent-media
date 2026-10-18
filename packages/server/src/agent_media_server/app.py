@@ -84,6 +84,11 @@ device gets its token):
   GET  /setup     → this machine's wiring: `media-setup status --json`'s rows
   POST /setup/run {"name"?} → `media-setup profile [--only name]` in a
                   window, watched with /harnesses/screen like an install
+  POST /services/restart {"only"?, "after"?, "force"?, "dry_run"?} →
+                  `media restart-services` on this host (restart_services.run),
+                  for `media restart-services --host` on another; may_admin.
+                  Its own server restarts detached, after 10 s by default.
+                  400 unknown name, 409 busy, 500 failed (contract §6.6)
   GET  /sessions/events → the same, as a stream of changes, for a phone's
                   background notifier (session_events.py, §6.13)
   GET  /sessions/state  → every live session's working / waiting / approval,
@@ -247,7 +252,7 @@ CORS_PATHS = frozenset({
     "/harnesses/updates", "/harnesses/profiles", "/harnesses/profiles/remove",
     "/presets", "/presets/remove", "/personas/scope",
     "/projects/roots", "/projects/roots/remove", "/projects/roots/default", "/projects/roots/recreate",
-    "/setup", "/setup/run", "/shell", "/shell/signins", "/shell/signin", "/enrol", "/me", "/me/signout", "/me/account",
+    "/setup", "/setup/run", "/services/restart", "/shell", "/shell/signins", "/shell/signin", "/enrol", "/me", "/me/signout", "/me/account",
     "/share", "/upload", "/dashboard",
     "/sessions/events", "/search", "/contacts",
     "/mic/ask", "/mic/cancel",
@@ -1052,6 +1057,58 @@ def _pair(h: BaseHTTPRequestHandler) -> None:
                    "server": server})
 
 
+def _services_restart(h: BaseHTTPRequestHandler) -> None:
+    """`POST /services/restart {"only"?, "after"?, "force"?, "dry_run"?}`:
+    `media restart-services` on this host, for another host to ask
+    (`media restart-services --host NAME`) without ssh. Gated by
+    `auth.may_admin`. The answer is restart_services.run()'s dict.
+
+    The caller is not one of this host's sessiond sessions, so none is left
+    out of the busy check. When the restart includes the service answering
+    this request (the canvas restarting itself), it always runs detached,
+    `after` defaulting to 10 s: restarted now, it would be killed before it
+    answered. 400 an unknown name or a bad body, 409 busy (`busy` holds the
+    reasons), 500 a restart or its health check failed; a dry run answers
+    200 with `rc` and `busy` as they would be.
+    """
+    from agent_media_core import restart_services as rs
+
+    user, err = auth.may_admin(_bearer(h))
+    if not user:
+        _json(h, err.pop("status", 403), {"ok": False, **err})
+        return
+    body = _read_json(h)
+    if not isinstance(body, dict):
+        _json(h, 400, {"ok": False, "error": "expected a JSON object"})
+        return
+    only = body.get("only")
+    if isinstance(only, str):
+        only = only.split()
+    if only is not None and not (isinstance(only, list)
+                                 and all(isinstance(n, str) and n.strip() for n in only)):
+        _json(h, 400, {"ok": False, "error": "only: a list of service names"})
+        return
+    after = body.get("after")
+    try:
+        after = 0.0 if after is None else float(after)
+    except (TypeError, ValueError):
+        after = -1.0
+    if not 0 <= after <= 24 * 3600:
+        _json(h, 400, {"ok": False, "error": "after: seconds, 0 to 86400"})
+        return
+    dry_run = body.get("dry_run") is True
+    res = rs.run(only or None, after=after, force=body.get("force") is True,
+                 dry_run=dry_run, caller="", detach_own=True)
+    rc = int(res["rc"])
+    status = {rs.OK: 200, rs.UNKNOWN: 400, rs.BUSY: 409}.get(rc, 500)
+    if dry_run and rc != rs.UNKNOWN:
+        status = 200
+    print(f"services/restart: {user.get('username')} asked for "
+          f"{' '.join(only or ['all'])} (after {after:g}, dry run {dry_run}): rc {rc}",
+          file=sys.stderr, flush=True)
+    _json(h, status, {"ok": rc == rs.OK, "host": rs.host(), **res})
+
+
 def _lookup_for(base: str) -> str:
     """The sasonica.com lookup for this server, when `base` is the quick
     tunnel it publishes (tunnel.py): the app keeps it, and asks it for the
@@ -1764,6 +1821,8 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         ok, detail = harnesses.api_key(str(body.get("agent") or ""), str(body.get("provider") or ""),
                                        str(body.get("key") or ""), _bearer(h))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/services/restart":
+        _services_restart(h)
     elif path == "/setup/run":
         # `media-setup profile [--only NAME]` in a window, watched like an
         # install (/harnesses/screen, /keys, /close take its pane).

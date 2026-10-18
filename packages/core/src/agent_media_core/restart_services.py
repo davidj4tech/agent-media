@@ -2,7 +2,9 @@
 
 `media restart-services` is a thin wrapper over `run()`. A server route on any
 host (the phone's runit, a Windows box) can call `run()` too and answer its
-result dict as JSON. Nothing here names a host or a path of one machine.
+result dict as JSON; `POST /services/restart` does (server app.py), with
+`detach_own` so a server restarting itself answers first. Nothing here
+names a host or a path of one machine.
 
 What makes it safe to run unattended (David, 18 Oct 2026):
 
@@ -288,6 +290,70 @@ def is_canvas(s: Service) -> bool:
     return "canvas" in s.short
 
 
+# --- the service this process is -------------------------------------------------
+
+#: How long a restart of the service running this code waits, by default, so
+#: the answer gets out first (the route's `after` when it names its own server).
+SELF_AFTER_S = 10.0
+
+
+def _ancestors() -> set[int]:
+    """This process and its parents, up to init. Read from /proc where there
+    is one (Linux, Termux); elsewhere just this process and its parent."""
+    out = {os.getpid()}
+    pid = os.getppid()
+    for _ in range(64):
+        if pid <= 1 or pid in out:
+            break
+        out.add(pid)
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text()
+            pid = int(stat.rpartition(")")[2].split()[1])
+        except (OSError, ValueError, IndexError):
+            break
+    return out
+
+
+def _main_pid(s: Service) -> int:
+    """The service's main process id, 0 when it cannot be told."""
+    try:
+        if s.kind == "runit":
+            svdir = _svdir()
+            if not svdir:
+                return 0
+            return int((Path(svdir) / s.name / "supervise" / "pid").read_text().strip() or 0)
+        r = subprocess.run(["systemctl", "--user", "show", "-p", "MainPID", "--value",
+                            f"{s.name}.service"], capture_output=True, text=True, timeout=10)
+        return int((r.stdout or "0").strip() or 0)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return 0
+
+
+def _own_cgroup() -> str:
+    try:
+        return Path("/proc/self/cgroup").read_text()
+    except OSError:
+        return ""
+
+
+def own_services(selected: list[Service]) -> list[Service]:
+    """The services in `selected` that this process runs inside: its main
+    process is this one or one of its parents (runit and systemd), or this
+    process is in its systemd cgroup. Restarting one of them now would kill
+    this process before it could answer, or check its health."""
+    mine = _ancestors()
+    cgroup = _own_cgroup()
+    out = []
+    for s in selected:
+        if s.kind == "systemd" and f"/{s.name}.service" in cgroup:
+            out.append(s)
+            continue
+        pid = _main_pid(s)
+        if pid > 1 and pid in mine:
+            out.append(s)
+    return out
+
+
 def health(restarted: list[Service], within: "Optional[float]" = None) -> list[str]:
     """The restarted services not up (and, for a canvas, not answering) within
     `within` seconds. A timer's job is not checked: between runs it is meant
@@ -440,13 +506,21 @@ def schedule(selected: list[Service], after: float, force: bool) -> dict:
 
 def run(only: "Optional[list[str]]" = None, *, after: float = 0, force: bool = False,
         dry_run: bool = False, fire: bool = False, caller: "Optional[str]" = None,
-        echo: "Optional[Callable[[str], None]]" = None) -> dict:
+        echo: "Optional[Callable[[str], None]]" = None,
+        detach_own: bool = False) -> dict:
     """Restart `only` (default all), now or `after` seconds from now.
 
-    Returns {"rc", "lines", "selected", "busy", "unknown", "scheduled"}, with
-    `rc` the exit code and `lines` what was said. `caller` defaults to
-    `MEDIA_SESSIOND_SESSION`. `fire` is the detached run: it waits out a busy
-    host instead of refusing, and treats no session as its own."""
+    Returns {"rc", "lines", "selected", "busy", "unknown", "scheduled",
+    "own", "after"}, with `rc` the exit code and `lines` what was said.
+    `caller` defaults to `MEDIA_SESSIOND_SESSION`. `fire` is the detached run:
+    it waits out a busy host instead of refusing, and treats no session as its
+    own.
+
+    `detach_own` is for a caller that is itself a service (the server's
+    `POST /services/restart`): when the selection includes the service this
+    process runs inside (`own_services`), a restart "now" becomes one
+    `SELF_AFTER_S` from now, detached, so this process answers before it is
+    killed. `own` names those services, `after` is the delay used."""
     lines: list[str] = []
 
     def emit(line: str) -> None:
@@ -455,7 +529,7 @@ def run(only: "Optional[list[str]]" = None, *, after: float = 0, force: bool = F
             echo(line)
 
     res = {"rc": OK, "lines": lines, "selected": [], "busy": [], "unknown": [],
-           "scheduled": None}
+           "scheduled": None, "own": [], "after": after}
     if fire:
         caller = ""
         delay = _env_f("MEDIA_RESTART_DELAY_S", 0.0)
@@ -474,6 +548,14 @@ def run(only: "Optional[list[str]]" = None, *, after: float = 0, force: bool = F
         emit(f"unknown service(s): {', '.join(unknown)}. Known: {', '.join(known)}")
         res.update(rc=UNKNOWN, unknown=unknown)
         return res
+    if detach_own and not fire:
+        own = own_services(selected)
+        res["own"] = [s.name for s in own]
+        if own and after <= 0:
+            after = SELF_AFTER_S
+            emit(f"{' '.join(res['own'])} answers this request: restarting in "
+                 f"{int(after)} s, detached, so the answer gets out first")
+    res["after"] = after
     now = after <= 0 and not fire
 
     if dry_run:

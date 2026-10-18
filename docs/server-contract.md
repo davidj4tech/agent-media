@@ -1933,6 +1933,34 @@ row; the profile is idempotent, so a row already right stays. The server
 runs the installer that owns the rows and never reimplements one. `absent`
 is an extra whose tool is not on this host: nothing to fix from here.
 
+**Restarting this host's services — BUILT 18 Oct 2026.** `media
+restart-services` on this host, for another host to ask without ssh
+(`media restart-services --host NAME`, docs/reference/version-skew-monitoring.md).
+Gated by `may_admin`.
+
+```
+POST /services/restart {"only"?: ["sessiond", "canvas"], "after"?: 10,
+                        "force"?: false, "dry_run"?: false}
+  → {"ok", "host", "rc", "lines": [...], "selected": [...], "busy": [...],
+     "unknown": [...], "scheduled": {"how", "unit", "log"}|null,
+     "own": [...], "after"}
+  → 400 an unknown name (`unknown`, and `lines` lists the known ones) or a
+    bad body; 409 busy (`busy` holds the reasons); 500 a restart or its
+    health check failed. A dry run answers 200, with `rc` and `busy` as the
+    real run would have them.
+```
+
+The body is `restart_services.run()`'s, with the CLI's semantics: no `only`
+is everything this checkout owns, short names work, the busy checks are
+skipped by `force`, `after` schedules a detached run (a transient systemd
+unit, or a detached child under runit and Windows) that checks again before
+it acts. The requester is not one of this host's sessiond sessions, so no
+session is left out of the busy check. When the restart includes the service
+answering the request (`own`: its main process is the server or one of its
+parents, or the server is in its systemd cgroup), it is always detached and
+`after` becomes 10 s if it was 0: restarted now, the server would be killed
+before it answered. This is how the phone's canvas (runit) restarts itself.
+
 ### 6.7 Share — gated
 
 `POST /share {"text", "channel"?: "music" | "book"}` → `{"ok", "url",
