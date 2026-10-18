@@ -1254,6 +1254,13 @@ ahead.
     Google (a loopback listener on the phone, the browser for consent),
     Sign in again when the testing-mode 7 days are up, Sign out. The Google
     project stays in testing: David adds each person as a test user.
+    **Bridged networks and labels, built 19 Oct 2026** (§6.25 "The bridged
+    networks", "Labels"): the person of each one-to-one Messenger,
+    Instagram, Teams and SMS chat is a contact (a shared number or address
+    joins; a same name off SMS is "Same person?" on the card, Join / Not
+    the same), their rooms roll up as their own channels, and Google's
+    labels (the phone's groups, "My Contacts" included) are on each person
+    with a filter on People.
 
 ## Loose ends
 

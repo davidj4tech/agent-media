@@ -4022,7 +4022,8 @@ when accepted.
 {"ok": true,
  "contacts": [
    {"id": "3f0c…-uuid", "name": "Lionel Smith",
-    "phones": ["+61412345678"], "emails": ["lionel@example.com"]}],
+    "phones": ["+61412345678"], "emails": ["lionel@example.com"],
+    "labels": ["Family", "My Contacts"]}],
  "total": 1, "synced_at": 1792200000.5,
  "sources": [{"kind": "android", "synced_at": 1792200000.5, "error": null}]}
 ```
@@ -4090,13 +4091,17 @@ hold (and for any path that is not a uuid, as an unknown route).
 **Which room is whose.** Each member of a room other than the owner, the
 agent (`MATRIX_SAM_ID`) and the bridge bots is matched by phone (E.164),
 else email, else — a bridge's name for its puppet being the phone's own
-contact name — a name only one contact has. A room is a contact's when its
+contact name — a name only one contact has (since 19 Oct 2026 only on a
+trusted network, `gmessages`, and first of all a ghost a contact holds as a
+handle: "The bridged networks" below). A room is a contact's when its
 members match exactly one; a group of several people is no one's, and so is
 a number two contacts share. The puppets: mautrix-gmessages' are
 `@gmessages_<login>.<participant>:<server>` (no number in the id) named
 `{{or .FullName .PhoneNumber}}`; Signal's `@signal_<uuid>` (older ones the
 escaped number, `@signal_=2b61…`); WhatsApp's `@whatsapp_61412…`. A number
-comes from an id that is one and from a displayname that is one.
+comes from a Signal or WhatsApp id that is one, and from a displayname that
+is one; Messenger's (`@facebook_<id>`), Instagram's and Teams' ids are
+account ids, never a number.
 `MEDIA_CONTACTS_SELF` (David's own numbers and addresses, comma separated)
 are never matched: texts sent from the phone itself arrive as his number's
 puppet. A manual **join** (this room is this person's) or **split** (it is
@@ -4184,6 +4189,73 @@ effort) and deleted, and Google's records leave the book (the phone's, for
 the owner, stay). → `{"ok": true, "google": <as GET>}`. A POST rather than
 a DELETE, as `/me/signout` is.
 
+**The bridged networks** (19 Oct 2026; David: "draw in contacts from the
+other providers we have bridges for"). `bridges`, the owner's book only, on
+whenever this host reads bridges as the owner (`MATRIX_OWNER_BRIDGES`):
+the other party of **each one-to-one bridged room** this process holds
+(Messenger `facebookgo`, Instagram `instagramgo`, Teams `msteams`, SMS
+`gmessages`, …). A group adds no one, nor do the bots or **David's own
+ghosts** — a ghost in every room of its network (at least 3 of them;
+Instagram puppets him into each chat), one named as the owner is in that
+room, or his own number's (`MEDIA_CONTACTS_SELF`). One record per ghost:
+its name, the number or address its id or displayname carries, and its
+**handle**. It joins a contact by, in order: a kept **Join** (below); the
+one contact sharing its number; its address (Teams' displayname is often
+one); and only on a network whose names are the phone's own
+(`MEDIA_CONTACTS_TRUSTED_NAMES`, default `gmessages`) the one contact with
+its name (never a person a bridge alone knows) — else it is **a person of
+its own**, its id a uuid of `bridges:<ghost id>`. A join only fills what
+the contact left empty. The canvas reads the rooms, so a process with none
+loaded (the CLI) keeps the last copy (`… contacts sync --source bridges`
+says so). Pinned by `packages/server/tests/test_contacts_bridges.py`.
+
+On the card and its rooms:
+
+- **`handles`**: `[{"network": "facebookgo", "network_name": "Facebook
+  Messenger", "id": "@facebook_1000…:ryer.org"}]`, each ghost that is this
+  person. A room whose member is a contact's handle is that contact's
+  first of all. A bridge's source is `{"kind": "bridges", "id": <ghost id>,
+  "network", "network_name"}`.
+- **`suggestions`**: `[{"id", "name", "why": "same name"}]` — other contacts
+  with this one's name where one of the two is known only from a bridge,
+  and David has not said they are not the same. A name off a trusted
+  network joins nobody by itself; this is how it is offered.
+- **`labels`**: below.
+
+#### `POST /contacts/<id>/same {"other"}` — gated (`auth.gate`)
+
+"Same person?" → Join. The one of the two known only from a bridge joins
+the other (kept in the store's `merges`, so it holds through renames and
+every later read; two bridged people can be one), → `{"ok": true, "id":
+<the contact left>}` — navigate there, the other id is gone. 400 when
+`other` is not a contact id or neither is a bridge's alone; 404 when either
+is not in the book.
+
+#### `POST /contacts/<id>/different {"other"}` — gated (`auth.gate`)
+
+"Not the same": the suggestion goes from both cards, and a trusted name
+never joins them. → `{"ok": true, "id": <id>}`; 400 and 404 as above.
+
+**Labels** (19 Oct 2026; David: "Can we bring Google groups too?"). Each
+person's **`labels`** (a list of names, also on each `GET /contacts` row):
+the phone's contact groups — Google's labels, synced by Android
+(`com.google` groups only, read like the rest; Google's own groups by name:
+"My Contacts", Friends, Family, Coworkers; starred left out) — and, for a
+book signed in to Google, its People API `memberships` by `contactGroups`
+name. Both are one list. These are also the work/personal tags the
+proposal waited on. `GET /contacts?label=<name>` (case and accents
+ignored) lists only the people with it. Pinned by
+`packages/server/tests/test_contacts_labels.py`.
+
+#### `GET /contacts/labels` — gated (`auth.gate`)
+
+```json
+{"ok": true, "labels": [{"name": "Family", "count": 12},
+                        {"name": "My Contacts", "count": 2410}]}
+```
+
+Every label on someone in the caller's book, by name, with how many have it.
+
 ### 6.25a A contact's timeline — gated (18 Oct 2026)
 
 "When did I last talk to them?" (proposal, "Timeline"). Daily rollups —
@@ -4205,7 +4277,7 @@ separated; default `texts,notes`):
 
 | Source | Default | Channel | From |
 |---|---|---|---|
-| `texts` | on | `sms`, `signal` | the Matrix rooms that are the contact's (§6.25 "Which room is whose"): Google Messages is `sms`, Signal `signal`; David's (the owner, or his own number's puppet) are out |
+| `texts` | on | `sms`, `signal`, `messenger`, `instagram`, `teams`, `whatsapp` | the Matrix rooms that are the contact's (§6.25 "Which room is whose"): Google Messages is `sms`, Signal `signal`, mautrix-meta's `facebookgo` `messenger` and `instagramgo` `instagram`, Teams `teams`; David's (the owner, his own number's puppet, or his own ghost on a network, §6.25 "The bridged networks") are out |
 | `notes` | on | `note` | `POST /contacts/<id>/notes`, or `… contacts note <who> <text>` |
 | `calls` | **off** | `call` | the phone's call log over `MEDIA_CONTACTS_ADB`, by number |
 | `email` | **off** | `email` | mail headers (From, To, Cc only) over IMAP, by address: `~/.config/agent-media/timeline-imap.json` or `MEDIA_TIMELINE_IMAP`, `{host, user, password, folder?}` (default folder `[Gmail]/All Mail`) |
@@ -4235,8 +4307,8 @@ until it does.
  "crm": {"id": "<person uuid>", "error": null}}
 ```
 
-- Newest day first, then by channel (`sms`, `signal`, `call`, `email`,
-  `note`); at most `limit` (default 100, at most 1000).
+- Newest day first, then by channel (`sms`, `signal`, `messenger`,
+  `instagram`, `teams`, `whatsapp`, `call`, `email`, `note`); at most `limit` (default 100, at most 1000).
 - **`origin`**: `local`, this host's ledger, or `crm`, an entry the CRM
   holds that this host did not write (typed in its UI, another writer).
   **`synced`**: whether it is in the CRM yet.
