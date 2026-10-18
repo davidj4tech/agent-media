@@ -22,7 +22,7 @@ Then wire it up as a systemd user service:
 
 ```sh
 mkdir -p ~/.config/systemd/user
-curl -fsSL https://raw.githubusercontent.com/davidj4tech/tmux-voice-bridge/main/systemd/tmux-voice-bridge.service \
+curl -fsSL https://raw.githubusercontent.com/southpenlabs/agent-media/main/packages/voice-bridge/systemd/tmux-voice-bridge.service \
   -o ~/.config/systemd/user/tmux-voice-bridge.service
 systemctl --user daemon-reload
 systemctl --user enable --now tmux-voice-bridge
