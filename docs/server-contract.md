@@ -4032,6 +4032,8 @@ hold (and for any path that is not a uuid, as an unknown route).
   versions (it moves on any edit). `google`, when signed in: `{"kind":
   "google", "id": "people/c123", "etag"}`, first when it won.
 - **`updated`**: when the card last changed here (epoch s).
+- **`crm`**: the person in the Drupal CRM and the fields only it has
+  (below, "The CRM"), or `null`.
 - **`rooms`**: the Matrix rooms (§6.1 "Matrix rows") that are this
   person's, newest message first: `session` is the room's thread id, so
   every session route takes it; `at` its last message, or `null`.
@@ -4058,6 +4060,87 @@ yet.
 
 Contacts are personal data: they stay on this host and go only to a
 signed-in device that asks; nothing here speaks them.
+
+**The CRM, a third source** (18 Oct 2026, proposal step 3). `drupal`,
+optional and only once its connection is set: the Drupal CRM's people,
+over JSON:API at the CRM's own address — its public HTTPS one, not a
+tailnet listener (David: "we're working towards not relying on tailnet for
+the software") — signed in as a machine with Simple OAuth's
+`client_credentials` grant (`contacts_drupal.py`). The connection is
+`~/.config/agent-media/drupal-crm.json` (or `MEDIA_DRUPAL_CRM`, a path or
+the JSON), 0600, `{url, client_id, client_secret, scope}`; the access token
+is cached beside it, 0600. Read whole each interval, the last good copy
+kept when it fails. A CRM person joins the contact the seed linked them to,
+else the one sharing their number, else their address, and **only fills
+what the phone and Google left empty**. Their other fields (any field the
+site has, `field_` dropped from the name) are the card's **`crm`**:
+`{"id": <person uuid>, "url": <their CRM page>, "fields": {…}}`, or `null`
+when the CRM does not know them. `… contacts seed` adds the people the CRM
+lacks (a name and a number or address each), **a dry run unless `--go`**
+(`--limit 1` to try one); each one made is linked to its contact before
+their numbers are added, so a second run adds nobody. Addresses are not
+seeded: the card holds them as text, the CRM's address field wants parts.
+
+### 6.25a A contact's timeline — gated (18 Oct 2026)
+
+"When did I last talk to them?" (proposal, "Timeline"). Daily rollups —
+one entry per contact, per channel, per day: counts in and out, call
+seconds, a one-line summary, **never message bodies** — kept in the CRM's
+`crm_activity` entity (`integrations/drupal/crm_activity`, an installable
+Drupal module) and in this host's ledger, `<state_dir>/timeline.db` (0600),
+so a CRM that cannot be reached loses nothing and is written later
+(`timeline.py`; pinned by `packages/server/tests/test_contacts_timeline.py`).
+
+**Sources**, each switched on in `MEDIA_TIMELINE_SOURCES` (comma
+separated; default `texts,notes`):
+
+| Source | Default | Channel | From |
+|---|---|---|---|
+| `texts` | on | `sms`, `signal` | the Matrix rooms that are the contact's (§6.25 "Which room is whose"): Google Messages is `sms`, Signal `signal`; David's (the owner, or his own number's puppet) are out |
+| `notes` | on | `note` | `POST /contacts/<id>/notes`, or `… contacts note <who> <text>` |
+| `calls` | **off** | `call` | the phone's call log over `MEDIA_CONTACTS_ADB`, by number |
+| `email` | **off** | `email` | mail headers (From, To, Cc only) over IMAP, by address: `~/.config/agent-media/timeline-imap.json` or `MEDIA_TIMELINE_IMAP`, `{host, user, password, folder?}` (default folder `[Gmail]/All Mail`) |
+
+The rollup runs after each contacts sync over the last
+`MEDIA_TIMELINE_DAYS` (2: yesterday and today), and on `… contacts rollup
+[--days N] [--no-push]`; `MEDIA_TIMELINE=0` leaves it off. **A count never
+goes down**: a room holds only its newest messages, so a recount of a day
+it no longer holds whole is less than the first. An entry's CRM
+`source_key` is `agent-media:<channel>:<day>:<contact id>` (a note's
+`agent-media:note:<uuid>`): it is found by that key and updated, never
+added twice. A contact the CRM does not hold yet keeps its entries here
+until it does.
+
+#### `GET /contacts/<id>/timeline[?limit=]` — gated (`auth.gate`)
+
+```json
+{"ok": true,
+ "entries": [
+   {"key": "agent-media:sms:2026-10-18:3f0c…", "channel": "sms",
+    "day": "2026-10-18", "count_in": 5, "count_out": 7, "duration": 0,
+    "summary": "12 texts (5 in, 7 out)", "origin": "local", "synced": true},
+   {"key": "manual:1", "channel": "note", "day": "2026-10-02", "count_in": 0,
+    "count_out": 0, "duration": 0, "summary": "Typed in the CRM",
+    "origin": "crm", "synced": true}],
+ "sources": ["texts", "notes"],
+ "crm": {"id": "<person uuid>", "error": null}}
+```
+
+- Newest day first, then by channel (`sms`, `signal`, `call`, `email`,
+  `note`); at most `limit` (default 100, at most 1000).
+- **`origin`**: `local`, this host's ledger, or `crm`, an entry the CRM
+  holds that this host did not write (typed in its UI, another writer).
+  **`synced`**: whether it is in the CRM yet.
+- **`crm`**: `null` when the CRM does not hold the contact; `error` says
+  why it could not be read, and the ledger still answers.
+- 404 `"no such contact"` for an id the store does not hold.
+
+#### `POST /contacts/<id>/notes {"text"}` — gated (`auth.gate`)
+
+A note on them, today: kept, and written to the CRM. `{"ok": true, "note":
+{"key", "day", "summary", "synced"}}`. 400 for no text, 404 for no such
+contact, 403 when `notes` is switched off. A note is at most 4000
+characters (cut, not refused).
 
 ## 7. `/events` (v0) — canvas-wide, not the app's stream
 

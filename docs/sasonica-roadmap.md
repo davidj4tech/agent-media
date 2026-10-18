@@ -1240,7 +1240,11 @@ ahead.
     steps, starting with Google read-only. **Timeline** (18 Oct 2026):
     daily per-contact rollups kept in the CRM as a distributable
     `crm_activity` module; texts, Signal and agent notes on by default,
-    calls and email off; after step 3.
+    calls and email off; after step 3. **Server and module built 18 Oct
+    2026** (§6.25a: `GET /contacts/<id>/timeline`, `POST
+    /contacts/<id>/notes`); live steps in the proposal. **App, to do:** the
+    card's timeline (newest day first, a service badge per channel, "not in
+    the CRM yet" when `synced` is false) and a note box.
 
 ## Loose ends
 
