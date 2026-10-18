@@ -282,7 +282,10 @@ Declaring the interest early protects both sides.
 ## Open questions for David
 
 - Which route, or which blend?
-- Does the hot springs know about, or allow, the staff-login automation?
+- The hot springs does not know about the staff-login automation (David,
+  19 Oct 2026). Offered: strip the health notes or pause it; David chose
+  to leave it as is for now. The risk stands (above): disclose it before
+  or as part of any pitch, and never demo with real client data.
 - Which venues next, after the hot springs? Their booking platforms decide
   the integration order.
 
