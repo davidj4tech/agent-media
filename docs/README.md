@@ -19,6 +19,8 @@ Each dated file opens with its title, then `Status:` and `Date:`. That is
 what lets this index, and the popup's document chooser, be generated rather
 than maintained by hand.
 
+**[faq](faq.md)** — common problems with the app, the server and a Termux phone, and their fixes
+
 ## Reference
 
 - [channel-architecture](reference/channel-architecture.md) — how the channels fit together

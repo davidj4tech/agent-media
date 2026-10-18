@@ -25,6 +25,8 @@ extra event sources) are separate packages that core discovers at runtime — it
 never imports them. A base install is zero-config: the `edge` engine needs no
 API key. See **[`docs/reference/extensions.md`](./docs/reference/extensions.md)** for the contract.
 
+Something not working? Start with the **[FAQ](./docs/faq.md)**.
+
 > **Music recommendation** lives in its own repo now:
 > [`davidj4tech/astrotunes`](https://github.com/davidj4tech/astrotunes) — picks
 > tracks from your transit chart, time of day, mood, and weather, and queues
