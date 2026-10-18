@@ -1,6 +1,6 @@
 # Memories that should be docs
 
-Status: proposal, for David's review (nothing moved yet)
+Status: done 18 Oct 2026 — docs written (6473cd4, 750c9f4, ed7f391, sasonica-app 5438a95), agent notes in the context hook (8e8b7d7), 80 memories moved to memory/_moved/
 Date: 2026-10-18
 
 The agent memories in `~/.claude/projects/-home-ryer-projects-agent-media/memory/`
