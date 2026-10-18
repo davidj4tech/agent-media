@@ -2418,7 +2418,9 @@ when nothing is being listened to. 400 for any other action.
 path>` — gated → `{"ok", "path", "title", "text", "fmt"}` (`doc_read.py`):
 a `.md`, `.org` or `.txt` file under the projects folder (MEDIA_PROJECTS_DIR,
 else ~/projects) or a doc root (MEDIA_DOC_ROOTS). There must be no dot-dir
-on the way and no symlink out; 404 otherwise. `title` is a Markdown file's
+on the way and no symlink out; 404 otherwise, whose `error` is "outside the
+folders the reader opens" when the file is there but not readable from here
+and "no such document" when it is not (18 Oct 2026). `title` is a Markdown file's
 first `# ` heading (an Org file's `#+title:`), else the file's name, and
 `fmt` is `"org"` or `"md"`. `POST /org/listen {"doc": <that path>, "line"?}`
 listens to it as to a note, and the `GET` answers about it carry `doc` (and

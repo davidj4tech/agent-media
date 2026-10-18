@@ -68,11 +68,22 @@ def fmt_of(p: Path) -> str:
     return "org" if p.suffix.lower() == ".org" else "md"
 
 
+def refusal(raw: str) -> str:
+    """Why `raw` will not open: a document that is there but outside the
+    roots (or in a dot-dir) is said so, not called missing."""
+    try:
+        p = Path(os.path.expanduser((raw or "").strip())).resolve()
+        there = (raw or "").strip() and p.suffix.lower() in SUFFIXES and p.is_file()
+    except OSError:
+        there = False
+    return "outside the folders the reader opens" if there else "no such document"
+
+
 def load(raw: str) -> tuple[bool, dict]:
     """The document, ungated: for callers that have checked already."""
     p = safe_path(raw)
     if not p:
-        return False, {"error": "no such document", "status": 404}
+        return False, {"error": refusal(raw), "status": 404}
     try:
         text = p.read_text(errors="replace")[:MAX_READ]
         mtime = p.stat().st_mtime

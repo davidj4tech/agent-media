@@ -224,6 +224,12 @@ def test_a_project_document_reads_and_listens(book, server, tmp_path, monkeypatc
     for bad in (proj / "app" / ".git" / "x.md", proj / "app" / "notes.py",
                 tmp_path / "elsewhere.md", proj / "app" / "docs" / ".." / ".." / ".." / "x.md"):
         assert _call(server, "GET", "/doc/read?path=" + str(bad))[0] == 404, bad
+    # A document that is there but outside the roots is said so, not called missing.
+    (tmp_path / "scratch.md").write_text("# Notes\n")
+    assert _call(server, "GET", "/doc/read?path=" + str(tmp_path / "scratch.md"))[1]["error"] \
+        == "outside the folders the reader opens"
+    assert _call(server, "GET", "/doc/read?path=" + str(tmp_path / "elsewhere.md"))[1]["error"] \
+        == "no such document"
     assert _call(server, "GET", "/doc/read?path=" + str(doc), bearer="bad")[0] == 401
 
     status, got = _call(server, "POST", "/org/listen", {"doc": str(doc)})
