@@ -1265,7 +1265,10 @@ ahead.
     ("Messenger groups", "Instagram groups", "Teams" labels), and Facebook
     friends and Instagram followers / following from each network's own
     JSON export, uploaded in Settings → Contacts → Import a file (the export
-    steps are in the proposal's "The full list").
+    steps are in the proposal's "The full list"). **The export cycle, built
+    19 Oct 2026** (§6.25 "The export cycle"): a reminder 90 days after each
+    import, Meta's "ready" mail noticed (opt-in, IMAP), and the zip
+    imported from the phone's Downloads by itself.
 
 ## Loose ends
 

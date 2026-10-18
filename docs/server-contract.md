@@ -4338,6 +4338,41 @@ person's handle is `{"network": "instagram", "id": "instagram:<username>",
 "username", "url"}`. Pinned by
 `packages/server/tests/test_contacts_import.py`.
 
+**The export cycle** (19 Oct 2026; contacts_exports.py; David: "how might we
+automate the exports?"). Meta's website is never driven: requesting an
+export stays David's tap. Around it, in the sync loop, for the **owner's
+book only** (an alert reaches the owner's phone, so another account's book
+gets none of this):
+
+- **Files.** Export zips in the phone's Download folder
+  (`facebook-*.zip`, `instagram-*.zip`, `meta-*.zip`, listed and read over
+  `MEDIA_CONTACTS_ADB`, base64 over the shell, never deleted there) and,
+  with `MEDIA_CONTACTS_IMPORT_DIR`, those zips or the list JSONs in that
+  folder, are imported once each (by path, size and time; a newer export
+  is a new file). Each import is said as the `contacts.import` digest at
+  warn (a phone notification: "Imported Facebook friends 412", counts,
+  never names). A file that is not an export is tried once; one that could
+  not be read is tried again; the phone off Wi-Fi is skipped.
+  `MEDIA_CONTACTS_EXPORT_WATCH=0` turns it off.
+- **The reminder.** Once a network has been imported, its export is due
+  `MEDIA_CONTACTS_EXPORT_REMIND_DAYS` (90; 0 off) after the last import:
+  the `contacts.export.<facebook|instagram>` alert at warn, `fix` the
+  Download your information page, `detail` the exact choices (Some of your
+  information → Connections → Friends and followers / Followers and
+  following; All time; JSON). The next import of that network clears it.
+- **The "ready" mail** (opt-in: `MEDIA_CONTACTS_EXPORT_MAIL=1` and the
+  timeline's IMAP connection, `timeline-imap.json`). Mail from
+  facebookmail.com or mail.instagram.com (the address's own domain) whose
+  subject says the information is ready raises
+  `contacts.export.ready.<network>` at warn, `fix` the download link from
+  the mail when it is Meta's own (facebook.com, instagram.com,
+  accountscenter / accountscentre, meta.com), else the Accounts Center
+  page. Each mail once; the next import of that network clears it.
+
+State: `exports.json` in the book's state dir (last import per network,
+the files and mails seen, what is raised). Pinned by
+`packages/server/tests/test_contacts_exports.py`.
+
 #### `POST /contacts/import[?name=<file name>]` — gated (`auth.gate`)
 
 The body is the export: a `.zip` of it (the whole download, or the
