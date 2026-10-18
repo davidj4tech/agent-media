@@ -3664,8 +3664,47 @@ not home itself nor inside the server's state dir (400); at most 4 new
 levels (400). A refused path never gets `would_create`. The folders get
 mkdir's own mode (0777 less the umask), as `mkdir -p` would.
 
+Edge cases (18 Oct 2026), all on `POST /projects/roots` (with or without
+`create`) and `…/recreate`:
+
+- **Unmounted drive.** Each stored root keeps its folder's `dev` and `ino`
+  (the file's rows are `{"path", "dev", "ino"}`; a bare path, the format
+  before, gets them on the first read that finds the folder). A root whose
+  folder is now on another device is listed `"missing": true, "why":
+  "unmounted"` (a gone one has `"why": "gone"`) and a new project in it is
+  refused 409 `"that folder's drive is not mounted"` (`"why": "unmounted"`).
+  Recreate refuses it 409, and refuses a gone root (409, `"why":
+  "unmounted"`) whose nearest existing folder above is on another device
+  than the root was: it would be made on the wrong disk. A folder that has
+  moved to a new disk for good is removed and added again.
+- **Inside a repo or another root** → 400: in a git work tree (a `.git` in
+  it or a folder above it, short of home), inside a listed root, or holding
+  one.
+- **Hidden folders** → 400: any component under home starting with `.`
+  (`~/.config`, `~/work/.x`), judged after resolving links.
+- **Failure partway.** Made one level at a time; on a failure every level
+  this request made is removed again (deepest first) and the answer is
+  403 (no permission), 507 (disk full), 409 (read-only disk; or a level
+  that changed while being made), else 400 — never a 500. `made` lists only
+  the folders this request made.
+- **Links swapped in.** Each level is made with mkdirat in its parent opened
+  `O_NOFOLLOW` and checked with fstat (the existing part walked down from
+  `/` the same way); a link or file put in the way → 409, nothing followed.
+  Hosts without `dir_fd` (Windows) mkdir by path and re-check each level.
+- **One folder, several names.** Compared after `~`, `.`/`..`, trailing `/`,
+  links in the existing part, Unicode NFC, and case where the filesystem
+  folds it (Windows; elsewhere tested by looking up a case-swapped name) →
+  409 already listed.
+- **Two edits at once.** Every change to the list holds a lock on
+  `project-roots.json.lock` (flock; msvcrt on Windows); the file is still
+  replaced atomically.
+- **Portable names** → 400 on every host: `CON`, `PRN`, `AUX`, `NUL`,
+  `COM1`–`COM9`, `LPT1`–`LPT9` (with or without an extension), and names
+  ending in a dot or a space. Windows junctions count as links.
+
 ```
 GET  /projects/roots → {"ok": true, "roots": [{"path": "/home/d/projects", "label": "~/projects", "default": true, "missing": false}, …]}
+                       // missing ones add "why": "gone" | "unmounted"
 POST /projects/roots {"path": "~/work"}           → the same, with it added last, plus "made": []
 POST /projects/roots {"path": "~/new/x"}          → 404 {"ok": false, "error", "would_create": ["~/new", "~/new/x"]}
 POST /projects/roots {"path": "~/new/x", "create": true} → the roots, plus "made": ["~/new", "~/new/x"]
