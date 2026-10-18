@@ -59,6 +59,45 @@ _HEAD_RE = re.compile(r"^#{1,6}\s+", flags=re.MULTILINE)
 _BULLET_RE = re.compile(r"^\s*[-*]\s+", flags=re.MULTILINE)
 _QUOTE_RE = re.compile(r"^\s*>\s?", flags=re.MULTILINE)
 _BLANK_RE = re.compile(r"\n[ \t]*\n+")
+_BULLET_LINE_RE = re.compile(r"^[ \t]*[-*][ \t]+", flags=re.MULTILINE)
+_QUOTE_LINE_RE = re.compile(r"^[ \t]*>[ \t]?", flags=re.MULTILINE)
+# A run of blank (or whitespace-only) lines: one paragraph break.
+_PARA_RE = re.compile(r"\n(?:[ \t]*\n)+")
+# A line that is a heading whatever follows it: a markdown `#` heading, or a
+# line that is bold and nothing else ("**The layout**", "**Why:**").
+_HEADING_LINE_RE = re.compile(
+    r"^[ \t]*(?:#{1,6}[ \t]+\S.*|(\*\*|__)(?:(?!\1).)+\1[ \t]*:?)[ \t]*$")
+_FENCE_OPEN_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})")
+
+
+def _isolate(repl: str, isolate: bool) -> str:
+    """A block's spoken stand-in, as a paragraph of its own when ``isolate``:
+    the sentence splitter ends a sentence at a paragraph break, so the words
+    before the block (a heading, "do it:") are never glued onto what the
+    voice says for it."""
+    return f"\n{repl}\n" if isolate else repl
+
+
+def _isolate_headings(text: str) -> str:
+    """Put a blank line around every heading line outside a code fence, so
+    a heading is a paragraph (and so a sentence) of its own even when the
+    reply ran the next line straight on."""
+    out: list[str] = []
+    fence = ""
+    for ln in text.split("\n"):
+        m = _FENCE_OPEN_RE.match(ln)
+        if fence:
+            if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence):
+                fence = ""
+            out.append(ln)
+        elif m:
+            fence = m.group(1)
+            out.append(ln)
+        elif _HEADING_LINE_RE.match(ln):
+            out.extend(["", ln, ""])
+        else:
+            out.append(ln)
+    return "\n".join(out)
 
 
 _REGEX_FENCE_BLOCK = re.compile(r"(`{3,}|~{3,})([^\n]*)\n(.*?)\n[ \t]*\1", re.DOTALL)
@@ -173,24 +212,28 @@ def _code_placeholder(n_lines: int, lang: str = "") -> str:
     return f"{lang_word}code block, {n} line{'s' if n != 1 else ''}, omitted."
 
 
-def _regex_suppress_fences(text: str, describe: bool = False) -> str:
+def _regex_suppress_fences(text: str, describe: bool = False,
+                           isolate: bool = False) -> str:
     def repl(m: "re.Match[str]") -> str:
         lang = (m.group(2) or "").strip().split(" ")[0]
         body = m.group(3)
         if _code_reads_well(body):
             return body  # small & readable → keep the code, drop the fences
         n = body.count("\n") + 1
-        return _describe_code_or(body, _code_placeholder(n, lang), describe)
+        return _isolate(_describe_code_or(body, _code_placeholder(n, lang), describe),
+                        isolate)
     return _REGEX_FENCE_BLOCK.sub(repl, text)
 
 
-def suppress_code_blocks(text: str, describe: bool = False) -> str:
+def suppress_code_blocks(text: str, describe: bool = False,
+                         isolate: bool = False) -> str:
     """Replace fenced / indented code blocks with a short *spoken* placeholder
     ("python code block, 12 lines, omitted.") so TTS describes code instead of
     reading it line by line. Uses markdown-it-py for robust block detection when
     available; falls back to a fenced-code regex. Must run on the FULL text
     (a block spans multiple sentences), so it's applied at the top of
-    ``strip_markdown`` before sentence-level cleanup.
+    ``strip_markdown`` before sentence-level cleanup. ``isolate`` makes each
+    placeholder a paragraph of its own (blank lines around it).
     """
     if not text or ("```" not in text and "~~~" not in text and "\n    " not in text):
         return text
@@ -198,7 +241,7 @@ def suppress_code_blocks(text: str, describe: bool = False) -> str:
         from markdown_it import MarkdownIt
         tokens = MarkdownIt("commonmark").parse(text)
     except Exception:  # noqa: BLE001 — any import/parse issue → regex fallback
-        return _regex_suppress_fences(text, describe)
+        return _regex_suppress_fences(text, describe, isolate)
 
     spans: list[tuple[int, int, str]] = []
     for tok in tokens:
@@ -216,10 +259,11 @@ def suppress_code_blocks(text: str, describe: bool = False) -> str:
         spans.append((start, end, _describe_code_or(tok.content or "", placeholder, describe)))
     if not spans:
         return text
-    return _splice_spans(text, spans)
+    return _splice_spans(text, spans, isolate)
 
 
-def _splice_spans(text: str, spans: "list[tuple[int, int, str]]") -> str:
+def _splice_spans(text: str, spans: "list[tuple[int, int, str]]",
+                  isolate: bool = False) -> str:
     """Replace half-open ``[start, end)`` source-line ranges with their spoken
     placeholder. Shared by the code-block and table suppressors."""
     spans = sorted(spans)
@@ -229,7 +273,7 @@ def _splice_spans(text: str, spans: "list[tuple[int, int, str]]") -> str:
     si = 0
     while i < len(lines):
         if si < len(spans) and i == spans[si][0]:
-            out_lines.append(spans[si][2])
+            out_lines.append(_isolate(spans[si][2], isolate))
             i = spans[si][1]
             si += 1
         else:
@@ -278,7 +322,8 @@ _TABLE_SEP_RE = re.compile(
 )
 
 
-def _regex_suppress_tables(text: str, describe: bool = False) -> str:
+def _regex_suppress_tables(text: str, describe: bool = False,
+                           isolate: bool = False) -> str:
     """Fallback table detector: a pipe-bearing header line immediately followed
     by a separator line, then consecutive pipe-bearing data lines."""
     lines = text.split("\n")
@@ -294,9 +339,10 @@ def _regex_suppress_tables(text: str, describe: bool = False) -> str:
                 rows.append([c.strip() for c in lines[j].strip().strip("|").split("|")])
                 j += 1
             if _table_reads_well(rows):
-                out.append(_table_to_prose(headers, rows) or _table_placeholder(headers, len(rows)))
+                said = _table_to_prose(headers, rows) or _table_placeholder(headers, len(rows))
             else:
-                out.append(_describe_table_or(headers, rows, _table_placeholder(headers, len(rows)), describe))
+                said = _describe_table_or(headers, rows, _table_placeholder(headers, len(rows)), describe)
+            out.append(_isolate(said, isolate))
             i = j
         else:
             out.append(lines[i])
@@ -304,7 +350,7 @@ def _regex_suppress_tables(text: str, describe: bool = False) -> str:
     return "\n".join(out)
 
 
-def suppress_tables(text: str, describe: bool = False) -> str:
+def suppress_tables(text: str, describe: bool = False, isolate: bool = False) -> str:
     """Replace markdown tables with a short spoken placeholder
     ("table, columns Name, Port, Notes, 2 rows, omitted.") so TTS describes the
     table instead of reading every cell and the ``|---|`` separator aloud. Runs
@@ -318,7 +364,7 @@ def suppress_tables(text: str, describe: bool = False) -> str:
         md.enable("table")
         tokens = md.parse(text)
     except Exception:  # noqa: BLE001 — any import/parse issue → regex fallback
-        return _regex_suppress_tables(text, describe)
+        return _regex_suppress_tables(text, describe, isolate)
 
     lines = text.split("\n")
     spans: list[tuple[int, int, str]] = []
@@ -368,10 +414,10 @@ def suppress_tables(text: str, describe: bool = False) -> str:
 
     if not spans:
         return text
-    return _splice_spans(text, spans)
+    return _splice_spans(text, spans, isolate)
 
 
-def strip_markdown(text: str, describe: bool = False) -> str:
+def strip_markdown(text: str, describe: bool = False, paragraphs: bool = True) -> str:
     """Strip enough markdown that TTS doesn't read backticks / asterisks /
     fence markers aloud, and replace fenced code blocks with a spoken
     placeholder. Loose by design: callers can submit anything.
@@ -380,23 +426,41 @@ def strip_markdown(text: str, describe: bool = False) -> str:
     blocks / tables into one-sentence LLM descriptions. It makes network calls,
     so callers pass it ONLY off the hot path (the hook's detached playback
     child); the default keeps strip_markdown deterministic and network-free.
+
+    ``paragraphs`` (the default) keeps each paragraph break as one blank line,
+    and makes a paragraph of every heading line and of every code block's or
+    table's stand-in. The speech splitter (submit._split_sentences_with_
+    paragraphs) ends a sentence at a paragraph break, so a heading with no
+    full stop ("The layout") is never glued onto the next sentence or onto
+    the words said for a block — a sentence the app could not find in the
+    reply as shown, which cost the whole reply its follow-along (history row
+    15815, 18 Oct 2026). ``paragraphs=False`` is the old output, every break
+    a single newline: the form older replies were keyed by
+    (agent_media_server.transcript.spoken_keys).
     """
     if not text:
         return ""
-    out = suppress_code_blocks(text, describe)
-    out = suppress_tables(out, describe)
+    out = suppress_code_blocks(text, describe, paragraphs)
+    out = suppress_tables(out, describe, paragraphs)
+    if paragraphs:
+        out = _isolate_headings(out)
     out = suppress_urls(out)
     out = _FENCE_RE.sub("", out)
     out = _HEAD_RE.sub("", out)
     out = _BOLD_RE.sub(r"\1", out)
     out = _ITAL_RE.sub(r"\1", out)
     out = _CODE_RE.sub(r"\1", out)
-    out = _BULLET_RE.sub("", out)
-    out = _QUOTE_RE.sub("", out)
+    # `\s*` before a list or quote marker also eats the blank line above it;
+    # with paragraphs kept, only the line's own indent goes.
+    out = (_BULLET_LINE_RE if paragraphs else _BULLET_RE).sub("", out)
+    out = (_QUOTE_LINE_RE if paragraphs else _QUOTE_RE).sub("", out)
     # Residual emphasis markers (an UNPAIRED ** / __ survives the pairing
     # passes above) are never worth hearing — drop them outright.
     out = out.replace("**", "").replace("__", "")
-    out = _BLANK_RE.sub("\n", out).strip()
+    if paragraphs:
+        out = _PARA_RE.sub("\n\n", out).strip()
+    else:
+        out = _BLANK_RE.sub("\n", out).strip()
     return out
 
 

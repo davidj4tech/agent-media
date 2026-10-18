@@ -462,7 +462,7 @@ def test_spoken_join_by_key_even_when_summarised(script):
     s.text("Some **bold** words and `code`.\n\nA second paragraph. [[visual: a box]]")
     out = msgs()
     reply = out[1]
-    (key,) = T.spoken_keys(texts(reply)[-1])
+    key = T.spoken_keys(texts(reply)[-1])[0]
     # The spoken words were rewritten by a summary: only the key matches.
     lines = [_line("you", "Explain", reply["at"] - 1, rid=4),
              _line("agent", "A short summary nobody would match.", reply["at"] + 30,
@@ -539,13 +539,29 @@ def test_a_described_code_block_does_not_cost_the_reply_its_live_line(script):
     script.text(fx["reply"])
     out = msgs()
     reply = out[1]
-    (key,) = T.spoken_keys(texts(reply)[-1])
+    key = T.spoken_keys(texts(reply)[-1])[0]
     live = {"live": True, "sentences": fx["sentences"], "sentence": 1,
             "offsets": [0.0] * len(fx["sentences"]), "elapsed": 12.0,
             "server_time": 100.0, "delay": 0.0, "paused": False}
     T.join_speech(out, [_line("agent", fx["spoken"], reply["at"] + 10, key=key, **live)])
     assert reply["spoken"] is not None, "the reply lost its live line to its code blocks"
     assert reply["spoken"]["live"] == {k: live[k] for k in T.LIVE_FIELDS}
+
+
+def test_a_reply_keyed_before_paragraphs_were_kept_still_joins(script):
+    """strip_markdown keeps paragraph breaks since 18 Oct 2026 (so a heading
+    is a sentence of its own); a reply spoken before then was keyed on the
+    form with every break one newline, and still joins by that key."""
+    from agent_media_core.intake._text import strip_markdown
+    script.prompt("Explain")
+    script.text("**The layout**\n\nOne paragraph here.\n\nAnd another one.")
+    out = msgs()
+    keys = T.spoken_keys(texts(out[1])[-1])
+    old = T._key(strip_markdown("**The layout**\n\nOne paragraph here.\n\nAnd another one.",
+                                paragraphs=False))
+    assert len(keys) == 2 and keys[1] == old
+    T.join_speech(out, [_line("agent", "Summarised.", out[1]["at"] + 5, key=old, rid=7)])
+    assert out[1]["spoken"]["id"] == 7
 
 
 def test_reveal_halves_join_by_their_own_key(script):

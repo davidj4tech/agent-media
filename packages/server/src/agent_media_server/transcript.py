@@ -1618,22 +1618,29 @@ def spoken_keys(reply: str) -> list[str]:
     The hook keys a reply by `sha1(strip_markdown(reply without its
     [[visual:]] markers))` — before any spoken summary rewrites the words —
     and a `[[reveal:]]` reply is spoken as two halves, each keyed on its own.
+
+    Until 18 Oct 2026 `strip_markdown` ran every paragraph break down to one
+    newline; a reply spoken before then was keyed on that form, so the keys
+    of the old form follow (only where they differ), after the current ones —
+    the halves keep their places at [1] and [2].
     """
     from agent_media_core.intake._text import strip_markdown
     from agent_media_core.intake._visual import extract_visual_markers
 
     raw = (reply or "").strip()
     clean, _hint, pre, post = extract_visual_markers(raw)
-    out = []
-    text = strip_markdown(clean)
-    if text:
-        out.append(_key(text))
-    for half in (pre, post):
-        if half is not None:
-            h = strip_markdown(half)
-            if h:
-                out.append(_key(h))
-    return out
+    out: list[str] = []
+    for paragraphs in (True, False):
+        text = strip_markdown(clean, paragraphs=paragraphs)
+        if text:
+            out.append(_key(text))
+        for half in (pre, post):
+            if half is not None:
+                h = strip_markdown(half, paragraphs=paragraphs)
+                if h:
+                    out.append(_key(h))
+    seen: set[str] = set()
+    return [k for k in out if not (k in seen or seen.add(k))]
 
 
 def _final_texts(msg: dict) -> list[str]:
