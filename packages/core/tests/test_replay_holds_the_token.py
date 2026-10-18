@@ -413,6 +413,17 @@ def test_the_replay_row_names_the_replay(replay_env):
     assert ex["writer_pid"] == followers[0][2].pid
 
 
+def test_an_unread_reply_says_so_on_its_row(replay_env):
+    """The server keeps the thread's question card back while it reads
+    (threads.reading_unread); an ordinary replay says nothing."""
+    _, _, row = replay_env
+    assert cli._replay_row(row) == 0
+    assert "unread" not in StateStore().get_now_playing("speech")["extras"]
+    held = {**row, "extras": {**row["extras"], "held": True}}
+    assert cli._replay_row(held) == 0
+    assert StateStore().get_now_playing("speech")["extras"]["unread"] is True
+
+
 def test_the_token_outlives_the_replay_command(replay_env):
     _, followers, row = replay_env
     assert cli._replay_row(row) == 0

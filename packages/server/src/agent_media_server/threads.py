@@ -407,6 +407,50 @@ def _messages_for(session: str, lines: list, *, working: bool, live: bool,
     return msgs, older
 
 
+#: How long after an unread reply's replay was last seen playing a thread's
+#: card stays back: the run hands on from one reply to the next through a
+#: fresh `media replay`, and the speech row is empty for a moment between.
+UNREAD_GRACE_S = 4.0
+_unread_seen: dict[str, float] = {}
+
+
+def reading_unread(session: str, now: float | None = None) -> bool:
+    """True while the thread's unread replies are being read to the listener
+    (the replay's speech row says `unread`), or were a moment ago. Its
+    question card waits until they are done, as its voice does (core
+    `_UNREAD_RANK`): docked above the composer it took the room the
+    follow-along was in (David, 18 Oct 2026). A held question that is
+    itself the one being read is not kept back."""
+    import time as _time
+    now = _time.monotonic() if now is None else now
+    try:
+        from agent_media_core.state import StateStore
+        np = StateStore().get_now_playing("speech")
+    except Exception:  # noqa: BLE001
+        np = None
+    ex = (np or {}).get("extras") or {}
+    if ex.get("unread") and not ex.get("ask") and ex.get("source_session") == session:
+        _unread_seen[session] = now
+        return True
+    seen = _unread_seen.get(session)
+    if seen is not None and now - seen < UNREAD_GRACE_S:
+        return True
+    _unread_seen.pop(session, None)
+    return False
+
+
+def _without_pending_ask(messages: list) -> None:
+    """Drop the unanswered question from the transcript while its card is
+    kept back: without the card the app would draw it as answered."""
+    for m in messages:
+        parts = m.get("parts")
+        if isinstance(parts, list):
+            m["parts"] = [p for p in parts
+                          if not (isinstance(p, dict) and p.get("type") == "ask"
+                                  and p.get("status") == "running")]
+    messages[:] = [m for m in messages if m.get("parts") != []]
+
+
 def _envelope(session: str, lines: list, *, limit: int = MESSAGES_LIMIT,
               before: str = "", around: str = "") -> dict:
     """The `/conversation/log` answer around `lines`: the messages, pending,
@@ -457,6 +501,9 @@ def _envelope(session: str, lines: list, *, limit: int = MESSAGES_LIMIT,
         approval = hl["approval"]
     else:
         approval = sessions.approval_for(pane, sessions._agent_of_pane(pane), session) if pane else None
+    if approval and reading_unread(session):
+        approval = None
+        _without_pending_ask(messages)
     # Claude Code's own "while you were away" summary, for the card at the top
     # of the thread. Deliberately not a line: nobody said it, and it is not
     # part of the conversation the agent sees. The latest only, not every one

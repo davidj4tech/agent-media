@@ -3874,6 +3874,13 @@ def _push_replay(row: dict, ex: dict, clip_uris: list, clip_durations: list,
         # tells a live reply's follow loop that the row is not its to write
         # (submit._replay_is_audible).
         np_extras["replay"] = True
+        if rank is not None:
+            from .intake.submit import _UNREAD_RANK
+            if rank == _UNREAD_RANK:
+                # An unread reply being caught up on: the server keeps the
+                # thread's question card back until the run is read
+                # (threads.reading_unread), as the token keeps its voice back.
+                np_extras["unread"] = True
     elif row.get("started_at") is not None:
         # A live turn restarted by `<` has no record yet — _live_history_row
         # hands back the turn that is speaking, id None — so name it by the
