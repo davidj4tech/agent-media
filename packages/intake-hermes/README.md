@@ -1,7 +1,7 @@
 # agent-media-intake-hermes
 
 [Hermes Agent](https://hermes-agent.nousresearch.com) intake for
-[agent-media](https://github.com/davidj4tech/agent-media): speaks Hermes's
+[agent-media](https://github.com/southpenlabs/agent-media): speaks Hermes's
 final turn output aloud through agent-media's render + room-routing stack —
 the Hermes counterpart of the Claude Code / Codex intake hooks.
 

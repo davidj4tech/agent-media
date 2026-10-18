@@ -1,7 +1,7 @@
 """Sasonica Shell under the server's `sasonica` (David, 16 Oct 2026): one
 command where both are installed.
 
-Shell (github.com/davidj4tech/sasonica-shell) is a Node program, its runner
+Shell (github.com/southpenlabs/sasonica-shell) is a Node program, its runner
 `sasonica.mjs`. Alone on a computer its installer puts a `sasonica` command on
 PATH (a two-line shim: `exec "<node>" "<runner>" "$@"`, or a .cmd on Windows).
 Beside the server, whose binary is `sasonica`, it writes no command at all and

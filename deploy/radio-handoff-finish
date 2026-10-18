@@ -44,7 +44,7 @@ import urllib.request
 from pathlib import Path
 
 HOME = Path.home()
-REPO = "davidj4tech/sasonica-app"
+REPO = "southpenlabs/sasonica-app"
 WORKFLOW = "build-apk.yml"
 PKG = "com.sasonica.app"
 FRAMES_COMMIT = "0a3ff99"

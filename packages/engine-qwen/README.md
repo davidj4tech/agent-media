@@ -1,7 +1,7 @@
 # agent-media-engine-qwen
 
 Qwen / DashScope TTS render engine for
-[agent-media](https://github.com/davidj4tech/agent-media). Extracted from core
+[agent-media](https://github.com/southpenlabs/agent-media). Extracted from core
 so the base install stays zero-config (edge-only). Stdlib-only (no extra deps).
 
 ```bash

@@ -165,7 +165,7 @@ if ($ShellOnly -or $env:SASONICA_ONLY -eq 'shell') {
 }
 
 $base = if ($env:SASONICA_BINARY_BASE) { $env:SASONICA_BINARY_BASE } else {
-  'https://github.com/davidj4tech/agent-media/releases/download/server-latest' }
+  'https://github.com/southpenlabs/agent-media/releases/download/server-latest' }
 
 $arch = Get-WindowsArch
 # One build, x64. Windows 11 on ARM64 runs it under its x64 emulation (Prism),

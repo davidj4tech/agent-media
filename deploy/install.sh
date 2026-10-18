@@ -46,9 +46,9 @@
 # SASONICA_SHELL_TARBALL where Shell is (a branch, a fork, a test's stub).
 set -eu
 
-BASE=${SASONICA_INSTALL_BASE:-https://raw.githubusercontent.com/davidj4tech/agent-media/main/deploy}
-BINARY_BASE=${SASONICA_BINARY_BASE:-https://github.com/davidj4tech/agent-media/releases/download/server-latest}
-SHELL_TARBALL=${SASONICA_SHELL_TARBALL:-https://github.com/davidj4tech/sasonica-shell/archive/refs/heads/main.tar.gz}
+BASE=${SASONICA_INSTALL_BASE:-https://raw.githubusercontent.com/southpenlabs/agent-media/main/deploy}
+BINARY_BASE=${SASONICA_BINARY_BASE:-https://github.com/southpenlabs/agent-media/releases/download/server-latest}
+SHELL_TARBALL=${SASONICA_SHELL_TARBALL:-https://github.com/southpenlabs/sasonica-shell/archive/refs/heads/main.tar.gz}
 
 ONLY=${SASONICA_ONLY:-}
 if [ "${1:-}" = shell ]; then ONLY=shell; fi

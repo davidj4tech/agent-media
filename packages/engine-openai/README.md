@@ -1,6 +1,6 @@
 # agent-media-engine-openai
 
-OpenAI TTS render engine for [agent-media](https://github.com/davidj4tech/agent-media).
+OpenAI TTS render engine for [agent-media](https://github.com/southpenlabs/agent-media).
 Extracted from core so the base install stays zero-config (edge-only).
 
 ```bash

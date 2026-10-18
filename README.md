@@ -35,7 +35,7 @@ Something not working? Start with the **[FAQ](./docs/faq.md)**.
 ## Installing
 
 ```sh
-pip install "agent-media-core @ git+https://github.com/davidj4tech/agent-media#subdirectory=packages/core"
+pip install "agent-media-core @ git+https://github.com/southpenlabs/agent-media#subdirectory=packages/core"
 media-setup init              # writes ~/.config/agent-media/config.toml
 media-setup profile           # wire this machine: hooks, services, shell, extras
 ```
@@ -200,7 +200,7 @@ client is duplicated rather than imported. See docs/reference/restructure.md Pha
 
 ```sh
 # 1. Clone and create a venv
-git clone https://github.com/davidj4tech/agent-media
+git clone https://github.com/southpenlabs/agent-media
 cd agent-media
 python3 -m venv .venv && source .venv/bin/activate
 

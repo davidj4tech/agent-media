@@ -33,7 +33,7 @@ Environment=CONFIG_PATH=/config
 Environment=SSRF_REQUEST_FILTER_WHITELIST=red5.eagle-dubhe.ts.net,100.94.14.59
 
 # --- the fork -----------------------------------------------------------------
-# sasonica-web (davidj4tech/sasonica-web, branch `sasonica`) is our fork of the
+# sasonica-web (southpenlabs/sasonica-web, branch `sasonica`) is our fork of the
 # React client: the conversation page, the reply box and new chat. These mount
 # its build over the image's own.
 #

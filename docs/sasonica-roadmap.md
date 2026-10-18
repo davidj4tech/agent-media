@@ -10,7 +10,7 @@ Where things live:
 - **Server:** agent-media `packages/server`, contract in
   [server-contract.md](server-contract.md). Python, and staying Python.
 - **Sasonica, the app** (chat app + its Android shell, one tree since 26 Sep
-  2026): repo **`davidj4tech/sasonica-app`** (private), branch `main`,
+  2026): repo **`southpenlabs/sasonica-app`** (private), branch `main`,
   checkout `~/projects/sasonica-app` (the old `chat/` is the root). React
   Router + assistant-ui; applicationId **`com.sasonica.app`** (Java package
   too since 27 Sep 2026; the launcher entry keeps `com.sasonica.next.MainActivity`
@@ -903,7 +903,7 @@ ahead.
    for now (red5 `~/.config/sasonica-relay/admin.env`). Next:
    `sasonica install --hosted`, joining by a Sasonica
    account sign-in (an OAuth client for the relay on cms.sasonica.com).
-   sasonica-shell [docs/hosted-relay.md](https://github.com/davidj4tech/sasonica-shell/blob/main/docs/hosted-relay.md).
+   sasonica-shell [docs/hosted-relay.md](https://github.com/southpenlabs/sasonica-shell/blob/main/docs/hosted-relay.md).
    **Opening it (David, 8 Oct 2026, "let's get it ready for opening")**:
    a **free beta first**, billing later. Before `RELAY_ALLOW_ACCOUNTS=*`:
    rate limits (`/join/start`, MCP calls, runner endpoints), one machine

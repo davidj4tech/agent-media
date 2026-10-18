@@ -15,7 +15,7 @@
 # SASONICA_INSTALL_BASE overrides where install.sh is fetched from (tests).
 set -eu
 
-BASE=${SASONICA_INSTALL_BASE:-https://raw.githubusercontent.com/davidj4tech/agent-media/main/deploy}
+BASE=${SASONICA_INSTALL_BASE:-https://raw.githubusercontent.com/southpenlabs/agent-media/main/deploy}
 script=$(mktemp "${TMPDIR:-/tmp}/sasonica-install.XXXXXX")
 trap 'rm -f "$script"' EXIT
 curl -fsSL "$BASE/install.sh" -o "$script"

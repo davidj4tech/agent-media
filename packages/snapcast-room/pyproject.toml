@@ -27,8 +27,8 @@ classifiers = [
 dependencies = []
 
 [project.urls]
-Homepage = "https://github.com/davidj4tech/agent-media/tree/main/packages/snapcast-room"
-Issues = "https://github.com/davidj4tech/agent-media/issues"
+Homepage = "https://github.com/southpenlabs/agent-media/tree/main/packages/snapcast-room"
+Issues = "https://github.com/southpenlabs/agent-media/issues"
 
 [project.scripts]
 am-snap  = "snapcast_room.am_snap:main"

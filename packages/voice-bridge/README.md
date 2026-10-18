@@ -158,7 +158,7 @@ the phone. Codex and others need their own equivalent.
 
 ## agent-media `converse` handoff
 
-[agent-media](https://github.com/davidj4tech/agent-media) has an MCP tool,
+[agent-media](https://github.com/southpenlabs/agent-media) has an MCP tool,
 `converse`, that speaks a question and then blocks waiting for the spoken
 answer — so an agent can ask something mid-task instead of guessing.
 

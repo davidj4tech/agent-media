@@ -1,7 +1,7 @@
 # agent-media-intake-codex
 
 Codex (OpenAI CLI) intake hook for
-[agent-media](https://github.com/davidj4tech/agent-media): speaks Codex turn
+[agent-media](https://github.com/southpenlabs/agent-media): speaks Codex turn
 output via the stdin-pipe hook convention. Extracted from core as an optional,
 separately-installable intake source.
 

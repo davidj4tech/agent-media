@@ -3,7 +3,7 @@
   "name": "Voice Bridge",
   "codeowners": ["@davidj4tech"],
   "config_flow": true,
-  "documentation": "https://github.com/davidj4tech/agent-media/tree/main/packages/voice-bridge",
+  "documentation": "https://github.com/southpenlabs/agent-media/tree/main/packages/voice-bridge",
   "integration_type": "service",
   "iot_class": "local_polling",
   "requirements": [],

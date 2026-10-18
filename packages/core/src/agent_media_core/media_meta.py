@@ -38,7 +38,7 @@ from typing import Optional
 from ._paths import state_dir
 
 _FILE = "media-meta.json"
-_UA = "agent-media/1.0 ( https://github.com/davidj4tech/agent-media )"
+_UA = "agent-media/1.0 ( https://github.com/southpenlabs/agent-media )"
 #: iTunes search allows about twenty requests a minute.
 _GAP_S = 3.1
 #: Lookups per background pass: a long list fills in over a few visits.

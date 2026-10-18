@@ -176,7 +176,7 @@ audio calls (`pactl`/`playerctl`; a Mac server speaks through the phone).
 python-build-standalone's MSVC build, published beside the others. Install in
 PowerShell:
 
-    irm https://raw.githubusercontent.com/davidj4tech/agent-media/main/deploy/install.ps1 | iex
+    irm https://raw.githubusercontent.com/southpenlabs/agent-media/main/deploy/install.ps1 | iex
 
 (`deploy/install.ps1`: the .exe to `%USERPROFILE%\.local\bin`, checked
 against SHA256SUMS, that folder on the user's PATH, `sasonica install`, a

@@ -1,6 +1,6 @@
 # agent-media-intake-matrix
 
-Matrix intake adapter for [agent-media](https://github.com/davidj4tech/agent-media):
+Matrix intake adapter for [agent-media](https://github.com/southpenlabs/agent-media):
 bridges a Matrix room to the speech / music / book channels. Extracted from core
 as an optional, separately-installable intake source.
 

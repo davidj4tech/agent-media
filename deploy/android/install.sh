@@ -48,9 +48,9 @@
 set -euo pipefail
 
 FROM=${SASONICA_FROM:-binary}
-BINARY_BASE=${SASONICA_BINARY_BASE:-https://github.com/davidj4tech/agent-media/releases/download/server-latest}
-INSTALL_BASE=${SASONICA_INSTALL_BASE:-https://raw.githubusercontent.com/davidj4tech/agent-media/main/deploy}
-REPO=${AGENT_MEDIA_REPO:-https://github.com/davidj4tech/agent-media.git}
+BINARY_BASE=${SASONICA_BINARY_BASE:-https://github.com/southpenlabs/agent-media/releases/download/server-latest}
+INSTALL_BASE=${SASONICA_INSTALL_BASE:-https://raw.githubusercontent.com/southpenlabs/agent-media/main/deploy}
+REPO=${AGENT_MEDIA_REPO:-https://github.com/southpenlabs/agent-media.git}
 REF=${AGENT_MEDIA_REF:-main}
 DISTRO=${SASONICA_DISTRO:-debian}
 DEVICE=${SASONICA_DEVICE:-$(getprop ro.product.model 2>/dev/null || true)}

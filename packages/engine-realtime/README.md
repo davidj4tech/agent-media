@@ -1,7 +1,7 @@
 # agent-media-engine-realtime
 
 OpenAI Realtime (WebSocket) TTS render engine for
-[agent-media](https://github.com/davidj4tech/agent-media). Extracted from core
+[agent-media](https://github.com/southpenlabs/agent-media). Extracted from core
 so the base install stays zero-config (edge-only).
 
 The WebSocket flow needs the `websockets` package. Rather than depend on it

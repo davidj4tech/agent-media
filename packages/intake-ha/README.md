@@ -1,7 +1,7 @@
 # agent-media-intake-ha
 
 Home Assistant SSE intake adapter for
-[agent-media](https://github.com/davidj4tech/agent-media): subscribes to a Home
+[agent-media](https://github.com/southpenlabs/agent-media): subscribes to a Home
 Assistant event stream and speaks matching events. Extracted from core as an
 optional, separately-installable intake source.
 

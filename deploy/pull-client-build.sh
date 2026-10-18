@@ -15,7 +15,7 @@
 # reads .next at startup.
 set -euo pipefail
 
-REPO="davidj4tech/sasonica-web"
+REPO="southpenlabs/sasonica-web"
 CHECKOUT="${SASONICA_WEB:-$HOME/projects/sasonica-web}"
 BRANCH="sasonica"
 

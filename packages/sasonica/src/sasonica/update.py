@@ -31,7 +31,7 @@ from pathlib import Path
 
 from sasonica.__main__ import binary_path
 
-BASE = "https://github.com/davidj4tech/agent-media/releases/download/server-latest"
+BASE = "https://github.com/southpenlabs/agent-media/releases/download/server-latest"
 CANVAS, SESSIOND = "sasonica-canvas.service", "sasonica-sessiond.service"
 
 
