@@ -1,0 +1,12 @@
+administer crm activity:
+  title: 'Administer CRM activity'
+  restrict access: true
+view crm activity:
+  title: 'View CRM activity'
+  description: 'See the activity timeline of any contact the user can see.'
+create crm activity:
+  title: 'Create CRM activity'
+edit crm activity:
+  title: 'Edit CRM activity'
+delete crm activity:
+  title: 'Delete CRM activity'

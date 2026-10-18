@@ -1,0 +1,12 @@
+crm_activity.contact:
+  path: '/crm/contact/{crm_contact}/activity'
+  defaults:
+    _controller: '\Drupal\crm_activity\Controller\ContactActivityController::page'
+    _title: 'Activity'
+  requirements:
+    _permission: 'view crm activity'
+    _entity_access: 'crm_contact.view'
+  options:
+    parameters:
+      crm_contact:
+        type: 'entity:crm_contact'

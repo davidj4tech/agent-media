@@ -1,0 +1,5 @@
+crm_activity.contact:
+  title: 'Activity'
+  route_name: crm_activity.contact
+  parent_id: entity.crm_contact.canonical
+  weight: 20

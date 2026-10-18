@@ -1,0 +1,11 @@
+{
+    "name": "agent-media/crm_activity",
+    "description": "A per-contact activity timeline for the Drupal CRM module: daily rollups of texts, calls, mail and notes.",
+    "type": "drupal-module",
+    "license": "GPL-2.0-or-later",
+    "homepage": "https://github.com/davidj4tech/agent-media/tree/main/integrations/drupal/crm_activity",
+    "require": {
+        "drupal/core": "^11.1 || ^12",
+        "drupal/crm": "*"
+    }
+}

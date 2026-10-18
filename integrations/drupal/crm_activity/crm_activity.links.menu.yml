@@ -1,0 +1,6 @@
+crm_activity.collection:
+  title: Activity
+  route_name: entity.crm_activity.collection
+  menu_name: crm
+  description: 'Every contact''s texts, calls, mail and notes, by day.'
+  weight: 5

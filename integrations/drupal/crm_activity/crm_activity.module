@@ -1,0 +1,26 @@
+<?php
+
+/**
+ * @file
+ * CRM Activity: a per-contact timeline of daily rollups.
+ */
+
+declare(strict_types=1);
+
+use Drupal\Core\Entity\EntityInterface;
+
+/**
+ * Implements hook_ENTITY_TYPE_delete() for crm_contact.
+ *
+ * A contact's activity goes with it: nothing else points at it.
+ */
+function crm_activity_crm_contact_delete(EntityInterface $contact): void {
+  $storage = \Drupal::entityTypeManager()->getStorage('crm_activity');
+  $ids = $storage->getQuery()
+    ->accessCheck(FALSE)
+    ->condition('contact', $contact->id())
+    ->execute();
+  if ($ids) {
+    $storage->delete($storage->loadMultiple($ids));
+  }
+}

@@ -1,0 +1,9 @@
+name: CRM Activity
+type: module
+description: 'A per-contact timeline for the CRM: daily rollups of texts, calls, mail and notes, written by an agent over JSON:API.'
+package: CRM
+core_version_requirement: '^11.1 || ^12'
+dependencies:
+  - crm:crm
+  - drupal:datetime
+  - drupal:options
