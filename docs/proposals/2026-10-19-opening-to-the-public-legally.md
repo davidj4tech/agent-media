@@ -237,9 +237,52 @@ above toward the fixed-price package, and then the subscription.
   by size (visitors, members or staff), with AI usage in an allowance. After two
   or three venues, the package becomes the published price.
 
+## The hot springs' booking system: Netbookings
+
+David, 19 Oct 2026: "We have information about the Hot Springs booking
+system. you're already logging into it automatically to get my treatment
+timetable." Peninsula Hot Springs runs **Netbookings** (staff portal at
+`secure.peninsulahotsprings.com/hotsprings`, "powered by Netbookings").
+Netbookings is Australian software used by tourism, attraction and spa
+venues. Its published integrations cover sales channels, payment gateways
+and EFTPOS, lockers, wristbands, SMS, WordPress, reporting and a booking
+API with TourismConnecter.com, so it already works with partners. I found
+no public developer documentation.
+
+**What exists already** (dotfiles `packages/bin/.local/bin/phs-*`, timer
+`phs-morning` at 07:00): `phs-session` logs in as David's staff account
+(the password is a sops secret); `phs-rundown` reads his bookings for the
+day (times, rooms, partner therapists, the flags on each client's spa
+consultation form); `phs-schedule-reminders` and `phs-remind` set
+reminders; `phs-treatment-guard` decides when the rundown may be spoken
+aloud. This is a working proof of the staff side: a therapist's day,
+assembled automatically.
+
+**Using it in the pitch.**
+
+- **Demo the idea, not the scraper.** It runs on one staff member's login
+  and copies clients' consultation forms, which hold health information,
+  onto a personal server. That is acceptable only within David's own job
+  and whatever the hot springs' policies allow. Show it with made-up
+  bookings, never real client data, and never present it as the product.
+- **The product needs official access.** Ask Netbookings for partner or
+  API access (the hot springs, as their customer, asking with us is the
+  strongest request). With it, the same rundown can be offered to every
+  therapist, plus guest-side features (availability, booking changes,
+  vouchers). Without it, use only exports or reports the venue sends us.
+- **A ready-made channel.** If Netbookings is common among Victorian and
+  Australian bath houses and spas, one official Netbookings integration
+  reaches many venues. Check which of the next target venues run it.
+
+**David works there.** Before pitching, check the employment contract and
+policies on outside business, IP created in the job and use of staff
+systems, so that the tools above and the pitch don't conflict with them.
+Declaring the interest early protects both sides.
+
 ## Open questions for David
 
 - Which route, or which blend?
+- Does the hot springs know about, or allow, the staff-login automation?
 - Which venues next, after the hot springs? Their booking platforms decide
   the integration order.
 
