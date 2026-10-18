@@ -18,7 +18,7 @@ import os
 import re
 from pathlib import Path
 
-from agent_media_core import docs
+from agent_media_core import docs, layout
 
 from . import auth, new_project
 
@@ -121,6 +121,15 @@ LIST_MAX = 300
 _LABEL_PREFIXES = ("p-", "proj-")
 
 
+def _project_of_rel(rel: str) -> str:
+    """The project folder a path under a reader root is in: its first part,
+    or the first two for one in a group (`spl/admin/docs/x.md`)."""
+    parts = rel.split("/")
+    if len(parts) > 2 and parts[0] in layout.project_groups():
+        return f"{parts[0]}/{parts[1]}"
+    return parts[0]
+
+
 def project_dir(project: str = "", path: str = "") -> Path | None:
     """The folder a project's documents live in: `path` (a folder a thread
     runs in; a worktree's own folder counts), else ~/projects/<name> for a
@@ -135,11 +144,15 @@ def project_dir(project: str = "", path: str = "") -> Path | None:
         cand = top.resolve() if top else cand
     elif project:
         name = project.strip()
+        group, kid = layout.project_parts(name)
+        if group:
+            name = f"{group}/{kid}"         # p-spl-admin: ~/projects/spl/admin
         for pre in _LABEL_PREFIXES:
             if name.startswith(pre) and (new_project.root() / name[len(pre):]).is_dir():
                 name = name[len(pre):]
                 break
-        if not name or "/" in name or name.startswith("."):
+        if (not name or name.startswith(".") or ".." in name.split("/")
+                or name.count("/") > (1 if group else 0)):
             return None
         cand = (new_project.root() / name).resolve()
     if not cand or not cand.is_dir():
@@ -305,7 +318,7 @@ def search(terms: list[str], limit: int = 8) -> list[dict]:
             at = max(0, line.lower().find(terms[0]) - 60)
             line = ("…" if at else "") + line[at:at + 160] + "…"
         hits.append((rank, -mtime, {"path": str(p), "title": title,
-                                     "project": rel.split("/", 1)[0],
+                                     "project": _project_of_rel(rel),
                                      "kind": p.parent.name, "snippet": line},
                      rel.split("/", 1)[-1]))
     hits.sort(key=lambda h: (h[0], h[1], h[2]["path"]))

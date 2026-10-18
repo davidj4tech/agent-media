@@ -172,7 +172,8 @@ def test_a_user_not_allowed_to_reply_is_403(server, monkeypatch, path):
 def test_targets_shape(server, shelf, signed_in):
     res, obj = call(server, "GET", "/targets", headers=AUTH)
     assert res.status == 200
-    assert keys(obj) == {"ok", "sessions", "places"}
+    # `project_groups` joined on 18 Oct 2026: which projects sit in a group.
+    assert keys(obj) == {"ok", "sessions", "places", "project_groups"}
     live, shelved = obj["sessions"]
     # `recap` and `archived` joined on 22 Sep 2026, deliberately: Claude
     # Code's latest "while you were away" summary, the list's preview line,

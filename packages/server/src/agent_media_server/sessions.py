@@ -333,7 +333,9 @@ def project_of(cwd: str, folder: str = "") -> str | None:
 
     David's layout: the series its shelf folder is filed under
     (`p-agent-media`), else `p-<name>` for a directory under ~/projects (a
-    worktree inside one counts as that project), else the name of the
+    worktree inside one counts as that project; one in a group is
+    `p-<group>-<name>`, and a link at an old path is where it points:
+    `layout.project_rel`), else the name of the
     directory it runs in (`org`, `scratch` — the name its tmux session has
     when it has one); home itself names no project. The shelf's catch-all
     folder (`book_tracks.UNFILED`, where a conversation with no workspace
@@ -344,11 +346,11 @@ def project_of(cwd: str, folder: str = "") -> str | None:
     if layout.projects():
         series = Path(folder).parent.name if folder else ""
         if series and series != book_tracks.UNFILED:
-            return series
-        root = os.path.expanduser("~/projects")
-        if cwd and cwd.startswith(root + "/"):
-            tail = cwd[len(root) + 1:].split("/", 1)[0]
-            return layout.encoded_project_label(tail) or None
+            return layout.canonical_project(series)
+        rel = layout.project_rel(cwd)
+        if rel:
+            return layout.encoded_project_label(rel) or None
+        root = layout.projects_root()
         home = os.path.expanduser("~")
         if cwd and cwd.rstrip("/") not in (home, root):
             return Path(cwd).name or None
@@ -374,6 +376,8 @@ def add_projects(rows: list[dict], folders: dict[str, str] | None = None) -> lis
     in place. `folders`: the shelf's `{session: folder}` when the caller has
     it (read here otherwise)."""
     folders = _shelf_folders() if folders is None else folders
+    from agent_media_core import layout
+
     from . import moves
 
     for r in rows:
@@ -382,7 +386,8 @@ def add_projects(rows: list[dict], folders: dict[str, str] | None = None) -> lis
         r["cwd"] = cwd or None
         # A thread that was moved is filed where it was moved to, whatever
         # its transcript and its shelf folder still say (moves.py).
-        r["project"] = moves.moved_project(sid) or project_of(cwd, folders.get(sid, ""))
+        r["project"] = (layout.canonical_project(moves.moved_project(sid))
+                        or project_of(cwd, folders.get(sid, "")))
     return rows
 
 
@@ -740,7 +745,8 @@ def project_target(project: str) -> tuple[str, str]:
             at = f.stat().st_mtime
         except (OSError, ValueError):
             continue
-        if Path(str(data.get("folder") or "")).parent.name == project:
+        series = Path(str(data.get("folder") or "")).parent.name
+        if series and layout.canonical_project(series) == project:
             rows.append((at, str(data.get("session") or f.stem)))
     for _at, sid in sorted(rows, reverse=True):
         cwd = transcript_cwd(sid)
@@ -831,7 +837,8 @@ def targets(bearer: str, history: str = "") -> tuple[bool, dict]:
 
     `sessions` are the conversations this host holds — running, lately
     shelved, and (within `STORE_DAYS`) whatever each harness's own store
-    remembers; `places` are the directories a fresh session can be opened in.
+    remembers; `places` are the directories a fresh session can be opened in;
+    `project_groups` says which projects sit in a group (`project_groups`).
     `history="all"` lifts the window, for the app's "Everything" filter.
     Gated like `/conversations`.
     """
@@ -846,7 +853,19 @@ def targets(bearer: str, history: str = "") -> tuple[bool, dict]:
         + [(project_of(p["path"]), p["path"]) for p in where])
     if mail is not None:
         out["project_mail"] = mail
+    out["project_groups"] = project_groups()
     return True, out
+
+
+def project_groups() -> dict[str, dict]:
+    """`{project: {"group", "name"}}` for every project in a group
+    (agent_media_core/layout.py): `p-spl-admin` → spl / admin. The app nests
+    them under the group's heading and titles a thread `spl / admin`; a
+    project not named here stands alone."""
+    from agent_media_core import layout
+
+    return {layout.encoded_project_label(f"{g}/{k}"): {"group": g, "name": k}
+            for g, kids in layout.project_groups().items() for k in kids}
 
 
 def _manifest_of(session: str) -> dict:

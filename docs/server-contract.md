@@ -300,7 +300,9 @@ Everything a message can be pointed at.
   own session files), and the project that names, as the layout calls one
   (`sessions.project_of`, `agent_media_core/layout.py`). David's layout: the
   series its shelf folder is filed under (`p-agent-media`), else `p-<name>`
-  for a directory under `~/projects` (a worktree inside one counts), else
+  for a directory under `~/projects` (a worktree inside one counts; one in
+  a group is `p-<group>-<name>`, see `project_groups`, and a link left at an
+  old path names the project it points at), else
   the directory's own name (`org`, `scratch`; 24 Sep 2026), `null` for home.
   The shelf's catch-all folder `conversation` (a thread with no workspace)
   is never a series. Default layout: the folder's basename (home is `sasonica`). Both
@@ -328,6 +330,17 @@ Everything a message can be pointed at.
   and places ran in, each counted once, by the same rule as `mail`.
   Projects with none are left out; the key is **absent** when the mailbox
   can't be read, and from older servers. About 50 ms cold, 10 ms warm.
+- `project_groups` (18 Oct 2026): `{project: {"group", "name"}}` for every
+  project that sits in a group, keyed like the rows' `project`
+  (`"p-spl-admin": {"group": "spl", "name": "admin"}`). A group is a folder
+  under the projects root (`MEDIA_PROJECTS_DIR`, else `~/projects`) with no
+  `.git` of its own holding at least one folder that has one; every folder
+  in it is then a project. Detected from the folders, nothing configured
+  (`layout.project_groups`). The app draws the group as a heading with its
+  projects nested under it (By-project list, project strip, move picker)
+  and titles a thread `group / name`; a project not in the map stands
+  alone. Default layout keys are `group/name`. `{}` when there are none;
+  **absent** from older servers.
 - **Headless rows** (`MEDIA_HEADLESS`, §17): the sessions `media-sessiond`
   holds are listed after the live pane sessions — the running ones, then up
   to 20 ended ones (parked or closed), newest first — with the same keys

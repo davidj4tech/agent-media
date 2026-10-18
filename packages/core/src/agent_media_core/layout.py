@@ -42,6 +42,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -203,9 +204,12 @@ def fresh_target() -> tuple[str, str, str]:
 
 
 def place_host(path: str) -> str:
-    """The tmux session a chat opened in directory `path` goes into."""
+    """The tmux session a chat opened in directory `path` goes into: on
+    David's desk the project's (`p-spl-admin` for ~/projects/spl/admin),
+    else the folder's name, as tmux-organise-panes would file it."""
     if projects():
-        return os.path.basename(path)
+        rel = project_rel(path)
+        return encoded_project_label(rel) if rel else os.path.basename(path)
     return (os.environ.get("MEDIA_ASK_TMUX") or "").strip() or CHAT_TMUX
 
 
@@ -239,11 +243,15 @@ def expects_move_hook() -> bool:
 
 
 def project_of_path(path: str) -> str:
-    """What the default layout calls the project a directory is: its basename,
-    or the chat session's name for home (a basename of `ryer` names nobody)."""
+    """What the default layout calls the project a directory is: its basename
+    (`<group>/<name>` for one in a group), or the chat session's name for
+    home (a basename of `ryer` names nobody)."""
     path = (path or "").rstrip("/")
     if not path or os.path.expanduser("~").rstrip("/") == path:
         return CHAT_TMUX
+    rel = project_rel(path)
+    if "/" in rel:
+        return rel                      # a project in a group: `spl/admin`
     return os.path.basename(path)
 
 
@@ -273,11 +281,112 @@ def series_name(host: str) -> str:
 def encoded_project_label(tail: str) -> str:
     """The series for a transcript under ~/projects/<tail> that recorded no
     tmux session: `p-<tail>` on David's desk (what his tmux session for it is
-    called), `<tail>` elsewhere."""
-    tail = tail.strip()
+    called, slashes as dashes: `spl/admin` → `p-spl-admin`, as
+    tmux-organise-panes names it), `<tail>` elsewhere."""
+    tail = tail.strip().strip("/")
     if not tail:
         return ""
-    return f"p-{tail}" if projects() else tail
+    return "p-" + tail.replace("/", "-") if projects() else tail
+
+
+# --- groups ------------------------------------------------------------------------
+#
+# A folder under the projects root that holds project folders and is not a
+# project itself (no `.git`) is a group: ~/projects/spl. Each folder in it is
+# a project of its own, `spl/admin`, whose tmux session is `p-spl-admin`.
+# Nothing is configured: the folders say. A link left at an old path
+# (~/projects/sasonica-app → spl/sasonica-app) is the project it points at.
+# David, 18 Oct 2026.
+
+#: How long one look at the projects root is trusted (it is read per request).
+GROUPS_TTL_S = 5.0
+_groups_seen: tuple[float, str, dict] = (0.0, "", {})
+
+
+def projects_root() -> str:
+    """Where projects live: MEDIA_PROJECTS_DIR, else ~/projects."""
+    return os.path.expanduser((os.environ.get("MEDIA_PROJECTS_DIR") or "").strip()
+                              or "~/projects").rstrip("/")
+
+
+def _child_dirs(path: str) -> list[str]:
+    """The folders in `path` themselves: not hidden, not links."""
+    try:
+        with os.scandir(path) as it:
+            return sorted(e.name for e in it if not e.name.startswith(".")
+                          and e.is_dir(follow_symlinks=False))
+    except OSError:
+        return []
+
+
+def project_groups() -> dict[str, list[str]]:
+    """`{group: [project folder, …]}` under the projects root.
+
+    A group has no `.git` of its own and at least one folder in it that has
+    one; then every folder in it is a project.
+    """
+    global _groups_seen
+    root = projects_root()
+    at, seen_root, groups = _groups_seen
+    if seen_root == root and time.monotonic() - at < GROUPS_TTL_S:
+        return groups
+    groups = {}
+    for name in _child_dirs(root):
+        path = os.path.join(root, name)
+        if os.path.exists(os.path.join(path, ".git")):
+            continue
+        kids = _child_dirs(path)
+        if any(os.path.exists(os.path.join(path, k, ".git")) for k in kids):
+            groups[name] = kids
+    _groups_seen = (time.monotonic(), root, groups)
+    return groups
+
+
+def project_rel(path: str) -> str:
+    """The project `path` is in, relative to the projects root: `agent-media`,
+    `spl/admin` (a worktree or folder inside either counts as it), or "" for
+    a path outside the root or the root itself. Links are followed, so the
+    old ~/projects/sasonica-app names `spl/sasonica-app`."""
+    if not path:
+        return ""
+    root = projects_root()
+    real_root = os.path.realpath(root)
+    p = os.path.expanduser(path)
+    for base in (os.path.realpath(p), os.path.normpath(p)):
+        for r in (real_root, root):
+            if base.startswith(r + "/"):
+                parts = base[len(r) + 1:].split("/")
+                if len(parts) > 1 and parts[0] in project_groups():
+                    return f"{parts[0]}/{parts[1]}"
+                return parts[0]
+    return ""
+
+
+def project_parts(project: str) -> tuple[str, str]:
+    """`(group, name)` for a project in a group (`p-spl-admin` on David's
+    desk, `spl/admin` elsewhere), else `("", project)`."""
+    for group, kids in project_groups().items():
+        for kid in kids:
+            if project == encoded_project_label(f"{group}/{kid}"):
+                return group, kid
+    return "", project
+
+
+def canonical_project(project: str) -> str:
+    """The name of the project `project` is now. A series named for a path
+    that has since become a link into a group (`p-sasonica-app`, filed before
+    the repo moved to spl/) is the sub-project it points at
+    (`p-spl-sasonica-app`), so old and new threads list together."""
+    if not project:
+        return project
+    tail = project[2:] if projects() and project.startswith("p-") else project
+    if not tail:
+        return project
+    path = os.path.join(projects_root(), tail)
+    if not os.path.islink(path):
+        return project
+    rel = project_rel(path)
+    return encoded_project_label(rel) if rel and rel != tail else project
 
 
 # --- writing it ------------------------------------------------------------------

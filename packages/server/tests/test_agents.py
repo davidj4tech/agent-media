@@ -427,6 +427,48 @@ def test_project_of_follows_the_layout(monkeypatch):
     assert sessions.project_of("") is None
 
 
+def test_a_project_in_a_group_is_its_own_project(monkeypatch, tmp_path):
+    """~/projects/spl/admin is `p-spl-admin`, not `p-spl`, and a link left at
+    the old path is the project it points at (scratch, 18 Oct 2026)."""
+    from agent_media_core import layout
+
+    root = tmp_path / "projects"
+    for d in ("spl/admin/.git", "spl/sasonica-app/.git", "agent-media/.git"):
+        (root / d).mkdir(parents=True)
+    (root / "sasonica-app").symlink_to("spl/sasonica-app")
+    monkeypatch.setenv("MEDIA_PROJECTS_DIR", str(root))
+    monkeypatch.setenv("MEDIA_LAYOUT", layout.PROJECTS)
+    monkeypatch.setattr(layout, "_groups_seen", (0.0, "", {}))
+    assert sessions.project_of(f"{root}/spl/admin") == "p-spl-admin"
+    assert sessions.project_of(f"{root}/spl/admin/.claude/worktrees/x") == "p-spl-admin"
+    assert sessions.project_of(f"{root}/sasonica-app") == "p-spl-sasonica-app"
+    assert sessions.project_of(f"{root}/agent-media") == "p-agent-media"
+    # Filed before the move, under the old name: listed with the new.
+    assert (sessions.project_of("/tmp/x", "/lib/Conversations/p-sasonica-app/A title")
+            == "p-spl-sasonica-app")
+    assert sessions.project_groups() == {
+        "p-spl-admin": {"group": "spl", "name": "admin"},
+        "p-spl-sasonica-app": {"group": "spl", "name": "sasonica-app"}}
+
+
+def test_a_grouped_projects_docs_are_found_by_its_name(monkeypatch, tmp_path):
+    from agent_media_core import layout
+
+    from agent_media_server import doc_read
+
+    root = tmp_path / "projects"
+    for d in ("spl/admin/.git", "agent-media/.git"):
+        (root / d).mkdir(parents=True)
+    monkeypatch.setenv("MEDIA_PROJECTS_DIR", str(root))
+    monkeypatch.setenv("MEDIA_LAYOUT", layout.PROJECTS)
+    monkeypatch.setattr(layout, "_groups_seen", (0.0, "", {}))
+    assert doc_read.project_dir("p-spl-admin") == (root / "spl" / "admin").resolve()
+    assert doc_read.project_dir("p-agent-media") == (root / "agent-media").resolve()
+    assert doc_read.project_dir("spl/../agent-media") is None
+    assert doc_read._project_of_rel("spl/admin/docs/x.md") == "spl/admin"
+    assert doc_read._project_of_rel("agent-media/docs/x.md") == "agent-media"
+
+
 # --- stop and message (§6.12a) --------------------------------------------------------
 
 
