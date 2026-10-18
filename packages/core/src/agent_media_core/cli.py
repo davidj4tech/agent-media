@@ -8531,6 +8531,12 @@ def _remote_probe() -> str:
 # deploys the very code that knows which services this checkout owns. That also
 # means a host too old to have the subcommand gains it in the same round trip.
 #
+# The restart is delayed (`--after 10`): restart-services' busy checks would
+# refuse a host where a chat is mid-turn or a reply is being spoken, and that
+# refusal showed only in this output, leaving the host on stale code with no
+# one told. Delayed, it runs in its own unit that waits for the host to be
+# free and raises the host alert if it gives up (David, 18 Oct 2026).
+#
 # Nothing here is forced. A dirty checkout is left alone and reported: an
 # unattended `git stash`/`reset` on a host David may be mid-edit on is a worse
 # outcome than a warning that stays up.
@@ -8567,7 +8573,7 @@ for d in "$@"; do
     echo "fix=$n FAILED: $(printf '%s' "$out" | tr '\n' ' ')"
   fi
 done
-if out=$(media restart-services 2>&1); then
+if out=$(media restart-services --after 10 2>&1); then
   printf '%s\n' "$out" | sed 's/^/restart=/'
 else
   printf 'restart=FAILED: %s\n' "$(printf '%s' "$out" | tr '\n' ' ')"

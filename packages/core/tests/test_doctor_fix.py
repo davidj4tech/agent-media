@@ -90,3 +90,11 @@ def test_a_host_that_could_not_be_fixed_stops_being_merely_behind(monkeypatch,
 
     ledger = (tmp_path / "agent-media" / "version-skew.log").read_text()
     assert "p8a!" in ledger, ledger
+
+
+def test_the_remote_restart_is_delayed_so_a_busy_host_waits_and_alerts():
+    # Immediate, a busy host's refusal showed only in doctor's output and the
+    # host stayed on stale code; delayed, it waits for the host and alerts.
+    from agent_media_core import cli
+
+    assert "media restart-services --after 10 " in cli._REMOTE_FIX
