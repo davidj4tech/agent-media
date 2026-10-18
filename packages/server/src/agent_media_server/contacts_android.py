@@ -25,6 +25,13 @@ with nothing escaped: a note can hold ", data2=" or a newline. So:
 The `data` URI has no `account_type` or `deleted` (its projection is strict),
 so those come from `raw_contacts`: a data row whose raw contact is deleted,
 or not listed, is dropped.
+
+**Labels** (David, 19 Oct 2026: "Can we bring Google groups too?"): the
+`groups` table, Google's labels synced by Android (`com.google` only), read
+like the rest (its structural columns, then `title` on its own), and each
+raw contact's `group_membership` rows (`data1` is the group's row id).
+Google's own groups go by their `system_id`: "My Contacts" (`Contacts`),
+Friends, Family, Coworkers; starred is left out.
 """
 
 from __future__ import annotations
@@ -42,10 +49,17 @@ URI = "content://com.android.contacts"
 MIME = "vnd.android.cursor.item/"
 #: The kinds of row read: everything else (photos, groups, WhatsApp's own
 #: action rows) is left on the phone.
-KINDS = ("phone_v2", "email_v2", "postal-address_v2", "note", "name", "organization")
+KINDS = ("phone_v2", "email_v2", "postal-address_v2", "note", "name", "organization",
+         "group_membership")
 RAW_COLS = ("_id", "contact_id", "account_type", "version")
 DATA_COLS = ("_id", "contact_id", "raw_contact_id", "lookup", "mimetype", "data_version")
 FREE_COLS = ("display_name", "data1", "data2", "data3", "data4")
+GROUP_COLS = ("_id", "system_id", "account_type")
+#: Google's own groups, by `system_id`, under the name the card gives them;
+#: one not here (starred, …) is left out.
+SYSTEM_GROUPS = {"Contacts": "My Contacts", "Friends": "Friends", "Family": "Family",
+                 "Coworkers": "Coworkers"}
+GROUP_ACCOUNT = "com.google"
 #: A whole read, at most (ssh, then adb, then ~6 queries of a few thousand rows).
 TIMEOUT_S = 180.0
 
@@ -92,6 +106,12 @@ def script(nonce: str) -> str:
         parts += [f"echo '{m} {col}'",
                   f"content query --uri {URI}/data --projection _id:{col} "
                   f"--where {where} --sort _id"]
+    parts += [f"echo '{m} groups'",
+              f"content query --uri {URI}/groups --projection {':'.join(GROUP_COLS)} "
+              f"--where 'deleted=0' --sort _id",
+              f"echo '{m} group_title'",
+              f"content query --uri {URI}/groups --projection _id:title "
+              f"--where 'deleted=0' --sort _id"]
     parts.append(f"echo '{m} end'")
     return "; ".join(parts)
 
@@ -199,7 +219,32 @@ def parse(output: str, nonce: str) -> dict:
             d = split(r, ("_id", col))
             if d["_id"] in data:
                 data[d["_id"]][col] = d[col]
-    return {"raw": raw, "data": data}
+    # The groups: absent from an answer made before labels (no section), no
+    # labels; present, read as strictly as the rest.
+    groups = {}
+    for r in rows(sec.get("groups") or ""):
+        d = split(r, GROUP_COLS)
+        groups[d["_id"]] = d
+    for r in rows(sec.get("group_title") or ""):
+        d = split(r, ("_id", "title"))
+        if d["_id"] in groups:
+            groups[d["_id"]]["title"] = d["title"]
+    return {"raw": raw, "data": data, "groups": groups}
+
+
+def group_names(groups: dict) -> dict[str, str]:
+    """Group row id to the label it is: Google's own by `SYSTEM_GROUPS`, a
+    label someone made by its title; another account's, starred, untitled,
+    left out."""
+    out = {}
+    for gid, g in (groups or {}).items():
+        if (g.get("account_type") or "") != GROUP_ACCOUNT:
+            continue
+        sys_id = g.get("system_id")
+        name = SYSTEM_GROUPS.get(sys_id or "") if sys_id else (g.get("title") or "").strip()
+        if name:
+            out[gid] = name
+    return out
 
 
 # --- into records ---------------------------------------------------------------
@@ -216,6 +261,7 @@ def records(parsed: dict, default_region: str = "AU") -> dict[str, dict]:
     from .contacts import e164
 
     raw = parsed["raw"]
+    group_of = group_names(parsed.get("groups") or {})
     by_contact: dict[str, list[dict]] = {}
     for d in parsed["data"].values():
         r = raw.get(d.get("raw_contact_id") or "")
@@ -232,6 +278,7 @@ def records(parsed: dict, default_region: str = "AU") -> dict[str, dict]:
             continue
         lookup = max(set(lookups), key=lookups.count)
         names, phones, emails, addresses, notes, orgs = [], [], [], [], [], []
+        labels: dict[str, str] = {}
         seen: set = set()
 
         def once(key) -> bool:
@@ -266,6 +313,9 @@ def records(parsed: dict, default_region: str = "AU") -> dict[str, dict]:
             elif kind == "organization" and (d1 or d4):
                 if once(("o", d1 or "", d4 or "")):
                     orgs.append({"company": d1 or "", "title": d4 or ""})
+            elif kind == "group_membership" and (d1 or "") in group_of:
+                label = group_of[d1]
+                labels.setdefault(label.casefold(), label)
         raw_ids = sorted({d["raw_contact_id"] for d in ds}, key=lambda x: int(x) if x.isdigit() else 0)
         accounts = sorted({raw[i].get("account_type") or "" for i in raw_ids} - {""})
         version = sum(int(raw[i].get("version") or 0) for i in raw_ids
@@ -273,9 +323,12 @@ def records(parsed: dict, default_region: str = "AU") -> dict[str, dict]:
         name = display or next((n["display"] for n in names if n["display"]), "") \
             or next((e["value"] for e in emails), "") \
             or next((p["raw"] for p in phones), "") or "(no name)"
-        out[lookup] = {"card": {"name": name, "names": names, "phones": phones,
-                                "emails": emails, "addresses": addresses,
-                                "notes": "\n\n".join(notes), "organizations": orgs},
+        card = {"name": name, "names": names, "phones": phones,
+                "emails": emails, "addresses": addresses,
+                "notes": "\n\n".join(notes), "organizations": orgs}
+        if labels:
+            card["labels"] = sorted(labels.values(), key=str.casefold)
+        out[lookup] = {"card": card,
                        "meta": {"raw": [int(i) if i.isdigit() else i for i in raw_ids],
                                 "accounts": accounts, "version": version}}
     return out

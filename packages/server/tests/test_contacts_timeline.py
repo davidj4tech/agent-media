@@ -396,8 +396,8 @@ def rooms(book):
                  (_at(0, 11), ME), (_at(5), LIONEL_SMS)])            # 5 days ago: outside
     sig = _room("!b:ryer.org", {"@signal_=2b61412345678:ryer.org": ""}, "signal",
                 [(_at(0), "@signal_=2b61412345678:ryer.org")])
-    wa = _room("!c:ryer.org", {"@whatsapp_61400111222:ryer.org": "Mel Jones"}, "whatsapp",
-               [(_at(0), "@whatsapp_61400111222:ryer.org")])         # no channel for it yet
+    wa = _room("!c:ryer.org", {"@telegram_61400111222:ryer.org": "Mel Jones"}, "telegram",
+               [(_at(0), "@telegram_61400111222:ryer.org")])         # no channel for it yet
     return sms, sig, wa
 
 

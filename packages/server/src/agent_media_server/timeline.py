@@ -46,12 +46,19 @@ import time
 import uuid as uuidlib
 from pathlib import Path
 
-CHANNELS = ("sms", "signal", "call", "email", "note")
+CHANNELS = ("sms", "signal", "messenger", "instagram", "teams", "whatsapp", "call", "email",
+            "note")
 SOURCES = ("texts", "calls", "email", "notes")
 DEFAULT_SOURCES = ("texts", "notes")
 DAYS = 2
 #: A bridge's network to the channel its messages are.
-_NETWORKS = {"gmessages": "sms", "signal": "signal"}
+#: A bridged room's network (`m.bridge` protocol id, matrix._network) to its
+#: channel. mautrix-meta carries Messenger as `facebookgo` and Instagram as
+#: `instagramgo` (19 Oct 2026); the older bridges' ids are kept beside them.
+_NETWORKS = {"gmessages": "sms", "signal": "signal",
+             "facebookgo": "messenger", "facebook": "messenger", "meta": "messenger",
+             "messenger": "messenger", "instagramgo": "instagram", "instagram": "instagram",
+             "teams": "teams", "msteams": "teams", "whatsapp": "whatsapp"}
 #: The call log's types: 1 incoming, 2 outgoing, 3 missed, 4 voicemail, 5
 #: rejected, 6 blocked (left out), 7 answered elsewhere.
 _CALL_DIR = {"1": "in", "2": "out", "3": "in", "4": "in", "5": "in", "7": "in"}
@@ -151,6 +158,8 @@ def texts(window: list[str]) -> list[tuple]:
     from . import contacts, matrix
 
     self_phones, _ = contacts._self_ids()
+    # David's own ghosts (Instagram's puppet of him): what they send is his.
+    mine_ghosts = contacts.own_ghosts()
     want = set(window)
     out = []
     for r in list(matrix._ROOMS.values()):
@@ -168,7 +177,8 @@ def texts(window: list[str]) -> list[tuple]:
             day = _day_of(at) if at else ""
             if day not in want:
                 continue
-            mine = sender == r.owner or _self_puppet(sender, names.get(sender, ""), self_phones)
+            mine = (sender == r.owner or sender in mine_ghosts
+                    or _self_puppet(sender, names.get(sender, ""), self_phones))
             out.append((who["id"], channel, day, "out" if mine else "in", 0))
     return out
 

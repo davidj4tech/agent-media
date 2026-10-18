@@ -189,6 +189,9 @@ device gets its token):
   GET  /contacts/<id>/timeline[?limit=] → their texts, calls, mail and
                   notes by day, from the CRM's daily rollups (timeline.py)
   POST /contacts/<id>/notes {"text"} → a note on them, today, kept in the CRM
+  GET  /contacts/labels → every label on someone, with counts (§6.25)
+  POST /contacts/<id>/same|different {"other"} → "Same person?" answered:
+                  the bridged one joins the other, or the suggestion goes
   GET  /contacts/google → the caller's book's Google: signed in as whom,
                   expired (sign in again), last sync (contacts.py, §6.25)
   POST /contacts/google/login {"port"} → {url, state}: a sign-in redirecting
@@ -287,7 +290,7 @@ CORS_PATHS = frozenset({
     "/share", "/upload", "/dashboard",
     "/sessions/events", "/search", "/contacts",
     "/contacts/google", "/contacts/google/login", "/contacts/google/finish",
-    "/contacts/google/signout", "/bridges",
+    "/contacts/google/signout", "/contacts/labels", "/bridges",
     "/mic/ask", "/mic/cancel",
     "/phone/ask", "/phone/answer", "/phone/cancel",
     "/notes", "/notes/clear",
@@ -347,6 +350,8 @@ CONTACT = re.compile(r"/contacts/([0-9a-f-]{36})")
 # Their timeline, and a note on it (timeline.py, §6.25a).
 CONTACT_TIMELINE = re.compile(r"/contacts/([0-9a-f-]{36})/timeline")
 CONTACT_NOTES = re.compile(r"/contacts/([0-9a-f-]{36})/notes")
+# "Same person?" answered: one person, or not (contacts.py, §6.25).
+CONTACT_SAME = re.compile(r"/contacts/([0-9a-f-]{36})/(same|different)")
 # A bridge's icon, its sign-ins and signing out (bridges.py, §6.26).
 BRIDGE_ICON = re.compile(r"/bridges/([A-Za-z0-9_.-]+)/icon")
 BRIDGE_LOGIN = re.compile(r"/bridges/([A-Za-z0-9_.-]+)/login")
@@ -363,6 +368,7 @@ def cors_path(path: str) -> bool:
                                      for r in (THREAD_EVENTS, THREAD_AGENTS, AGENT_LOG,
                                                         AGENT_ACT, CONTACT,
                                                         CONTACT_TIMELINE, CONTACT_NOTES,
+                                                        CONTACT_SAME,
                                                         *BRIDGE_ROUTES))
 
 
@@ -591,9 +597,37 @@ def _contacts(h: BaseHTTPRequestHandler, path: str, query: str) -> None:
         else:
             _json(h, 200, {"ok": True, "contact": got})
         return
+    if path == "/contacts/labels":
+        _json(h, 200, {"ok": True, **contacts.labels()})
+        return
     qs = parse_qs(query)
     arg = lambda k: (qs.get(k) or [""])[0]  # noqa: E731
-    _json_z(h, 200, {"ok": True, **contacts.listing(arg("q"), arg("limit"))})
+    _json_z(h, 200, {"ok": True, **contacts.listing(arg("q"), arg("limit"), arg("label"))})
+
+
+def _contact_same(h: BaseHTTPRequestHandler, cid: str, act: str) -> None:
+    """`POST /contacts/<id>/same|different {"other"}` (§6.25): gated as the
+    card is; `{id}` is the contact left (after a join, the other one)."""
+    from . import contacts
+
+    user, err = auth.gate(_bearer(h))
+    if not user:
+        _json(h, err.pop("status", 403), {"ok": False, **err})
+        return
+    body = _read_json(h)
+    other = str((body or {}).get("other") or "") if isinstance(body, dict) else ""
+    if not CONTACT.fullmatch(f"/contacts/{other}"):
+        _json(h, 400, {"ok": False, "error": "expected {\"other\": <contact id>}"})
+        return
+    try:
+        got = (contacts.same if act == "same" else contacts.different)(cid, other)
+    except KeyError:
+        _json(h, 404, {"ok": False, "error": "no such contact"})
+        return
+    except contacts.NotBridged as e:
+        _json(h, 400, {"ok": False, "error": str(e)})
+        return
+    _json(h, 200, {"ok": True, **got})
 
 
 def _contact_timeline(h: BaseHTTPRequestHandler, cid: str, query: str) -> None:
@@ -920,7 +954,7 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         _contact_timeline(h, CONTACT_TIMELINE.fullmatch(path).group(1), query)
     elif path == "/contacts/google":
         _contacts_google(h, "state")
-    elif path == "/contacts" or CONTACT.fullmatch(path):
+    elif path in ("/contacts", "/contacts/labels") or CONTACT.fullmatch(path):
         # People, from the phone's contacts (contacts.py, §6.25): the list or
         # matches as you type, and one person's card with their rooms.
         _contacts(h, path, query)
@@ -1612,6 +1646,9 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         _devices_revoke(h)
     elif CONTACT_NOTES.fullmatch(path):
         _contact_note(h, CONTACT_NOTES.fullmatch(path).group(1))
+    elif CONTACT_SAME.fullmatch(path):
+        m = CONTACT_SAME.fullmatch(path)
+        _contact_same(h, m.group(1), m.group(2))
     elif path in ("/contacts/google/login", "/contacts/google/finish",
                   "/contacts/google/signout"):
         _contacts_google(h, path.rsplit("/", 1)[1])

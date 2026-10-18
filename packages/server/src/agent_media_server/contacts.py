@@ -50,6 +50,21 @@ read-only card is `GET /contacts/<id>` (`card`).
   (`{sources, self, timeline}`), its Google sign-in and CRM connection
   its own files there. Google's OAuth *client* (the app's registration)
   is shared.
+* **The bridged networks** (David, 19 Oct 2026: "draw in contacts from the
+  other providers we have bridges for"). `bridges`, the owner's book only:
+  the other party of each one-to-one bridged room this process holds
+  (`matrix._ROOMS`; groups add no one, David's own ghosts are left out),
+  one record per ghost with its `handles` (`[{network, network_name,
+  id}]`). One joins a contact by a kept Join (`merges`), else a shared
+  number, else a shared address, else — only on a network whose names are
+  the phone's own (`gmessages`, `MEDIA_CONTACTS_TRUSTED_NAMES`) — a name no
+  other contact has; else it is a person of its own, and a same name is a
+  suggestion on the card ("Same person?", `same` / `different`). A process
+  with no rooms loaded (the CLI) keeps the last copy.
+* **Labels**: the phone's contact groups (Google's labels, synced by
+  Android) and, for a book signed in to Google, its `contactGroups`, as
+  `labels` on each person; `GET /contacts?label=` and `GET
+  /contacts/labels`.
 
 Contacts are personal data: they stay on this host, and nothing here sends
 them anywhere but back to a signed-in device.
@@ -88,7 +103,14 @@ SCOPE = "https://www.googleapis.com/auth/contacts.readonly"
 #: can say whose Google it reads.
 LOGIN_SCOPE = "openid email " + SCOPE
 PEOPLE = "https://people.googleapis.com/v1"
-PERSON_FIELDS = "names,phoneNumbers,emailAddresses,addresses,biographies,metadata"
+PERSON_FIELDS = "names,phoneNumbers,emailAddresses,addresses,biographies,metadata,memberships"
+#: Google's own groups that are not a label: left out. "My Contacts" is one
+#: (David, 19 Oct 2026), so it is not here; starred is.
+_GOOGLE_HIDDEN = {"contactGroups/starred", "contactGroups/all",
+                  "contactGroups/chatBuddies", "contactGroups/blocked"}
+#: The names Google's own groups go by on the card.
+_GOOGLE_SYSTEM = {"contactGroups/myContacts": "My Contacts", "contactGroups/friends": "Friends",
+                  "contactGroups/family": "Family", "contactGroups/coworkers": "Coworkers"}
 AUTH_URI = "https://accounts.google.com/o/oauth2/auth"
 TOKEN_URI = "https://oauth2.googleapis.com/token"
 #: People a page of `connections`, the API's most.
@@ -102,7 +124,14 @@ LIMIT_MAX = 5000
 #: How long a login waits for the code before giving up.
 LOGIN_WAIT_S = 900.0
 #: The sources, in the order they merge.
-KINDS = ("android", "google", "drupal")
+KINDS = ("android", "google", "bridges", "drupal")
+#: The networks whose names for people are the phone's own contact names
+#: (mautrix-gmessages' `{{or .FullName .PhoneNumber}}`): a name there may
+#: join a contact by itself. Elsewhere a same name is only a suggestion.
+TRUSTED_NAMES = ("gmessages",)
+#: The bridges whose ghosts are named by the person's number
+#: (`@signal_=2b61…`, `@whatsapp_61412…`).
+NUMBER_GHOSTS = ("signal", "whatsapp")
 #: A stable namespace for contact ids (uuid5 of "<kind>:<source id>").
 _NS = uuid.UUID("5b0e6f8c-7d0a-4c55-9a4b-2f1d0c6e1a17")
 
@@ -342,7 +371,13 @@ CREATE TABLE IF NOT EXISTS overrides (
   PRIMARY KEY (room, contact));
 CREATE TABLE IF NOT EXISTS drupal_links (
   uuid TEXT PRIMARY KEY, contact TEXT NOT NULL, at REAL);
+CREATE TABLE IF NOT EXISTS merges (
+  source TEXT NOT NULL, contact TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('join', 'dismiss')), at REAL,
+  PRIMARY KEY (source, contact));
 """
+#: What a schema bump keeps: David's own decisions, not what a source said.
+_KEPT = {"overrides", "drupal_links", "merges"}
 #: Bump when what a row holds changes: the store is emptied (but for the
 #: overrides and the seed's links) and read again.
 SCHEMA_VERSION = "2"
@@ -365,7 +400,7 @@ def _connect(create: bool = True) -> sqlite3.Connection | None:
     have = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     if "meta" in have and conn.execute(
             "SELECT v FROM meta WHERE k='schema'").fetchone() != (SCHEMA_VERSION,):
-        for t in have - {"overrides", "drupal_links"}:
+        for t in have - _KEPT:
             conn.execute(f"DROP TABLE IF EXISTS {t}")
     conn.executescript(_SCHEMA)
     conn.execute("INSERT OR REPLACE INTO meta (k, v) VALUES ('schema', ?)", (SCHEMA_VERSION,))
@@ -403,6 +438,9 @@ def _source(kind: str, sid: str, meta: dict) -> dict:
                 "accounts": meta.get("accounts") or [], "version": meta.get("version") or 0}
     if kind == "drupal":
         return {"kind": "drupal", "id": sid, "changed": meta.get("changed") or ""}
+    if kind == "bridges":
+        return {"kind": "bridges", "id": sid, "network": meta.get("network") or "",
+                "network_name": meta.get("network_name") or ""}
     return {"kind": kind, "id": sid, "etag": meta.get("etag") or ""}
 
 
@@ -421,6 +459,14 @@ def _merge(google: dict, phone: dict) -> dict:
     out["notes"] = google.get("notes") or phone.get("notes") or ""
     gname = google.get("name") or ""
     out["name"] = gname if gname and gname != "(no name)" else (phone.get("name") or gname)
+    # Labels and a bridge's handles are every source's, not one's.
+    labels = {fold(x): x for x in (phone.get("labels") or []) + (google.get("labels") or [])}
+    if labels:
+        out["labels"] = sorted(labels.values(), key=fold)
+    handles = {h["id"]: h for h in (google.get("handles") or []) + (phone.get("handles") or [])
+               if h.get("id")}
+    if handles:
+        out["handles"] = list(handles.values())
     return out
 
 
@@ -463,6 +509,7 @@ def _rebuild(conn: sqlite3.Connection) -> None:
                          "sources": [src] + book[cid]["sources"]}
         else:
             book[contact_id(kind, sid)] = {"card": c, "sources": [src]}
+    _rebuild_bridges(conn, recs, book)
     _rebuild_drupal(conn, recs, book)
     old = {cid: (raw, upd) for cid, raw, upd in conn.execute(
         "SELECT id, card, updated FROM contacts")}
@@ -482,6 +529,103 @@ def _rebuild(conn: sqlite3.Connection) -> None:
         conn.executemany("INSERT INTO emails (contact, email) VALUES (?, ?)",
                          [(cid, e) for e in sorted(emails)])
     _bump(conn)
+
+
+def trusted_names() -> set[str]:
+    """`MEDIA_CONTACTS_TRUSTED_NAMES` (comma separated network ids), else
+    `TRUSTED_NAMES`: the networks where a name alone may join a contact."""
+    raw = (os.environ.get("MEDIA_CONTACTS_TRUSTED_NAMES") or "").strip()
+    return {x.strip() for x in raw.split(",") if x.strip()} if raw else set(TRUSTED_NAMES)
+
+
+def _names_of(card: dict) -> set[str]:
+    return {n for n in {fold(card.get("name") or "")}
+            | {fold(x.get("display") or "") for x in card.get("names") or []} if n}
+
+
+def _rebuild_bridges(conn: sqlite3.Connection, recs: list, book: dict) -> None:
+    """The bridged networks' people (`bridges`), after Google and before the
+    CRM. Each joins, in order: the contact a kept Join names; else the one
+    contact sharing its number; else its address; else, on a trusted network
+    only, the one contact with its name (and no kept "Not the same"); else
+    it is its own person. A join only fills what the contact left empty."""
+    merges: dict[str, list[tuple[str, str]]] = {}
+    for source, cid, kind in conn.execute("SELECT source, contact, kind FROM merges"):
+        merges.setdefault(source, []).append((cid, kind))
+    trusted = trusted_names()
+    pending = []
+    for kind, sid, card, meta in recs:
+        if kind == "bridges":
+            pending.append((sid, json.loads(card), json.loads(meta)))
+
+    by_phone: dict[str, set] = {}
+    by_email: dict[str, set] = {}
+    by_name: dict[str, set] = {}
+
+    def index(cid: str) -> None:
+        phones, emails = _keys(book[cid]["card"])
+        for p in phones:
+            by_phone.setdefault(p, set()).add(cid)
+        for e in emails:
+            by_email.setdefault(e, set()).add(cid)
+        for n in _names_of(book[cid]["card"]):
+            by_name.setdefault(n, set()).add(cid)
+
+    for cid in book:
+        index(cid)
+
+    def place(sid: str, c: dict, meta: dict, joined_to: str | None) -> None:
+        src = _source("bridges", sid, meta)
+        if joined_to:
+            entry = book[joined_to]
+            book[joined_to] = {"card": _merge(entry["card"], c),
+                               "sources": entry["sources"] + [src]}
+            index(joined_to)
+        else:
+            cid = contact_id("bridges", sid)
+            book[cid] = {"card": c, "sources": [src]}
+            bridged.add(cid)
+            index(cid)
+
+    # The people a bridge alone knows: a trusted name is the phone's own
+    # contact name, so it never joins one of them.
+    bridged: set[str] = set()
+
+    # A kept Join may name another bridged person (Messenger and Instagram,
+    # neither in the phone): those wait until the one they join is placed.
+    later = []
+    for sid, c, meta in pending:
+        joins = [cid for cid, k in merges.get(sid, []) if k == "join"]
+        if joins:
+            later.append((sid, c, meta, joins[-1]))
+            continue
+        dismissed = {cid for cid, k in merges.get(sid, []) if k == "dismiss"}
+        phones, emails = _keys(c)
+        hits: set = set()
+        for p in phones:
+            hits |= by_phone.get(p, set())
+        if not hits:
+            for e in emails:
+                hits |= by_email.get(e, set())
+        if not hits and meta.get("network") in trusted:
+            for n in _names_of(c):
+                hits |= by_name.get(n, set()) - bridged
+        hits -= dismissed
+        place(sid, c, meta, next(iter(hits)) if len(hits) == 1 else None)
+    for _round in range(len(later) + 1):
+        if not later:
+            break
+        waiting = []
+        for sid, c, meta, cid in later:
+            if cid in book:
+                place(sid, c, meta, cid)
+            else:
+                waiting.append((sid, c, meta, cid))
+        if len(waiting) == len(later):
+            break                      # what they joined is gone: their own again
+        later = waiting
+    for sid, c, meta, _cid in later:
+        place(sid, c, meta, None)
 
 
 def _rebuild_drupal(conn: sqlite3.Connection, recs: list, book: dict) -> None:
@@ -587,7 +731,23 @@ def _primary_first(items: list) -> list:
     return sorted(items or [], key=lambda x: not ((x.get("metadata") or {}).get("primary")))
 
 
-def card_of(person: dict, default_region: str = "AU") -> dict:
+def labels_of(person: dict, groups: dict[str, str] | None) -> list[str]:
+    """A person's labels: their `memberships`' contact groups by name
+    (`groups`, resource name to name), Google's own groups by theirs, the
+    hidden ones (starred, all…) left out."""
+    out = {}
+    for m in person.get("memberships") or []:
+        rn = ((m.get("contactGroupMembership") or {}).get("contactGroupResourceName") or "")
+        if not rn or rn in _GOOGLE_HIDDEN:
+            continue
+        name = _GOOGLE_SYSTEM.get(rn) or (groups or {}).get(rn) or ""
+        if name:
+            out[fold(name)] = name
+    return sorted(out.values(), key=fold)
+
+
+def card_of(person: dict, default_region: str = "AU",
+            groups: dict[str, str] | None = None) -> dict:
     """The People API's person as the store keeps it."""
     names = [{"display": n.get("displayName") or "", "given": n.get("givenName") or "",
               "family": n.get("familyName") or ""}
@@ -614,8 +774,12 @@ def card_of(person: dict, default_region: str = "AU") -> dict:
     name = next((n["display"] for n in names if n["display"]), "") \
         or next((e["value"] for e in emails), "") \
         or next((p["raw"] for p in phones if p["raw"]), "") or "(no name)"
-    return {"name": name, "names": names, "phones": phones, "emails": emails,
-            "addresses": addresses, "organizations": [], "notes": notes}
+    out = {"name": name, "names": names, "phones": phones, "emails": emails,
+           "addresses": addresses, "organizations": [], "notes": notes}
+    got = labels_of(person, groups)
+    if got:
+        out["labels"] = got
+    return out
 
 
 # --- HTTP -----------------------------------------------------------------------
@@ -839,6 +1003,23 @@ class _Expired(Exception):
     pass
 
 
+def _groups() -> dict[str, str]:
+    """The book's Google contact groups, resource name to name (one page:
+    the API's most is 1000). A failure is no names, not no sync."""
+    try:
+        status, body = _request(
+            "GET", f"{PEOPLE}/contactGroups?pageSize=1000&groupFields=name",
+            headers={"Authorization": f"Bearer {access_token()}"})
+    except (OSError, urllib.error.URLError, NotSignedIn) as e:
+        log.info("contacts: google labels unread: %s", e)
+        return {}
+    if status != 200:
+        log.info("contacts: google labels unread: %s", status)
+        return {}
+    return {g.get("resourceName") or "": g.get("formattedName") or g.get("name") or ""
+            for g in body.get("contactGroups") or [] if g.get("resourceName")}
+
+
 def _fetch(sync_token: str | None) -> tuple[list[dict], str | None]:
     """Every Google connection (or every change since `sync_token`), and the
     token for next time."""
@@ -887,6 +1068,10 @@ def sync_google(full: bool = False) -> dict:
         conn = _connect()
         try:
             token = None if full else _meta(conn, "google_sync_token")
+            # A sync token is only good for the fields it was made with: new
+            # fields (the labels' memberships) read everything again.
+            if _meta(conn, "google_fields") != PERSON_FIELDS:
+                token = None
         finally:
             conn.close()
         try:
@@ -899,6 +1084,7 @@ def sync_google(full: bool = False) -> dict:
         except (NotSignedIn, SyncError, OSError, urllib.error.URLError) as e:
             _failed("google", e)
             raise
+        groups = _groups() if any(p.get("memberships") for p in people) else {}
         reg = region()
         changed = deleted = 0
         with _WRITE:
@@ -917,7 +1103,7 @@ def sync_google(full: bool = False) -> dict:
                     seen.add(rn)
                     conn.execute("INSERT OR REPLACE INTO records (kind, sid, card, meta) "
                                  "VALUES ('google', ?, ?, ?)",
-                                 (rn, json.dumps(card_of(p, reg)),
+                                 (rn, json.dumps(card_of(p, reg, groups)),
                                   json.dumps({"etag": p.get("etag") or ""})))
                     changed += 1
                 if token is None:
@@ -929,6 +1115,7 @@ def sync_google(full: bool = False) -> dict:
                                          (sid,))
                             deleted += 1
                 _set_meta(conn, "google_sync_token", next_token)
+                _set_meta(conn, "google_fields", PERSON_FIELDS)
                 _set_meta(conn, "google_synced_at", str(round(time.time(), 3)))
                 _set_meta(conn, "google_last_error", None)
                 if changed or deleted:
@@ -1022,18 +1209,145 @@ def sync_drupal() -> dict:
         return {"source": "drupal", "unchanged": same, "read": len(recs), "contacts": total}
 
 
+#: Rooms of one network a ghost must be in all of before it is taken for
+#: David's own (Instagram puppets him into each of his chats). Fewer, and two
+#: chats with one friend would make the friend him.
+OWN_GHOST_ROOMS = 3
+
+
+def _bridged_rooms() -> list:
+    """The bridged rooms this process holds, loaded, with their network."""
+    from . import matrix
+
+    out = []
+    for r in list(matrix._ROOMS.values()):
+        if r.loaded and r.network and (r.network.get("id") or ""):
+            out.append(r)
+    return out
+
+
+def own_ghosts(rooms: list | None = None) -> set[str]:
+    """David's own puppets on the bridged networks: a ghost in every room
+    of its network (at least `OWN_GHOST_ROOMS` of them), one named as the
+    owner is in that room, or his own number's (`MEDIA_CONTACTS_SELF`)."""
+    rooms = _bridged_rooms() if rooms is None else rooms
+    self_phones, _ = _self_ids()
+    reg = region()
+    per_net: dict[str, list[set]] = {}
+    out: set[str] = set()
+    for r in rooms:
+        with r.lock:
+            members = dict(r.members)
+        skip = _skip_of(r)
+        mine = fold(members.get(r.owner) or "")
+        others = {u for u in members if u not in skip}
+        per_net.setdefault(r.network["id"], []).append(others)
+        for u in others:
+            dn = members.get(u) or ""
+            if mine and fold(dn) == mine:
+                out.add(u)
+            elif self_phones and identities(u, dn, reg)["phones"] & self_phones:
+                out.add(u)
+    for sets in per_net.values():
+        if len(sets) >= OWN_GHOST_ROOMS:
+            out |= set.intersection(*sets)
+    return out
+
+
+def bridge_records(rooms: list | None = None) -> dict[str, dict]:
+    """One record per person David has a one-to-one bridged chat with: the
+    room's one other party, once his own ghosts and the bots are left out.
+    A group adds no one."""
+    rooms = _bridged_rooms() if rooms is None else rooms
+    mine = own_ghosts(rooms)
+    reg = region()
+    out: dict[str, dict] = {}
+    for r in rooms:
+        with r.lock:
+            members = dict(r.members)
+        skip = _skip_of(r) | mine
+        others = [u for u in members if u not in skip]
+        if len(others) != 1:
+            continue
+        uid = others[0]
+        dn = (members.get(uid) or "").strip()
+        net = r.network
+        who = identities(uid, dn, reg)
+        name = dn if dn and dn != uid else uid.lstrip("@").partition(":")[0]
+        rec = out.get(uid)
+        if rec is None:
+            rec = out[uid] = {
+                "card": {"name": name, "names": [{"display": name, "given": "", "family": ""}],
+                         "phones": [{"value": p, "raw": p, "type": net.get("name") or net["id"]}
+                                    for p in sorted(who["phones"])],
+                         "emails": [{"value": e, "type": net.get("name") or net["id"]}
+                                    for e in sorted(who["emails"])],
+                         "addresses": [], "organizations": [], "notes": "",
+                         "handles": [{"network": net["id"], "network_name": net.get("name") or "",
+                                      "id": uid}]},
+                "meta": {"network": net["id"], "network_name": net.get("name") or "",
+                         "rooms": []}}
+        rec["meta"]["rooms"] = sorted(set(rec["meta"]["rooms"]) | {r.id})
+    return out
+
+
+def sync_bridges() -> dict:
+    """The bridged networks' people (`bridge_records`) into the owner's
+    book. A process holding no bridged rooms (the CLI, or the canvas before
+    its rooms load) keeps the last copy and writes nothing."""
+    with _SYNC_LOCK:
+        rooms = _bridged_rooms() if is_owner() else []
+        if not rooms:
+            conn = _connect()
+            try:
+                n = conn.execute("SELECT COUNT(*) FROM records WHERE kind='bridges'").fetchone()[0]
+                total = conn.execute("SELECT COUNT(*) FROM contacts").fetchone()[0]
+            finally:
+                conn.close()
+            return {"source": "bridges", "unchanged": True, "rooms": 0, "read": n,
+                    "contacts": total}
+        recs = bridge_records(rooms)
+        digest = hashlib.sha256(json.dumps(recs, sort_keys=True).encode()).hexdigest()
+        with _WRITE:
+            conn = _connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                same = _meta(conn, "bridges_hash") == digest
+                if not same:
+                    conn.execute("DELETE FROM records WHERE kind='bridges'")
+                    conn.executemany(
+                        "INSERT INTO records (kind, sid, card, meta) VALUES ('bridges', ?, ?, ?)",
+                        [(sid, json.dumps(r["card"]), json.dumps(r["meta"]))
+                         for sid, r in recs.items()])
+                    _rebuild(conn)
+                    _set_meta(conn, "bridges_hash", digest)
+                _set_meta(conn, "bridges_synced_at", str(round(time.time(), 3)))
+                _set_meta(conn, "bridges_last_error", None)
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+            finally:
+                total = conn.execute("SELECT COUNT(*) FROM contacts").fetchone()[0]
+                conn.close()
+        return {"source": "bridges", "unchanged": same, "rooms": len(rooms), "read": len(recs),
+                "contacts": total}
+
+
 def sources() -> list[str]:
     """The sources this book reads: `MEDIA_CONTACTS_SOURCES` (comma
     separated; another account's `contacts.json` `sources`), else the phone
     when this host has the adb tool (the owner's book only), Google only
-    when signed in, and the CRM only when its connection is set."""
-    from . import contacts_android, contacts_drupal
+    when signed in, the bridged networks when this host reads bridges as
+    the owner (`MATRIX_OWNER_BRIDGES`; the owner's book only), and the CRM
+    only when its connection is set."""
+    from . import contacts_android, contacts_drupal, matrix
 
     raw = (setting("MEDIA_CONTACTS_SOURCES", "sources") or "").strip()
     if raw:
         want = [s.strip() for s in raw.split(",") if s.strip()]
     else:
-        want = ["android", "google", "drupal"]
+        want = ["android", "google", "bridges", "drupal"]
     out = []
     for s in want:
         # The phone over adb is this host's, so the owner's: never another
@@ -1041,6 +1355,8 @@ def sources() -> list[str]:
         if s == "android" and is_owner() and contacts_android.available():
             out.append(s)
         elif s == "google" and signed_in():
+            out.append(s)
+        elif s == "bridges" and is_owner() and matrix._bridges():
             out.append(s)
         elif s == "drupal" and contacts_drupal.configured():
             out.append(s)
@@ -1060,7 +1376,7 @@ def sync(full: bool = False) -> dict:
 
 
 _SYNCS = {"android": lambda full: sync_android(), "google": lambda full: sync_google(full=full),
-          "drupal": lambda full: sync_drupal()}
+          "bridges": lambda full: sync_bridges(), "drupal": lambda full: sync_drupal()}
 
 
 # --- reading the store ----------------------------------------------------------
@@ -1068,7 +1384,8 @@ _SYNCS = {"android": lambda full: sync_android(), "google": lambda full: sync_go
 def _row(cid: str, name: str, card: dict) -> dict:
     return {"id": cid, "name": name,
             "phones": [p["value"] for p in card.get("phones") or [] if p.get("value")],
-            "emails": [e["value"] for e in card.get("emails") or [] if e.get("value")]}
+            "emails": [e["value"] for e in card.get("emails") or [] if e.get("value")],
+            "labels": card.get("labels") or []}
 
 
 def _matches(q: str, name: str, card: dict) -> int:
@@ -1106,19 +1423,23 @@ def _source_states(conn: sqlite3.Connection | None) -> list[dict]:
     return out
 
 
-def listing(q: str = "", limit: int | str | None = None) -> dict:
+def listing(q: str = "", limit: int | str | None = None, label: str = "") -> dict:
     """`GET /contacts`: everyone, or those `q` matches as it is typed (name,
-    a phone's digits as written or dialled at home, an email)."""
+    a phone's digits as written or dialled at home, an email); `label`, only
+    the people with that label."""
     try:
         n = max(1, min(int(limit or LIMIT), LIMIT_MAX))
     except (TypeError, ValueError):
         n = LIMIT
+    want = fold(label)
     conn = _connect(create=False)
     rows: list[tuple[int, str, dict]] = []
     try:
         if conn is not None:
             for cid, name, raw in conn.execute("SELECT id, name, card FROM contacts"):
                 card = json.loads(raw)
+                if want and want not in {fold(x) for x in card.get("labels") or []}:
+                    continue
                 score = _matches(q, name, card) if q else 2
                 if score:
                     rows.append((score, fold(name), _row(cid, name, card)))
@@ -1149,7 +1470,134 @@ def card(cid: str) -> dict | None:
             "phones": c.get("phones") or [], "emails": c.get("emails") or [],
             "addresses": c.get("addresses") or [], "organizations": c.get("organizations") or [],
             "notes": c.get("notes") or "", "sources": c.get("sources") or [],
+            "labels": c.get("labels") or [], "handles": c.get("handles") or [],
+            "suggestions": suggestions(cid),
             "updated": round(got[2], 3) if got[2] else None, "rooms": rooms_of(cid)}
+
+
+def labels() -> dict:
+    """`GET /contacts/labels`: every label on someone in the book, with how
+    many people have it, by name."""
+    conn = _connect(create=False)
+    counts: dict[str, list] = {}
+    try:
+        if conn is not None:
+            for (raw,) in conn.execute("SELECT card FROM contacts"):
+                for x in json.loads(raw).get("labels") or []:
+                    counts.setdefault(fold(x), [x, 0])[1] += 1
+    finally:
+        if conn is not None:
+            conn.close()
+    return {"labels": [{"name": name, "count": n}
+                       for name, n in sorted(counts.values(), key=lambda v: fold(v[0]))]}
+
+
+# --- "Same person?" -------------------------------------------------------------
+
+def _bridge_sids(card: dict) -> list[str]:
+    return [s["id"] for s in card.get("sources") or [] if s.get("kind") == "bridges"]
+
+
+def _bridge_only(card: dict) -> bool:
+    srcs = card.get("sources") or []
+    return bool(srcs) and all(s.get("kind") == "bridges" for s in srcs)
+
+
+def suggestions(cid: str) -> list[dict]:
+    """Other contacts with this one's name, where one of the two is known
+    only from a bridge (a name joins nobody there by itself) and David has
+    not said they are not the same: `[{id, name, why: "same name"}]`."""
+    idx = _index()
+    if idx is None or cid not in idx["display"]:
+        return []
+    out = []
+    for other in sorted({o for n in idx["card_names"].get(cid, ()) for o in idx["names"].get(n, ())}
+                        - {cid}):
+        if cid not in idx["bridge_only"] and other not in idx["bridge_only"]:
+            continue
+        if (cid, other) in idx["dismissed"] or (other, cid) in idx["dismissed"]:
+            continue
+        out.append({"id": other, "name": idx["display"].get(other) or "", "why": "same name"})
+    return out
+
+
+def _fresh() -> None:
+    """This process's matcher reads the store again on its next use: after
+    a decision made here, the card asked for next must already show it."""
+    idx = _INDEXES.get(account())
+    if idx is not None:
+        idx["checked"] = 0.0
+
+
+class NotBridged(ValueError):
+    """Neither contact is known only from a bridge: nothing to join."""
+
+
+def _pair(conn: sqlite3.Connection, a: str, b: str) -> tuple[dict, str, dict, str]:
+    rows = {cid: json.loads(raw) for cid, raw in conn.execute(
+        "SELECT id, card FROM contacts WHERE id IN (?, ?)", (a, b))}
+    if a not in rows or b not in rows or a == b:
+        raise KeyError(b if a in rows else a)
+    return rows[a], a, rows[b], b
+
+
+def same(cid: str, other: str) -> dict:
+    """`POST /contacts/<id>/same {"other"}`: David says the two are one
+    person. The one known only from a bridge joins the other (kept in
+    `merges`, so it holds whatever the names do later); `{id}` is who is left.
+    KeyError when either is not in the book, NotBridged when neither is a
+    bridge's alone."""
+    with _WRITE:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            ca, a, cb, b = _pair(conn, cid, other)
+            if _bridge_only(ca):
+                joining, into = ca, b
+            elif _bridge_only(cb):
+                joining, into = cb, a
+            else:
+                raise NotBridged("neither is known only from a bridge")
+            now = time.time()
+            for sid in _bridge_sids(joining):
+                conn.execute("DELETE FROM merges WHERE source=? AND kind='join'", (sid,))
+                conn.execute("INSERT OR REPLACE INTO merges (source, contact, kind, at) "
+                             "VALUES (?, ?, 'join', ?)", (sid, into, now))
+            _rebuild(conn)
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+    _fresh()
+    return {"id": into}
+
+
+def different(cid: str, other: str) -> dict:
+    """`POST /contacts/<id>/different {"other"}`: not the same person; the
+    suggestion goes and a trusted name never joins them."""
+    with _WRITE:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            ca, a, cb, b = _pair(conn, cid, other)
+            pairs = [(sid, b) for sid in _bridge_sids(ca)] + [(sid, a) for sid in _bridge_sids(cb)]
+            if not pairs:
+                raise NotBridged("neither is known from a bridge")
+            now = time.time()
+            for sid, into in pairs:
+                conn.execute("INSERT OR REPLACE INTO merges (source, contact, kind, at) "
+                             "VALUES (?, ?, 'dismiss', ?)", (sid, into, now))
+            _rebuild(conn)             # a trusted name that joined them lets go
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+    _fresh()
+    return {"id": cid}
 
 
 def _crm_of(c: dict) -> dict | None:
@@ -1189,8 +1637,11 @@ def identities(user_id: str, displayname: str = "", default_region: str = "AU") 
     phones: set[str] = set()
     emails: set[str] = set()
     local = (user_id or "").lstrip("@").partition(":")[0]
-    _prefix, sep, rest = local.partition("_")
-    if sep:
+    prefix, sep, rest = local.partition("_")
+    # Only these bridges name a ghost by its number: Messenger's and
+    # Instagram's are account ids (`@facebook_100012345678901`), digits that
+    # would read as a number in no country (19 Oct 2026).
+    if sep and prefix in NUMBER_GHOSTS:
         rest = _unescape(rest)
         if re.fullmatch(r"\+\d{7,15}", rest):
             num = e164(rest, default_region)
@@ -1242,6 +1693,10 @@ def _index() -> dict | None:
         emails: dict[str, set] = {}
         names: dict[str, set] = {}
         display: dict[str, str] = {}
+        card_names: dict[str, set] = {}
+        handles: dict[str, str] = {}
+        bridge_only: set[str] = set()
+        holder: dict[str, str] = {}          # a bridge record's sid → its contact
         for cid, num in conn.execute("SELECT contact, e164 FROM phones"):
             phones.setdefault(num, set()).add(cid)
         for cid, em in conn.execute("SELECT contact, email FROM emails"):
@@ -1249,9 +1704,20 @@ def _index() -> dict | None:
         for cid, name, raw in conn.execute("SELECT id, name, card FROM contacts"):
             display[cid] = name
             c = json.loads(raw)
-            for n in {fold(name)} | {fold(x.get("display") or "") for x in c.get("names") or []}:
-                if n:
-                    names.setdefault(n, set()).add(cid)
+            card_names[cid] = {fold(name)} | {fold(x.get("display") or "")
+                                              for x in c.get("names") or []}
+            card_names[cid].discard("")
+            for n in card_names[cid]:
+                names.setdefault(n, set()).add(cid)
+            for h in c.get("handles") or []:
+                if h.get("id"):
+                    handles[h["id"]] = cid
+            for sid in _bridge_sids(c):
+                holder[sid] = cid
+            if _bridge_only(c):
+                bridge_only.add(cid)
+        dismissed = {(holder[s], other) for s, other, kind in conn.execute(
+            "SELECT source, contact, kind FROM merges") if kind == "dismiss" and s in holder}
         joins: dict[str, str] = {}
         splits: dict[str, set] = {}
         for room, cid, kind in conn.execute("SELECT room, contact, kind FROM overrides"):
@@ -1263,7 +1729,8 @@ def _index() -> dict | None:
         conn.close()
     idx.clear()
     idx.update(gen=gen, checked=now, phones=phones, emails=emails, names=names,
-               display=display, joins=joins, splits=splits)
+               display=display, joins=joins, splits=splits, card_names=card_names,
+               handles=handles, bridge_only=bridge_only, dismissed=dismissed)
     _ROOM_MEMO.clear()
     return idx
 
@@ -1282,14 +1749,17 @@ def _self_ids() -> tuple[set, set]:
     return phones, emails
 
 
-def match_room(room_id: str, members: dict[str, str], skip: set[str]) -> dict | None:
+def match_room(room_id: str, members: dict[str, str], skip: set[str],
+               network: str | None = None) -> dict | None:
     """`{id, name}` of the one contact a room is with, or None.
 
     Each member other than `skip` (the owner, the agent, the bridge bots) is
-    matched by phone, else email, else — the bridge's name for them being
-    the phone's own contact name — a name no other contact has. A room is a
-    contact's when its members match exactly one; a group of several people
-    is no one's. A manual join wins; a split takes that contact out."""
+    matched by the ghost a contact holds (`handles`, the bridged networks'
+    people), else phone, else email, else — the bridge's name for them being
+    the phone's own contact name, so only on a trusted network (or one not
+    named) — a name no other contact has. A room is a contact's when its
+    members match exactly one; a group of several people is no one's. A
+    manual join wins; a split takes that contact out."""
     idx = _index()
     if idx is None:
         return None
@@ -1300,10 +1770,16 @@ def match_room(room_id: str, members: dict[str, str], skip: set[str]) -> dict | 
     reg = region()
     self_phones, self_emails = _self_ids()
     split = idx["splits"].get(room_id, set())
+    by_name = not network or network in trusted_names()
     found: set[str] = set()
     for uid, dn in members.items():
         if uid in skip:
             continue
+        if uid in idx["handles"]:
+            got = {idx["handles"][uid]} - split
+            if got:
+                found |= got
+                continue
         who = identities(uid, dn, reg)
         got: set[str] = set()
         for num in who["phones"] - self_phones:
@@ -1311,7 +1787,7 @@ def match_room(room_id: str, members: dict[str, str], skip: set[str]) -> dict | 
         if not got:
             for em in who["emails"] - self_emails:
                 got |= idx["emails"].get(em, set())
-        if not got and who["name"]:
+        if not got and who["name"] and by_name:
             by_name = idx["names"].get(who["name"], set())
             if len(by_name) == 1:
                 got = set(by_name)
@@ -1351,11 +1827,12 @@ def for_room(r) -> dict | None:
         return None
     with r.lock:
         members = dict(r.members)
-    key = (idx["gen"], r.id, tuple(sorted(members.items())),
+    network = (r.network or {}).get("id") or None
+    key = (idx["gen"], r.id, tuple(sorted(members.items())), network,
            os.environ.get("MEDIA_CONTACTS_SELF") or "")
     if key in _ROOM_MEMO:
         return _ROOM_MEMO[key]
-    got = match_room(r.id, members, _skip_of(r))
+    got = match_room(r.id, members, _skip_of(r), network)
     if len(_ROOM_MEMO) > 2000:
         _ROOM_MEMO.clear()
     _ROOM_MEMO[key] = got
@@ -1705,9 +2182,16 @@ def status() -> dict:
                        "email": (tok or {}).get("email") or None,
                        "signed_in_at": tok.get("obtained_at") if tok else None,
                        **per.get("google", {})},
+            "bridges": {"owner_bridges": sorted(_owner_bridges()), **per.get("bridges", {})},
             "drupal": {"connection": str(_drupal_config_path()), "configured": _drupal_configured(),
                        **per.get("drupal", {})},
             "background": (os.environ.get("MEDIA_CONTACTS") or "1").strip() != "0"}
+
+
+def _owner_bridges() -> set[str]:
+    from . import matrix
+
+    return matrix._bridges() if is_owner() else set()
 
 
 def _drupal_config_path():
@@ -1758,6 +2242,13 @@ def cmd_sync(a) -> int:
         elif s["source"] == "drupal":
             print(f"drupal: {'unchanged' if s['unchanged'] else 'read'} {s['read']} "
                   f"person(s) from the CRM, {s['contacts']} contacts")
+        elif s["source"] == "bridges":
+            if not s["rooms"]:
+                print(f"bridges: no bridged rooms in this process (the canvas reads them), "
+                      f"kept {s['read']} person(s), {s['contacts']} contacts")
+            else:
+                print(f"bridges: {'unchanged' if s['unchanged'] else 'read'} {s['read']} "
+                      f"person(s) from {s['rooms']} room(s), {s['contacts']} contacts")
         else:
             print(f"google {'full' if s['full'] else 'changes'}: {s['changed']} changed, "
                   f"{s['deleted']} gone, {s['contacts']} contacts")

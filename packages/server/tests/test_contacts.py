@@ -497,13 +497,13 @@ def test_routes_shape_and_auth(server, signed_in, rooms):
     # No bearer, ABS down, a guest: test_contract's GATED_GETS.
     res, obj = call(server, "GET", "/contacts?q=mel", headers=AUTH)
     assert res.status == 200 and set(obj) == {"ok", "contacts", "total", "synced_at", "sources"}
-    assert [set(r) for r in obj["contacts"]] == [{"id", "name", "phones", "emails"}]
+    assert [set(r) for r in obj["contacts"]] == [{"id", "name", "phones", "emails", "labels"}]
     mel = obj["contacts"][0]["id"]
     res, obj = call(server, "GET", f"/contacts/{mel}", headers=AUTH)
     assert res.status == 200 and set(obj) == {"ok", "contact"}
     assert set(obj["contact"]) == {"id", "name", "names", "phones", "emails", "addresses",
                                    "organizations", "notes", "sources", "updated", "rooms",
-                                   "crm"}
+                                   "crm", "labels", "handles", "suggestions"}
     assert obj["contact"]["crm"] is None             # no CRM connection here
     assert [x["room"] for x in obj["contact"]["rooms"]] == ["!b:ryer.org"]
     res, obj = call(server, "GET", "/contacts/00000000-0000-0000-0000-000000000000", headers=AUTH)
@@ -684,7 +684,7 @@ def test_records_one_per_person_by_lookup_key():
 
 def test_the_script_reads_only_what_it_needs():
     s = ca.script("abc")
-    assert s.count("content query") == 2 + len(ca.FREE_COLS)
+    assert s.count("content query") == 4 + len(ca.FREE_COLS)      # + the groups, twice
     assert "--projection _id:contact_id:account_type:version --where 'deleted=0'" in s
     assert "mimetype IN ('vnd.android.cursor.item/phone_v2'," in s
     assert "photo" not in s and "@@AM-abc@@ end" in s
