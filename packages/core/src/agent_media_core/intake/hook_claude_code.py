@@ -757,24 +757,13 @@ def _handle_pretooluse(payload: dict) -> int:
     ask = strip_markdown(_format_ask_question(payload.get("tool_input") or {}).strip())
     if not ask:
         return 0
-    # Best-effort: prepend any prose Claude wrote before the question in this
-    # same turn. NOTE (verified 2026-06-25, re-verified 2026-07-31): at PreToolUse fire
-    # time this almost always yields nothing, and it is NOT fixable here. The
-    # PreToolUse payload carries no assistant text (only tool_name/tool_input/
-    # transcript_path/etc.), AND Claude Code does not flush the current turn to
-    # the transcript JSONL until *after* the question is answered — a 4s probe
-    # showed the file frozen, tail ending in the previous tool_result, the lead
-    # text + AskUserQuestion tool_use lines entirely absent. So neither source
-    # has the prose while the modal is up; retrying/waiting can't help. The
-    # working path is for the *caller* to speak the lead via the `say` tool
-    # before invoking AskUserQuestion (see the global CLAUDE.md rule); the
-    # question then queues behind it rather than preempting, because the
-    # playback lock orders by pane — see _order_session in intake/submit.py.
-    # This call is left as a harmless fallback in case a future Claude Code
-    # flushes earlier.
-    # Re-probe (2026-07-31): a live watcher on the transcript saw the lead-text
-    # and AskUserQuestion lines appear together only *after* the answer, 59s
-    # after the modal went up. Still frozen; still not fixable here.
+    # Prepend the prose Claude wrote before the question in this same turn,
+    # read back from the transcript: the PreToolUse payload carries no
+    # assistant text, but since Claude Code writes the turn's text to the
+    # transcript before the tool call (measured 23 Sep 2026; it did not in
+    # June and July), `_ask_lead_text` finds it. The lead is spoken as the
+    # head of the question's own clip — so the caller must NOT `say` it too
+    # (that copy is untagged by session, and answering cannot cut it).
     lead = ""
     tp_raw = (payload.get("transcript_path") or "").strip()
     if tp_raw:
