@@ -427,46 +427,72 @@ def test_project_of_follows_the_layout(monkeypatch):
     assert sessions.project_of("") is None
 
 
-def test_a_project_in_a_group_is_its_own_project(monkeypatch, tmp_path):
-    """~/projects/spl/admin is `p-spl-admin`, not `p-spl`, and a link left at
-    the old path is the project it points at (scratch, 18 Oct 2026)."""
+def _two_roots(monkeypatch, tmp_path):
+    """~/projects (agent-media, a link left at the old path) and a second
+    root listed in project-roots.json, with the group sasonica."""
     from agent_media_core import layout
 
-    root = tmp_path / "projects"
-    for d in ("spl/admin/.git", "spl/sasonica-app/.git", "agent-media/.git"):
-        (root / d).mkdir(parents=True)
-    (root / "sasonica-app").symlink_to("spl/sasonica-app")
-    monkeypatch.setenv("MEDIA_PROJECTS_DIR", str(root))
+    home = tmp_path / "projects"
+    spl = tmp_path / "spl" / "projects"
+    (home / "agent-media" / ".git").mkdir(parents=True)
+    for d in ("sasonica/sasonica-app/.git", "sasonica/sasonica-shell/.git"):
+        (spl / d).mkdir(parents=True)
+    (home / "sasonica-app").symlink_to(spl / "sasonica" / "sasonica-app")
+    (home / "spl").mkdir()                  # 18 Oct's group, left holding links
+    (home / "spl" / "sasonica-app").symlink_to(spl / "sasonica" / "sasonica-app")
+    state = tmp_path / "roots-state"
+    (state / "agent-media").mkdir(parents=True)
+    (state / "agent-media" / "project-roots.json").write_text(json.dumps([str(home), str(spl)]))
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    monkeypatch.setenv("MEDIA_PROJECTS_DIR", str(home))
     monkeypatch.setenv("MEDIA_LAYOUT", layout.PROJECTS)
-    monkeypatch.setattr(layout, "_groups_seen", (0.0, "", {}))
-    assert sessions.project_of(f"{root}/spl/admin") == "p-spl-admin"
-    assert sessions.project_of(f"{root}/spl/admin/.claude/worktrees/x") == "p-spl-admin"
-    assert sessions.project_of(f"{root}/sasonica-app") == "p-spl-sasonica-app"
-    assert sessions.project_of(f"{root}/agent-media") == "p-agent-media"
-    # Filed before the move, under the old name: listed with the new.
-    assert (sessions.project_of("/tmp/x", "/lib/Conversations/p-sasonica-app/A title")
-            == "p-spl-sasonica-app")
+    monkeypatch.setattr(layout, "_index_seen", (0.0, (), {}))
+    return home, spl
+
+
+def test_a_project_in_a_group_keeps_its_own_name(monkeypatch, tmp_path):
+    """~/spl/projects/sasonica/sasonica-app is `p-sasonica-app`, the name it
+    had in ~/projects, and a link left at the old path is the same project
+    (David, 19 Oct 2026)."""
+    home, spl = _two_roots(monkeypatch, tmp_path)
+    app = spl / "sasonica" / "sasonica-app"
+    assert sessions.project_of(str(app)) == "p-sasonica-app"
+    assert sessions.project_of(f"{app}/.claude/worktrees/x") == "p-sasonica-app"
+    assert sessions.project_of(f"{home}/sasonica-app") == "p-sasonica-app"
+    assert sessions.project_of(f"{home}/agent-media") == "p-agent-media"
+    # Filed on 18 Oct under the name it had in ~/projects/spl: listed with the new.
+    assert (sessions.project_of("/tmp/x", "/lib/Conversations/p-spl-sasonica-app/A title")
+            == "p-sasonica-app")
     assert sessions.project_groups() == {
-        "p-spl-admin": {"group": "spl", "name": "admin"},
-        "p-spl-sasonica-app": {"group": "spl", "name": "sasonica-app"}}
+        "p-sasonica-app": {"group": "sasonica", "name": "sasonica-app"},
+        "p-sasonica-shell": {"group": "sasonica", "name": "sasonica-shell"}}
 
 
 def test_a_grouped_projects_docs_are_found_by_its_name(monkeypatch, tmp_path):
-    from agent_media_core import layout
-
     from agent_media_server import doc_read
 
-    root = tmp_path / "projects"
-    for d in ("spl/admin/.git", "agent-media/.git"):
-        (root / d).mkdir(parents=True)
-    monkeypatch.setenv("MEDIA_PROJECTS_DIR", str(root))
-    monkeypatch.setenv("MEDIA_LAYOUT", layout.PROJECTS)
-    monkeypatch.setattr(layout, "_groups_seen", (0.0, "", {}))
-    assert doc_read.project_dir("p-spl-admin") == (root / "spl" / "admin").resolve()
-    assert doc_read.project_dir("p-agent-media") == (root / "agent-media").resolve()
+    home, spl = _two_roots(monkeypatch, tmp_path)
+    assert doc_read.project_dir("p-sasonica-app") == (spl / "sasonica" / "sasonica-app").resolve()
+    assert doc_read.project_dir("p-agent-media") == (home / "agent-media").resolve()
     assert doc_read.project_dir("spl/../agent-media") is None
-    assert doc_read._project_of_rel("spl/admin/docs/x.md") == "spl/admin"
+    assert doc_read._project_of_rel("sasonica/sasonica-app/docs/x.md") == "sasonica/sasonica-app"
     assert doc_read._project_of_rel("agent-media/docs/x.md") == "agent-media"
+
+
+def test_a_root_inside_a_repo_that_ignores_it_may_be_added(monkeypatch, tmp_path):
+    """~/spl is a git repo whose .gitignore has /projects/ (19 Oct 2026)."""
+    import subprocess
+
+    from agent_media_server import project_roots
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    repo = tmp_path / "spl"
+    (repo / "projects").mkdir(parents=True)
+    (repo / "notes").mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / ".gitignore").write_text("/projects/\n")
+    assert project_roots._fit(repo / "projects", []) == {}
+    assert "inside the git repository" in project_roots._fit(repo / "notes", [])["error"]
 
 
 # --- stop and message (§6.12a) --------------------------------------------------------

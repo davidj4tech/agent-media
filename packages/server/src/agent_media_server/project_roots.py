@@ -384,11 +384,29 @@ def _repo_of(target: Path) -> Path | None:
     return None
 
 
+def _ignored_by(repo: Path, target: Path) -> bool:
+    """Whether `repo`'s git ignores `target`: then projects made in it are
+    not filed under that repo (~/spl's `.gitignore` has `/projects/`;
+    David, 19 Oct 2026). A missing git, or any doubt, is "no"."""
+    import subprocess
+
+    try:
+        rel = target.relative_to(repo).as_posix()
+        r = subprocess.run(["git", "-C", str(repo), "check-ignore", "-q", "--no-index", rel + "/"],
+                           capture_output=True, timeout=5)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+    return r.returncode == 0
+
+
 def _fit(target: Path, roots: list[str]) -> dict:
-    """{} when `target` may join `roots`, else 400: in a git work tree (new
-    projects would nest in that repo and be filed under it), or inside or
+    """{} when `target` may join `roots`, else 400: in a git work tree that
+    does not ignore it (new projects would nest in that repo and be filed
+    under it), or inside or
     around a listed root (one project, two roots)."""
     repo = _repo_of(target)
+    if repo and repo != target and _ignored_by(repo, target):
+        repo = None         # ~/spl/projects in the ~/spl repo, which ignores it
     if repo:
         what = "is a git repository" if repo == target else f"is inside the git repository {label(str(repo))}"
         return {"error": f"{label(str(target))} {what}: new projects would nest in it", "status": 400}

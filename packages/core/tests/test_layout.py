@@ -238,55 +238,78 @@ def test_selfcheck_reports_the_layout(desk, monkeypatch):
     assert facts == {"layout": "default", "layout_why": "env: MEDIA_LAYOUT=default"}
 
 
-# --- groups (18 Oct 2026) --------------------------------------------------------
+# --- roots and groups (18–19 Oct 2026) ---------------------------------------------
 
 
 @pytest.fixture
 def grouped(desk, monkeypatch, tmp_path):
-    """~/projects with a group `spl` (admin, sasonica-app), a plain project,
-    a folder of loose files, and a link left at the old path."""
-    root = desk / "projects"
-    for d in ("spl/admin/.git", "spl/sasonica-app/.git", "spl/notes",
-              "agent-media/.git", "loose/files"):
-        (root / d).mkdir(parents=True)
-    (root / "sasonica-app").symlink_to("spl/sasonica-app")
-    monkeypatch.setenv("MEDIA_PROJECTS_DIR", str(root))
-    monkeypatch.setattr(layout, "_groups_seen", (0.0, "", {}))
+    """Two roots: ~/projects (agent-media, loose files, links left at old
+    paths) and ~/spl/projects, listed in project-roots.json, with groups
+    sasonica and somahz — each with an `admin`, so that name is shared."""
+    home_projects = desk / "projects"
+    spl = desk / "spl" / "projects"
+    for d in ("agent-media/.git", "loose/files"):
+        (home_projects / d).mkdir(parents=True)
+    for d in ("sasonica/sasonica-app/.git", "sasonica/sasonica/.git", "sasonica/admin",
+              "somahz/site/.git", "somahz/admin", "tools/.git"):
+        (spl / d).mkdir(parents=True)
+    (home_projects / "sasonica-app").symlink_to(spl / "sasonica" / "sasonica-app")
+    (home_projects / "spl").mkdir()
+    (home_projects / "spl" / "sasonica-app").symlink_to(spl / "sasonica" / "sasonica-app")
+    (home_projects / "sacred-brain").symlink_to(home_projects / "agent-media")
+    state = tmp_path / "state"
+    (state / "agent-media").mkdir(parents=True)
+    (state / "agent-media" / "project-roots.json").write_text(
+        json.dumps([str(home_projects), {"path": str(spl)}]))
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    monkeypatch.setenv("MEDIA_PROJECTS_DIR", str(home_projects))
+    monkeypatch.setattr(layout, "_index_seen", (0.0, (), {}))
     monkeypatch.setenv("MEDIA_LAYOUT", layout.PROJECTS)
-    return root
+    return spl
 
 
 def test_a_folder_of_repos_with_no_git_of_its_own_is_a_group(grouped):
-    # `loose` holds a folder but no repo: not a group. Every folder in a
-    # group is a project, a repo or not.
-    assert layout.project_groups() == {"spl": ["admin", "notes", "sasonica-app"]}
+    # `loose` holds a folder but no repo, and ~/projects/spl only links: not
+    # groups. Every folder in a group is a project, a repo or not.
+    assert layout.project_groups() == {"sasonica": ["admin", "sasonica", "sasonica-app"],
+                                       "somahz": ["admin", "site"]}
+    assert layout.projects_roots() == [str(grouped.parent.parent / "projects"), str(grouped)]
 
 
-def test_a_path_names_its_project_through_its_group_and_links(grouped):
-    assert layout.project_rel(str(grouped / "spl" / "admin")) == "spl/admin"
-    assert layout.project_rel(str(grouped / "spl" / "admin" / "src")) == "spl/admin"
-    assert layout.project_rel(str(grouped / "sasonica-app")) == "spl/sasonica-app"
-    assert layout.project_rel(str(grouped / "agent-media" / "x")) == "agent-media"
+def test_a_path_names_its_project_through_its_root_group_and_links(grouped):
+    home = grouped.parent.parent
+    app = grouped / "sasonica" / "sasonica-app"
+    assert layout.project_rel(str(app / "src")) == "sasonica/sasonica-app"
+    assert layout.project_rel(str(home / "projects" / "sasonica-app")) == "sasonica/sasonica-app"
+    assert layout.project_rel(str(grouped / "tools")) == "tools"
+    assert layout.project_rel(str(grouped / "sasonica")) == ""      # a group is no project
     assert layout.project_rel(str(grouped)) == ""
     assert layout.project_rel("/elsewhere/admin") == ""
 
 
-def test_on_davids_desk_a_grouped_project_is_its_tmux_session(grouped):
-    assert layout.encoded_project_label("spl/admin") == "p-spl-admin"
-    assert layout.place_host(str(grouped / "spl" / "admin")) == "p-spl-admin"
-    assert layout.project_parts("p-spl-admin") == ("spl", "admin")
+def test_on_davids_desk_a_repo_keeps_its_short_name_wherever_it_lives(grouped):
+    app = grouped / "sasonica" / "sasonica-app"
+    assert layout.project_name(str(app)) == "p-sasonica-app"
+    assert layout.place_host(str(app)) == "p-sasonica-app"
+    assert layout.project_name(str(grouped / "tools")) == "p-tools"
+    # Two groups have an `admin`: the group tells them apart.
+    assert layout.project_name(str(grouped / "somahz" / "admin")) == "p-somahz-admin"
+    assert layout.project_parts("p-sasonica-app") == ("sasonica", "sasonica-app")
     assert layout.project_parts("p-agent-media") == ("", "p-agent-media")
+    assert layout.project_dir("p-sasonica-app") == str(app)
 
 
-def test_a_series_named_for_an_old_link_is_the_project_it_points_at(grouped):
-    assert layout.canonical_project("p-sasonica-app") == "p-spl-sasonica-app"
+def test_old_names_are_the_project_they_point_at(grouped):
+    assert layout.canonical_project("p-spl-sasonica-app") == "p-sasonica-app"   # 18 Oct's
+    assert layout.canonical_project("p-sacred-brain") == "p-agent-media"
+    assert layout.canonical_project("p-sasonica-sasonica-app") == "p-sasonica-app"
     assert layout.canonical_project("p-agent-media") == "p-agent-media"
     assert layout.canonical_project("org") == "org"
 
 
 def test_the_default_layout_names_a_grouped_folder_group_slash_name(grouped, monkeypatch):
     monkeypatch.setenv("MEDIA_LAYOUT", layout.DEFAULT)
-    assert layout.project_of_path(str(grouped / "spl" / "admin")) == "spl/admin"
-    assert layout.project_of_path(str(grouped / "agent-media")) == "agent-media"
-    assert layout.project_parts("spl/admin") == ("spl", "admin")
-    assert layout.canonical_project("sasonica-app") == "spl/sasonica-app"
+    assert layout.project_of_path(str(grouped / "sasonica" / "sasonica-app")) == "sasonica/sasonica-app"
+    assert layout.project_of_path(str(grouped / "tools")) == "tools"
+    assert layout.project_parts("sasonica/sasonica-app") == ("sasonica", "sasonica-app")
+    assert layout.canonical_project("sasonica-app") == "sasonica/sasonica-app"

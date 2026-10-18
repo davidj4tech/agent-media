@@ -30,11 +30,14 @@ _ORG_TITLE = re.compile(r"^#\+title:\s*(.+)$", re.I | re.M)
 
 def roots() -> list[Path]:
     out = []
-    for r in [new_project.root(), *docs.doc_roots()]:
+    for r in [new_project.root(), *(Path(p) for p in layout.projects_roots()),
+              *docs.doc_roots()]:
         try:
-            out.append(r.expanduser().resolve())
+            r = r.expanduser().resolve()
         except OSError:
             continue
+        if r not in out:
+            out.append(r)
     return out
 
 
@@ -123,7 +126,7 @@ _LABEL_PREFIXES = ("p-", "proj-")
 
 def _project_of_rel(rel: str) -> str:
     """The project folder a path under a reader root is in: its first part,
-    or the first two for one in a group (`spl/admin/docs/x.md`)."""
+    or the first two for one in a group (`sasonica/sasonica-app/docs/x.md`)."""
     parts = rel.split("/")
     if len(parts) > 2 and parts[0] in layout.project_groups():
         return f"{parts[0]}/{parts[1]}"
@@ -144,17 +147,17 @@ def project_dir(project: str = "", path: str = "") -> Path | None:
         cand = top.resolve() if top else cand
     elif project:
         name = project.strip()
-        group, kid = layout.project_parts(name)
-        if group:
-            name = f"{group}/{kid}"         # p-spl-admin: ~/projects/spl/admin
-        for pre in _LABEL_PREFIXES:
-            if name.startswith(pre) and (new_project.root() / name[len(pre):]).is_dir():
-                name = name[len(pre):]
-                break
-        if (not name or name.startswith(".") or ".." in name.split("/")
-                or name.count("/") > (1 if group else 0)):
-            return None
-        cand = (new_project.root() / name).resolve()
+        known = layout.project_dir(name)    # any root, a group too: p-sasonica-app
+        if known:
+            cand = Path(known).resolve()
+        else:
+            for pre in _LABEL_PREFIXES:
+                if name.startswith(pre) and (new_project.root() / name[len(pre):]).is_dir():
+                    name = name[len(pre):]
+                    break
+            if not name or "/" in name or name.startswith("."):
+                return None
+            cand = (new_project.root() / name).resolve()
     if not cand or not cand.is_dir():
         return None
     for base in roots():

@@ -300,8 +300,8 @@ Everything a message can be pointed at.
   own session files), and the project that names, as the layout calls one
   (`sessions.project_of`, `agent_media_core/layout.py`). David's layout: the
   series its shelf folder is filed under (`p-agent-media`), else `p-<name>`
-  for a directory under `~/projects` (a worktree inside one counts; one in
-  a group is `p-<group>-<name>`, see `project_groups`, and a link left at an
+  for a directory in a project root (a worktree inside one counts; one in
+  a group is `p-<folder>` too, see `project_groups`, and a link left at an
   old path names the project it points at), else
   the directory's own name (`org`, `scratch`; 24 Sep 2026), `null` for home.
   The shelf's catch-all folder `conversation` (a thread with no workspace)
@@ -330,17 +330,22 @@ Everything a message can be pointed at.
   and places ran in, each counted once, by the same rule as `mail`.
   Projects with none are left out; the key is **absent** when the mailbox
   can't be read, and from older servers. About 50 ms cold, 10 ms warm.
-- `project_groups` (18 Oct 2026): `{project: {"group", "name"}}` for every
-  project that sits in a group, keyed like the rows' `project`
-  (`"p-spl-admin": {"group": "spl", "name": "admin"}`). A group is a folder
-  under the projects root (`MEDIA_PROJECTS_DIR`, else `~/projects`) with no
-  `.git` of its own holding at least one folder that has one; every folder
-  in it is then a project. Detected from the folders, nothing configured
-  (`layout.project_groups`). The app draws the group as a heading with its
-  projects nested under it (By-project list, project strip, move picker)
-  and titles a thread `group / name`; a project not in the map stands
-  alone. Default layout keys are `group/name`. `{}` when there are none;
-  **absent** from older servers.
+- `project_groups` (18 Oct 2026; every root 19 Oct): `{project: {"group",
+  "name"}}` for every project that sits in a group, keyed like the rows'
+  `project` (`"p-sasonica-app": {"group": "sasonica", "name":
+  "sasonica-app"}`). Projects live in the project roots (§6.24: the stored
+  list, else `MEDIA_PROJECTS_DIR`, else `~/projects`). A group is a folder
+  in a root with no `.git` of its own holding at least one folder that has
+  one; every folder in it is then a project. Detected from the folders,
+  nothing configured (`layout._index`). On David's desk a project in a
+  group keeps its folder's name, `p-<folder>`, wherever it lives
+  (`p-<group>-<folder>` only when two projects share a folder name); a link
+  left at an old path, and a name a project went by before a move, list as
+  the project they point at (`layout.canonical_project`). The app draws the
+  group as a heading with its projects nested under it (By-project list,
+  project strip, move picker) and titles a thread `group / name`; a project
+  not in the map stands alone. Default layout keys are `group/name`. `{}`
+  when there are none; **absent** from older servers.
 - **Headless rows** (`MEDIA_HEADLESS`, §17): the sessions `media-sessiond`
   holds are listed after the live pane sessions — the running ones, then up
   to 20 ended ones (parked or closed), newest first — with the same keys
@@ -3818,8 +3823,10 @@ Edge cases (18 Oct 2026), all on `POST /projects/roots` (with or without
   than the root was: it would be made on the wrong disk. A folder that has
   moved to a new disk for good is removed and added again.
 - **Inside a repo or another root** → 400: in a git work tree (a `.git` in
-  it or a folder above it, short of home), inside a listed root, or holding
-  one.
+  it or a folder above it, short of home) unless that repo's git ignores it
+  (`git check-ignore`: `~/spl/projects` in the `~/spl` repo, whose
+  `.gitignore` has `/projects/`; 19 Oct 2026), inside a listed root, or
+  holding one.
 - **Hidden folders** → 400: any component under home starting with `.`
   (`~/.config`, `~/work/.x`), judged after resolving links.
 - **Failure partway.** Made one level at a time; on a failure every level

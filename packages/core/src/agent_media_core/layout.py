@@ -205,11 +205,11 @@ def fresh_target() -> tuple[str, str, str]:
 
 def place_host(path: str) -> str:
     """The tmux session a chat opened in directory `path` goes into: on
-    David's desk the project's (`p-spl-admin` for ~/projects/spl/admin),
+    David's desk the project's (`p-sasonica-app` for
+    ~/spl/projects/sasonica/sasonica-app),
     else the folder's name, as tmux-organise-panes would file it."""
     if projects():
-        rel = project_rel(path)
-        return encoded_project_label(rel) if rel else os.path.basename(path)
+        return project_name(path) or os.path.basename(path)
     return (os.environ.get("MEDIA_ASK_TMUX") or "").strip() or CHAT_TMUX
 
 
@@ -279,34 +279,69 @@ def series_name(host: str) -> str:
 
 
 def encoded_project_label(tail: str) -> str:
-    """The series for a transcript under ~/projects/<tail> that recorded no
-    tmux session: `p-<tail>` on David's desk (what his tmux session for it is
-    called, slashes as dashes: `spl/admin` → `p-spl-admin`, as
-    tmux-organise-panes names it), `<tail>` elsewhere."""
+    """The project name for a folder `<tail>` under a projects root:
+    `p-<tail>` on David's desk (what his tmux session for it is called),
+    `<tail>` elsewhere. A project in a group (`sasonica/sasonica-app`) is
+    named by `project_name` (`p-sasonica-app`)."""
     tail = tail.strip().strip("/")
     if not tail:
         return ""
-    return "p-" + tail.replace("/", "-") if projects() else tail
+    if "/" in tail:
+        group, _, kid = tail.partition("/")
+        return _grouped_name(group, kid.split("/", 1)[0], _index())
+    return f"p-{tail}" if projects() else tail
 
 
-# --- groups ------------------------------------------------------------------------
+# --- roots and groups ----------------------------------------------------------------
 #
-# A folder under the projects root that holds project folders and is not a
-# project itself (no `.git`) is a group: ~/projects/spl. Each folder in it is
-# a project of its own, `spl/admin`, whose tmux session is `p-spl-admin`.
-# Nothing is configured: the folders say. A link left at an old path
-# (~/projects/sasonica-app → spl/sasonica-app) is the project it points at.
-# David, 18 Oct 2026.
+# Projects live in project roots: ~/projects, and any other folder listed in
+# the server's project-roots.json (~/spl/projects). A folder in a root that
+# holds project folders and is not a project itself (no `.git`) is a group:
+# ~/spl/projects/sasonica. Each folder in a group is a project of its own.
+# Nothing about groups is configured: the folders say.
+#
+# Names, David's desk: `p-<folder>` for every project, grouped or not
+# (`p-sasonica-app` for ~/spl/projects/sasonica/sasonica-app), so a repo
+# keeps the name its tmux session, shelf and history already have wherever
+# it moves; `p-<group>-<folder>` only when two projects share a folder name.
+# Default layout: `<group>/<folder>`, else the folder's name.
+#
+# A link in a root or a group (~/projects/sasonica-app, left at an old
+# path) is the project it points at, and so is any name it went by
+# (`p-sasonica-app`, `p-spl-sasonica-app` from 18 Oct): `canonical_project`.
+# David, 18–19 Oct 2026.
 
-#: How long one look at the projects root is trusted (it is read per request).
+#: How long one look at the roots is trusted (it is read per request).
 GROUPS_TTL_S = 5.0
-_groups_seen: tuple[float, str, dict] = (0.0, "", {})
+_index_seen: tuple[float, tuple, dict] = (0.0, (), {})
 
 
 def projects_root() -> str:
-    """Where projects live: MEDIA_PROJECTS_DIR, else ~/projects."""
+    """The default projects root: MEDIA_PROJECTS_DIR, else ~/projects."""
     return os.path.expanduser((os.environ.get("MEDIA_PROJECTS_DIR") or "").strip()
                               or "~/projects").rstrip("/")
+
+
+def projects_roots() -> list[str]:
+    """Every projects root, the default first: the server's list
+    (`<state>/project-roots.json`, project_roots.py), else the default.
+    Folders that are not there are left out."""
+    from . import harness_profiles
+
+    raw: list = []
+    try:
+        data = json.loads((harness_profiles.state_dir() / "project-roots.json").read_text())
+        raw = data if isinstance(data, list) else []
+    except (OSError, ValueError):
+        pass
+    paths = [r if isinstance(r, str) else r.get("path") if isinstance(r, dict) else None
+             for r in raw]
+    out: list[str] = []
+    for p in [*(x for x in paths if isinstance(x, str) and x.strip()), projects_root()]:
+        p = os.path.expanduser(p).rstrip("/")
+        if os.path.isdir(p) and p not in out:
+            out.append(p)
+    return out
 
 
 def _child_dirs(path: str) -> list[str]:
@@ -319,74 +354,150 @@ def _child_dirs(path: str) -> list[str]:
         return []
 
 
-def project_groups() -> dict[str, list[str]]:
-    """`{group: [project folder, …]}` under the projects root.
+def _child_links(path: str) -> list[str]:
+    try:
+        with os.scandir(path) as it:
+            return sorted(e.name for e in it if not e.name.startswith(".") and e.is_symlink())
+    except OSError:
+        return []
 
-    A group has no `.git` of its own and at least one folder in it that has
-    one; then every folder in it is a project.
-    """
-    global _groups_seen
-    root = projects_root()
-    at, seen_root, groups = _groups_seen
-    if seen_root == root and time.monotonic() - at < GROUPS_TTL_S:
-        return groups
-    groups = {}
-    for name in _child_dirs(root):
-        path = os.path.join(root, name)
-        if os.path.exists(os.path.join(path, ".git")):
-            continue
-        kids = _child_dirs(path)
-        if any(os.path.exists(os.path.join(path, k, ".git")) for k in kids):
-            groups[name] = kids
-    _groups_seen = (time.monotonic(), root, groups)
-    return groups
+
+def _is_group(path: str) -> bool:
+    """No `.git` of its own, and at least one folder in it that has one."""
+    if os.path.exists(os.path.join(path, ".git")):
+        return False
+    return any(os.path.exists(os.path.join(path, k, ".git")) for k in _child_dirs(path))
+
+
+def _grouped_name(group: str, kid: str, idx: dict) -> str:
+    if not projects():
+        return f"{group}/{kid}"
+    return f"p-{group}-{kid}" if idx.get("kids", {}).get(kid, 0) > 1 else f"p-{kid}"
+
+
+def _index() -> dict:
+    """One look at the roots: `projects` ({name: {root, rel, group, folder,
+    path}}), `groups` ({group: [folder, …]}), `aliases` ({old name: name})
+    and `kids` (how many projects have each folder name)."""
+    global _index_seen
+    roots = projects_roots()
+    key = (tuple(roots), projects())
+    at, seen_key, idx = _index_seen
+    if seen_key == key and time.monotonic() - at < GROUPS_TTL_S:
+        return idx
+    found: list[tuple[str, str, str]] = []           # (root, group, folder)
+    groups: dict[str, list[str]] = {}
+    for root in roots:
+        for name in _child_dirs(root):
+            path = os.path.join(root, name)
+            if _is_group(path):
+                kids = _child_dirs(path)
+                groups.setdefault(name, []).extend(k for k in kids if k not in groups.get(name, []))
+                found += [(root, name, k) for k in kids]
+            else:
+                found.append((root, "", name))
+    kids: dict[str, int] = {}
+    for _r, _g, k in found:
+        kids[k] = kids.get(k, 0) + 1
+    idx = {"kids": kids, "groups": groups, "projects": {}, "aliases": {}, "by_path": {}}
+    for root, group, folder in found:
+        name = _grouped_name(group, folder, idx) if group else (
+            f"p-{folder}" if projects() else folder)
+        path = os.path.join(root, group, folder) if group else os.path.join(root, folder)
+        idx["projects"][name] = {"root": root, "rel": f"{group}/{folder}" if group else folder,
+                                 "group": group, "folder": folder, "path": path}
+        idx["by_path"][os.path.realpath(path)] = name
+        if group and projects():
+            idx["aliases"].setdefault(f"p-{group}-{folder}", name)   # the 18 Oct name
+    # Links at old paths, in a root or in a folder of one that is no project
+    # (a group, or one left holding only links: ~/projects/spl after the
+    # move): the project they point at.
+    pre = "p-" if projects() else ""
+    for root in roots:
+        spots = [(root, "")] + [(os.path.join(root, d), d) for d in _child_dirs(root)
+                                if not os.path.exists(os.path.join(root, d, ".git"))]
+        for where, group in spots:
+            for link in _child_links(where):
+                target = idx["by_path"].get(os.path.realpath(os.path.join(where, link)))
+                if not target:
+                    continue
+                for alias in ([f"{pre}{group}-{link}", f"{pre}{link}"] if group and pre
+                              else [f"{group}/{link}", link] if group else [f"{pre}{link}"]):
+                    if alias != target and alias not in idx["projects"]:
+                        idx["aliases"].setdefault(alias, target)
+    _index_seen = (time.monotonic(), key, idx)
+    return idx
+
+
+def project_groups() -> dict[str, list[str]]:
+    """`{group: [project folder, …]}` across the roots."""
+    return _index()["groups"]
+
+
+def _locate(path: str) -> tuple[str, str, str] | None:
+    """`(root, group, folder)` of the project `path` is in (a worktree or
+    folder inside one counts as it), links followed; None outside the roots
+    or for a root or group itself."""
+    if not path:
+        return None
+    idx = _index()
+    p = os.path.expanduser(path)
+    roots = projects_roots()
+    for base in (os.path.realpath(p), os.path.normpath(p)):
+        for root in roots:
+            for r in (os.path.realpath(root), root):
+                if not base.startswith(r + "/"):
+                    continue
+                parts = base[len(r) + 1:].split("/")
+                if parts[0] in idx["groups"] and _is_group(os.path.join(r, parts[0])):
+                    return (root, parts[0], parts[1]) if len(parts) > 1 else None
+                return root, "", parts[0]
+    return None
 
 
 def project_rel(path: str) -> str:
-    """The project `path` is in, relative to the projects root: `agent-media`,
-    `spl/admin` (a worktree or folder inside either counts as it), or "" for
-    a path outside the root or the root itself. Links are followed, so the
-    old ~/projects/sasonica-app names `spl/sasonica-app`."""
-    if not path:
+    """The project `path` is in, relative to its root: `agent-media`,
+    `sasonica/sasonica-app`, or "" outside the roots. Links are followed."""
+    hit = _locate(path)
+    if not hit:
         return ""
-    root = projects_root()
-    real_root = os.path.realpath(root)
-    p = os.path.expanduser(path)
-    for base in (os.path.realpath(p), os.path.normpath(p)):
-        for r in (real_root, root):
-            if base.startswith(r + "/"):
-                parts = base[len(r) + 1:].split("/")
-                if len(parts) > 1 and parts[0] in project_groups():
-                    return f"{parts[0]}/{parts[1]}"
-                return parts[0]
-    return ""
+    _root, group, folder = hit
+    return f"{group}/{folder}" if group else folder
+
+
+def project_name(path: str) -> str:
+    """The name of the project `path` is in (`p-sasonica-app` on David's
+    desk), or "" outside the roots."""
+    hit = _locate(path)
+    if not hit:
+        return ""
+    _root, group, folder = hit
+    if group:
+        return _grouped_name(group, folder, _index())
+    return f"p-{folder}" if projects() else folder
 
 
 def project_parts(project: str) -> tuple[str, str]:
-    """`(group, name)` for a project in a group (`p-spl-admin` on David's
-    desk, `spl/admin` elsewhere), else `("", project)`."""
-    for group, kids in project_groups().items():
-        for kid in kids:
-            if project == encoded_project_label(f"{group}/{kid}"):
-                return group, kid
+    """`(group, folder)` for a project in a group, else `("", project)`."""
+    row = _index()["projects"].get(canonical_project(project))
+    if row and row["group"]:
+        return row["group"], row["folder"]
     return "", project
 
 
+def project_dir(project: str) -> str:
+    """The folder of a project known by name, else ""."""
+    row = _index()["projects"].get(canonical_project(project))
+    return row["path"] if row else ""
+
+
 def canonical_project(project: str) -> str:
-    """The name of the project `project` is now. A series named for a path
-    that has since become a link into a group (`p-sasonica-app`, filed before
-    the repo moved to spl/) is the sub-project it points at
-    (`p-spl-sasonica-app`), so old and new threads list together."""
+    """The name `project` goes by now: a name from before a move (a link
+    left at the old path, or 18 Oct's `p-<group>-<folder>`) is the project
+    it points at, so old and new threads list together."""
     if not project:
         return project
-    tail = project[2:] if projects() and project.startswith("p-") else project
-    if not tail:
-        return project
-    path = os.path.join(projects_root(), tail)
-    if not os.path.islink(path):
-        return project
-    rel = project_rel(path)
-    return encoded_project_label(rel) if rel and rel != tail else project
+    return _index()["aliases"].get(project, project)
 
 
 # --- writing it ------------------------------------------------------------------

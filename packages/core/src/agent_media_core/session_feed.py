@@ -256,6 +256,15 @@ def workspace_for(session: str, ts: list[Turn]) -> str:
             return layout.project_of_path(harnesses.cwd_of(session)) or name
         return layout.series_name(name)
 
+    # The folder it ran in, where that is a project in a root: exact, where
+    # the encoded directory name below has to guess (and cannot tell a group
+    # from a hyphen: ~/spl/projects/sasonica/sasonica-app).
+    from . import harnesses, layout
+
+    named = layout.project_name(harnesses.cwd_of(session) or "")
+    if named:
+        return named
+
     from .conversation import transcript
 
     path = transcript(session)

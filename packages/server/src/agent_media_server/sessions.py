@@ -333,9 +333,9 @@ def project_of(cwd: str, folder: str = "") -> str | None:
 
     David's layout: the series its shelf folder is filed under
     (`p-agent-media`), else `p-<name>` for a directory under ~/projects (a
-    worktree inside one counts as that project; one in a group is
-    `p-<group>-<name>`, and a link at an old path is where it points:
-    `layout.project_rel`), else the name of the
+    worktree inside one counts as that project; so do the other project
+    roots, a project in a group is `p-<folder>` too, and a link at an old
+    path is where it points: `layout.project_name`), else the name of the
     directory it runs in (`org`, `scratch` — the name its tmux session has
     when it has one); home itself names no project. The shelf's catch-all
     folder (`book_tracks.UNFILED`, where a conversation with no workspace
@@ -347,9 +347,9 @@ def project_of(cwd: str, folder: str = "") -> str | None:
         series = Path(folder).parent.name if folder else ""
         if series and series != book_tracks.UNFILED:
             return layout.canonical_project(series)
-        rel = layout.project_rel(cwd)
-        if rel:
-            return layout.encoded_project_label(rel) or None
+        named = layout.project_name(cwd)
+        if named:
+            return named
         root = layout.projects_root()
         home = os.path.expanduser("~")
         if cwd and cwd.rstrip("/") not in (home, root):
@@ -859,13 +859,14 @@ def targets(bearer: str, history: str = "") -> tuple[bool, dict]:
 
 def project_groups() -> dict[str, dict]:
     """`{project: {"group", "name"}}` for every project in a group
-    (agent_media_core/layout.py): `p-spl-admin` → spl / admin. The app nests
+    (agent_media_core/layout.py): `p-sasonica-app` → sasonica /
+    sasonica-app. The app nests
     them under the group's heading and titles a thread `spl / admin`; a
     project not named here stands alone."""
     from agent_media_core import layout
 
-    return {layout.encoded_project_label(f"{g}/{k}"): {"group": g, "name": k}
-            for g, kids in layout.project_groups().items() for k in kids}
+    return {name: {"group": row["group"], "name": row["folder"]}
+            for name, row in layout._index()["projects"].items() if row["group"]}
 
 
 def _manifest_of(session: str) -> dict:
