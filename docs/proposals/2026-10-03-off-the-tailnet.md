@@ -33,7 +33,10 @@ hostname is per-install:
     are best-effort and have no SLA, which is fine for a lookup but worth
     watching.
   - **Relay.** The server holds an outbound WebSocket to a Durable Object
-    per install, and the app talks to `<id>.sasonica.com`. This gives a
+    per install, and the app talks to `<id>.sasonica.com`. (Before it hands out
+    names: cms.sasonica.com's cookies host-only and `__Host-`, since each
+    `<id>` is a host its owner controls — `2026-10-17-contacts.md`,
+    "Where contacts live".) This gives a
     stable name with no cloudflared at all, which fits the server on the
     phone (2026-09-27 proposal), where running cloudflared is awkward. The
     costs: Sasonica carries the traffic (speech and SSE are small, uploads
