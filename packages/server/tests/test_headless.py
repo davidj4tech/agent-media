@@ -453,6 +453,81 @@ def test_short_memory_parks_an_idle_session_or_refuses_saying_so(host, monkeypat
     assert "low on memory (600 MB free)" in d["error"]
 
 
+def _task(host, sid, sub, **kw):
+    """One `system/task_*` event, as the CLI sends it, fed to the reader."""
+    s = host.sup.sessions[sid]
+    host.sup._on_event(s, {"type": "system", "subtype": sub, "task_id": "a3f6",
+                           "tool_use_id": "toolu_agent", **kw})
+
+
+def test_a_background_task_keeps_a_session_from_parking_until_it_ends(host, monkeypatch):
+    sid = start(host, "reply: a")
+    wait_for(lambda: state(host, sid) == "waiting")
+    monkeypatch.setenv("MEDIA_SESSIOND_IDLE", "0")
+    _task(host, sid, "task_started", task_type="local_agent", is_backgrounded=True)
+    assert host.sup.get(sid)["tasks"] == 1
+    assert host.sup.park_idle(time.time() + 5) == []
+    assert host.sup.get(sid)["live"]
+    _task(host, sid, "task_progress", last_tool_name="Bash")
+    assert host.sup.park_idle(time.time() + 5) == []
+    _task(host, sid, "task_notification", status="completed")
+    assert host.sup.get(sid)["tasks"] == 0
+    assert host.sup.park_idle(time.time() + 5) == [sid]
+    wait_for(lambda: state(host, sid) == "parked")
+
+
+def test_idle_counts_from_the_last_task_activity(host, monkeypatch):
+    sid = start(host, "reply: a")
+    wait_for(lambda: state(host, sid) == "waiting")
+    monkeypatch.setenv("MEDIA_SESSIOND_IDLE", "60")
+    _task(host, sid, "task_started", is_backgrounded=True)
+    _task(host, sid, "task_notification", status="completed")
+    assert host.sup.park_idle(time.time() + 5) == []      # it only just ended
+    assert host.sup.park_idle(time.time() + 120) == [sid]
+
+
+def test_progress_refreshes_a_task_and_a_stale_one_does_not_hold(host, monkeypatch):
+    sid = start(host, "reply: a")
+    wait_for(lambda: state(host, sid) == "waiting")
+    monkeypatch.setenv("MEDIA_SESSIOND_IDLE", "0")
+    monkeypatch.setenv("MEDIA_SESSIOND_TASK_STALE_S", "100")
+    s = host.sup.sessions[sid]
+    _task(host, sid, "task_started", is_backgrounded=True)
+    s.tasks["a3f6"] = time.time() - 500          # unheard of for a while
+    assert host.sup.get(sid)["tasks"] == 0
+    _task(host, sid, "task_progress")
+    assert host.sup.get(sid)["tasks"] == 1
+    assert host.sup.park_idle(time.time() + 5) == []
+    # Its notification lost: past the stale limit it no longer holds.
+    assert host.sup.park_idle(time.time() + 200) == [sid]
+    wait_for(lambda: state(host, sid) == "parked")
+    assert host.sup.sessions[sid].tasks == {}
+
+
+def test_a_final_task_updated_ends_a_task(host, monkeypatch):
+    sid = start(host, "reply: a")
+    wait_for(lambda: state(host, sid) == "waiting")
+    _task(host, sid, "task_started", is_backgrounded=True)
+    _task(host, sid, "task_updated", patch={"status": "running"})
+    assert host.sup.get(sid)["tasks"] == 1
+    _task(host, sid, "task_updated", patch={"status": "completed"})
+    assert host.sup.get(sid)["tasks"] == 0
+
+
+def test_a_full_host_does_not_park_a_session_with_a_task(host, monkeypatch):
+    monkeypatch.setenv("MEDIA_SESSIOND_MAX", "1")
+    a = start(host, "reply: a")
+    wait_for(lambda: state(host, a) == "waiting")
+    _task(host, a, "task_started", task_type="local_agent", is_backgrounded=True)
+    ok, d = driver.headless_driver().start(agent="claude", cwd=str(host.work), text="reply: b")
+    assert not ok and d["status"] == 503 and d["code"] == "busy"
+    assert host.sup.get(a)["live"]
+    _task(host, a, "task_notification", status="completed")
+    b = start(host, "reply: b")
+    wait_for(lambda: state(host, a) == "parked")
+    wait_for(lambda: last_text(host, b) == "b")
+
+
 def test_resume_brings_a_parked_session_back_saying_nothing(host, monkeypatch):
     sid = start(host, "reply: a")
     wait_for(lambda: state(host, sid) == "waiting")

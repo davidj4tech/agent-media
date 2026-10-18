@@ -43,11 +43,19 @@ What it does per session:
 * **parks** a session that has been waiting `MEDIA_SESSIOND_IDLE` seconds
   (default 1800) — stdin closed, the process gone, the transcript on disk —
   and resumes it with `--resume` on the next message. Never one waiting on an
-  approval, working, or holding queued messages. At most `MEDIA_SESSIOND_MAX`
+  approval, working, holding queued messages, or with a task in flight: a
+  background subagent outlives the turn that started it (`task_started`, then
+  `task_progress`, then `task_notification` when it ends), and on 18 Oct 2026
+  parking one 35 minutes in killed it mid-work. Each task is kept from its
+  `task_started` until its `task_notification` (or a `task_updated` to a
+  final status) or the process exits; one unheard of for
+  `MEDIA_SESSIOND_TASK_STALE_S` (default 3600) no longer counts, so a lost
+  notification cannot pin a session. Idle counts from the last event, which
+  a task's progress is too. The record shows `tasks`, how many count. At most `MEDIA_SESSIOND_MAX`
   (default 6) run at once, and fewer when the host is short of memory: below
   `MEDIA_SESSIOND_MIN_FREE_MB` available (default 1024) there is no room for
-  another. Either way one more parks the least recently used idle one, or is
-  refused with a sentence when none is idle.
+  another. Either way one more parks the least recently used idle one (by
+  the same test), or is refused with a sentence when none is idle.
 
 It writes nothing to tmux. Transcripts land where Claude Code puts them
 (`~/.claude/projects/…`), so the canvas's transcript reader works unchanged.
@@ -74,7 +82,7 @@ Ops (request `{"op", …}` → `{"ok": true, …}` or `{"ok": false, "error",
 session_settings.py).
 
 Config (env): MEDIA_SESSIOND_SOCKET, MEDIA_SESSIOND_IDLE, MEDIA_SESSIOND_MAX,
-MEDIA_SESSIOND_MIN_FREE_MB, MEDIA_SESSIOND_BACKGROUND_AFTER,
+MEDIA_SESSIOND_MIN_FREE_MB, MEDIA_SESSIOND_BACKGROUND_AFTER, MEDIA_SESSIOND_TASK_STALE_S,
 MEDIA_SESSIOND_CLOSE_GRACE, MEDIA_SESSIOND_CLAUDE (the binary; default
 `harnesses.program("claude")`), MEDIA_HEADLESS_MODEL (`--model`),
 MEDIA_HEADLESS_PERMISSIONS (`strict` | `normal`, see permissions.py),
@@ -127,6 +135,14 @@ def _env_f(name: str, default: float) -> float:
 
 def idle_s() -> float:
     return _env_f("MEDIA_SESSIOND_IDLE", 1800.0)
+
+
+def task_stale_s() -> float:
+    """How long a task may go unheard before it no longer keeps its session
+    from parking: a lost `task_notification` must not pin one forever. A
+    subagent sends `task_progress` per message it gets, but one deep in a long
+    command says nothing meanwhile (35 min on 18 Oct 2026), hence an hour."""
+    return _env_f("MEDIA_SESSIOND_TASK_STALE_S", 3600.0)
 
 
 def max_live() -> int:
@@ -293,6 +309,12 @@ class Session:
         #: tool_use_id → when it started; and those asked to background.
         self.foreground: dict[str, float] = {}
         self.backgrounded: set[str] = set()
+        #: Every task in flight, foreground or background (a subagent, a
+        #: background Bash): task_id → when last heard of (`task_started`,
+        #: `task_progress`, `task_updated`). A session with one is not idle.
+        self.tasks: dict[str, float] = {}
+        #: The task count park_idle last logged holding this session for.
+        self.park_held = 0
         self.background_rids: set[str] = set()
         self.background_timer: threading.Timer | None = None
         self.acked: set[str] = set()
@@ -319,6 +341,16 @@ class Session:
         """Live and staying so: not being parked or closed."""
         return self.live and not self.parking and not self.closing
 
+    def active_tasks(self, now: float | None = None) -> int:
+        """Tasks heard of within `task_stale_s()`."""
+        now = now or time.time()
+        stale = task_stale_s()
+        return sum(1 for at in self.tasks.values() if now - at < stale)
+
+    def idle_since(self) -> float:
+        """When it last did anything: its last event or its newest task's."""
+        return max([self.last_event_at, *self.tasks.values()])
+
     def set_state(self, state: str) -> None:
         if state != self.state:
             self.state = state
@@ -336,7 +368,8 @@ class Session:
                 "pid": self.proc.pid if self.live else None, "exit_code": self.exit_code,
                 "pending": list(self.pending.values()), "lost": self.lost,
                 "queued": sorted(self.queued), "first_text": self.first_text,
-                "turns": self.turns, "seq": self.seq, "last_result": self.last_result}
+                "turns": self.turns, "seq": self.seq, "last_result": self.last_result,
+                "tasks": self.active_tasks()}
 
     def view(self) -> dict:
         return {**self.record(), "live": self.live}
@@ -375,6 +408,16 @@ def _compact(obj: dict) -> dict:
     if obj.get("type") == "user" and "tool_use_result" in obj:
         return {k: v for k, v in obj.items() if k != "tool_use_result"}
     return obj
+
+
+#: `task_updated` patch statuses after which a task is over.
+_TASK_DONE = frozenset({"completed", "failed", "killed", "stopped", "cancelled", "error"})
+
+
+def _task_key(obj: dict) -> str:
+    """A task's name across its `task_*` events: its task_id, else the tool
+    call that started it."""
+    return str(obj.get("task_id") or obj.get("tool_use_id") or "")
 
 
 def _result_summary(obj: dict) -> dict:
@@ -594,6 +637,8 @@ class Supervisor:
         s.exit_code = None
         s.queued.clear()
         s.acked.clear()
+        s.tasks.clear()
+        s.park_held = 0
         s.set_state("starting")
         s.last_event_at = time.time()
         self._save(s)
@@ -693,8 +738,20 @@ class Supervisor:
                 tid = str(obj.get("tool_use_id") or "")
                 if tid and not obj.get("is_backgrounded"):
                     s.foreground[tid] = now
+                key = _task_key(obj)
+                if key:
+                    s.tasks[key] = now
+            elif t == "system" and sub in ("task_progress", "task_updated"):
+                key = _task_key(obj)
+                status = ((obj.get("patch") or {}).get("status")
+                          if sub == "task_updated" else None)
+                if key and status in _TASK_DONE:
+                    s.tasks.pop(key, None)
+                elif key and (key in s.tasks or sub == "task_progress"):
+                    s.tasks[key] = now
             elif t == "system" and sub == "task_notification":
                 s.foreground.pop(str(obj.get("tool_use_id") or ""), None)
+                s.tasks.pop(_task_key(obj), None)
             elif t == "user":
                 content = (obj.get("message") or {}).get("content")
                 for block in content if isinstance(content, list) else ():
@@ -829,6 +886,8 @@ class Supervisor:
                 s.pending.clear()
             s.queued.clear()
             s.foreground.clear()
+            s.tasks.clear()
+            s.park_held = 0
             s.set_state("closed" if s.closing else "parked" if s.parking else "ended")
             self._save(s)
             self.cond.notify_all()
@@ -850,7 +909,8 @@ class Supervisor:
         if len(live) < max_live() and not short:
             return
         idle = sorted((x for x in live if x.state == "waiting" and not x.pending
-                       and not x.queued), key=lambda x: x.last_event_at)
+                       and not x.queued and not x.active_tasks()),
+                      key=lambda x: x.idle_since())
         if not idle:
             if short:
                 raise Refused(f"the host is low on memory ({free:.0f} MB free) with "
@@ -873,14 +933,24 @@ class Supervisor:
 
     def park_idle(self, now: float | None = None) -> list[str]:
         """Park every session idle past `MEDIA_SESSIOND_IDLE`. Never one that
-        is working, waiting on an approval, or holding queued messages."""
+        is working, waiting on an approval, holding queued messages, or with a
+        task in flight (a background subagent: its turn is over, its work is
+        not), and idle counts from its last event or task, whichever is later."""
         now = now or time.time()
         parked = []
         with self.lock:
             for s in list(self.sessions.values()):
                 if (s.running and s.state == "waiting"
                         and not s.pending and not s.queued
-                        and now - s.last_event_at >= idle_s()):
+                        and now - s.idle_since() >= idle_s()):
+                    n = s.active_tasks(now)
+                    if n:
+                        if n != s.park_held:
+                            log.info("sessiond: %s not parked: %d background task%s",
+                                     s.id[:8], n, "" if n == 1 else "s")
+                        s.park_held = n
+                        continue
+                    s.park_held = 0
                     self._park(s)
                     parked.append(s.id)
             self._oc_stop_if_unused()

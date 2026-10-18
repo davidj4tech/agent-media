@@ -17,9 +17,10 @@
 #                               phone for anything but read-only tools
 #   MEDIA_SESSIOND_IDLE         seconds idle before a session is parked (1800)
 #   MEDIA_SESSIOND_MAX          live sessions at once (4)
+#   MEDIA_SESSIOND_TASK_STALE_S seconds a silent task still holds off parking (3600)
 #   MEDIA_HEADLESS_MODEL        --model for every headless session (unset)
 exec 2>&1
 [ -f "$HOME/.config/agent-media.env" ] && . "$HOME/.config/agent-media.env"
 export MEDIA_HEADLESS_PERMISSIONS MEDIA_SESSIOND_IDLE MEDIA_SESSIOND_MAX \
-       MEDIA_SESSIOND_CLOSE_GRACE MEDIA_HEADLESS_MODEL MEDIA_SESSIOND_SOCKET
+       MEDIA_SESSIOND_TASK_STALE_S MEDIA_SESSIOND_CLOSE_GRACE MEDIA_HEADLESS_MODEL MEDIA_SESSIOND_SOCKET
 exec media sessiond

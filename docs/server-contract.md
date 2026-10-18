@@ -4842,11 +4842,18 @@ writes nothing to tmux.
   "backgrounded"}`. Verified on 2.1.299, 14 Oct 2026.
 - **Parking.** Waiting for `MEDIA_SESSIOND_IDLE` (1800 s) → stdin closed,
   process gone, record `parked`; the next message resumes it with
-  `--resume`. Never parked while working, on an approval, or with queued
-  messages. At most `MEDIA_SESSIOND_MAX` (6) live, and none more while the
-  host has under `MEDIA_SESSIOND_MIN_FREE_MB` (1024) available and one is
-  already running; one more parks the least recently used idle one, else
-  503 `busy` (its sentence says when memory was the reason).
+  `--resume`. Never parked while working, on an approval, with queued
+  messages, or with a task in flight — a background subagent or Bash call
+  outlives its turn: kept from `task_started` (refreshed by `task_progress`)
+  until `task_notification`, a final `task_updated`, or the process exits,
+  and no longer counted once unheard of for `MEDIA_SESSIOND_TASK_STALE_S`
+  (3600 s), so a lost notification cannot pin a session. Idle time counts
+  from the last event or task activity, whichever is later. The session
+  record carries `tasks`, how many count now. At most `MEDIA_SESSIOND_MAX`
+  (6) live, and none more while the host has under `MEDIA_SESSIOND_MIN_FREE_MB` (1024) available and one is
+  already running; one more parks the least recently used idle one (no
+  tasks in flight either), else 503 `busy` (its sentence says when memory
+  was the reason).
 - **Restarts.** A sessiond restart ends its children. A permission request
   pending then is not re-sent by the CLI on `--resume`, so it is recorded
   under `lost`: the thread shows no approval, `/session/answer` for it is
