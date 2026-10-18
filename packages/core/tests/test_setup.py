@@ -683,7 +683,7 @@ def test_profile_keeps_what_was_already_in_settings(tmp_path, monkeypatch):
         "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "mine"}]}]}}))
     assert setup.cmd_profile(_profile_args(tmp_path)) == 0
     data = json.loads((tmp_path / "settings.json").read_text())
-    assert data["model"] == "opus" and data["permissions"]["allow"] == ["Bash(*)"]
+    assert data["model"] == "opus" and data["permissions"]["allow"][0] == "Bash(*)"
     stop = [h["command"] for g in data["hooks"]["Stop"] for h in g["hooks"]]
     assert "mine" in stop, "someone else's hook was dropped"
     # And the file it replaced is still there to go back to.
@@ -710,6 +710,38 @@ def test_status_says_what_is_missing(tmp_path, monkeypatch):
     rows = {r["name"]: r for r in setup.profile_status(args)}
     assert rows["speech"]["state"] == "ok" and rows["catchup"]["state"] == "ok"
     assert rows["speech"]["kind"] == "core" and rows["catchup"]["kind"] == "extra"
+
+
+def test_the_restart_row_allows_the_exact_safe_restarts(tmp_path, monkeypatch, capsys):
+    """The restart row adds the four exact `media restart-services` commands
+    to permissions.allow, beside what is there, once."""
+    (tmp_path / "settings.json").write_text(json.dumps({
+        "model": "opus",
+        "permissions": {"allow": ["Bash(git status)", setup.RESTART_ALLOW_RULES[1]],
+                        "deny": ["Bash(rm -rf /)"]}}))
+    args = _profile_args(tmp_path, only="restart")
+    assert {r["name"]: r for r in setup.profile_status(args)}["restart"]["state"] == "missing"
+    assert setup.cmd_profile(args) == 0
+    data = json.loads((tmp_path / "settings.json").read_text())
+    allow = data["permissions"]["allow"]
+    assert allow[:2] == ["Bash(git status)", setup.RESTART_ALLOW_RULES[1]]
+    assert sorted(allow[2:]) == sorted(r for i, r in enumerate(setup.RESTART_ALLOW_RULES)
+                                       if i != 1)
+    assert data["permissions"]["deny"] == ["Bash(rm -rf /)"] and data["model"] == "opus"
+    assert not any("--force" in r or ":*" in r or r.endswith("*)") for r in allow[1:]), \
+        "exact commands, never a prefix that would also allow --force"
+    assert {r["name"]: r for r in setup.profile_status(args)}["restart"]["state"] == "ok"
+    before = (tmp_path / "settings.json").read_text()
+    assert setup.cmd_profile(args) == 0
+    assert (tmp_path / "settings.json").read_text() == before
+    assert "ok        restart" in capsys.readouterr().out
+
+
+def test_the_restart_row_starts_a_settings_file_without_permissions(tmp_path):
+    args = _profile_args(tmp_path, only="restart")
+    assert setup.cmd_profile(args) == 0
+    data = json.loads((tmp_path / "settings.json").read_text())
+    assert data == {"permissions": {"allow": list(setup.RESTART_ALLOW_RULES)}}
 
 
 def _no_profiles(tmp_path, monkeypatch):

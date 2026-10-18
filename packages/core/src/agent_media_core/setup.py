@@ -1525,6 +1525,39 @@ def _row_statusline(args, *, check_only: bool):
     return "installed", str(path)
 
 
+#: The restarts an agent may run without a prompt (David, 18 Oct 2026; see
+#: AGENTS.md and restart_services.py). Exact commands, not prefixes: a
+#: `media restart-services:*` rule would also allow `--force`, which skips
+#: the busy checks and is only for when David asks.
+RESTART_ALLOW_RULES = (
+    "Bash(media restart-services --only sessiond --after 10)",
+    "Bash(media restart-services --only canvas --after 10)",
+    "Bash(media restart-services --dry-run --only sessiond --after 10)",
+    "Bash(media restart-services --dry-run --only canvas --after 10)",
+)
+
+
+def _row_restart(args, *, check_only: bool):
+    """The safe delayed restarts allowed without a prompt: the exact
+    `media restart-services --only sessiond|canvas --after 10` commands (and
+    their `--dry-run`) added to Claude Code's `permissions.allow`, beside
+    whatever is already there. Claude Code only: Codex, pi and the others
+    have no equivalent wired yet (pi has no permission prompts at all)."""
+    path = _settings_path(args)
+    settings = _load_json(path)
+    perms = settings.get("permissions")
+    allow = perms.get("allow") if isinstance(perms, dict) else None
+    allow = allow if isinstance(allow, list) else []
+    missing = [r for r in RESTART_ALLOW_RULES if r not in allow]
+    if check_only or not missing:
+        return ("ok" if not missing else "missing"), str(path)
+    if not isinstance(perms, dict):
+        perms = settings["permissions"] = {}
+    perms["allow"] = allow + missing
+    _write_settings(path, settings, dry_run=args.dry_run)
+    return "installed", str(path)
+
+
 def gemini_settings_path() -> Path:
     """Gemini CLI's own settings: `~/.gemini/settings.json`, under
     `GEMINI_CLI_HOME` when that moves its home."""
@@ -1906,6 +1939,8 @@ PROFILE_ROWS = (
      "core", _row_context),
     ("statusline", "the status line: context used of the model's window", "core",
      _row_statusline),
+    ("restart", "the safe delayed service restarts allowed without a prompt",
+     "core", _row_restart),
     ("services", "this host's services, by its roles", "core", _row_services),
     ("shell", "the tmux popup and control surface on PATH", "core", _row_shell),
     ("mail", "agent mail announced at the top of a turn", "extra",
