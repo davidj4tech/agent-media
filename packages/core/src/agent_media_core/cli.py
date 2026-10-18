@@ -8255,46 +8255,17 @@ def cmd_restart_services(a) -> int:
     A `down` file is runit's standing "leave this stopped" marker, so a parked
     service is reported and left alone — restarting it would override a
     decision someone made on purpose.
+
+    The logic (`--only`, the busy checks, `--after`'s detached run, the health
+    check and its alert) is restart_services.run(), which a server route can
+    call as well; this is its command line.
     """
-    import subprocess
-    from pathlib import Path
+    from . import restart_services
 
-    root = _checkout_root()
-    svdir = _sv_dir()
-    services = ([(n, s, "runit") for n, s in _runit_service_states(root)]
-                + [(n, s, "systemd") for n, s in _systemd_service_states()])
-    if not services:
-        print("no services owned by this checkout")
-        return 0
-
-    rc = 0
-    for name, state, kind in services:
-        if state == "parked":
-            print(f"{name}: parked, left alone")
-            continue
-        if getattr(a, "dry_run", False):
-            print(f"{name}: would restart ({kind}, currently {state})")
-            continue
-        if kind == "runit":
-            cmd = ["sv", "restart", str(Path(svdir) / name)]
-            env = {**os.environ, "SVDIR": str(svdir)}
-        else:
-            cmd = ["systemctl", "--user", "restart", f"{name}.service"]
-            env = dict(os.environ)
-        try:
-            r = subprocess.run(cmd, capture_output=True, text=True,
-                               timeout=60, env=env)
-        except (OSError, subprocess.SubprocessError) as e:
-            print(f"{name}: restart failed: {e}")
-            rc = 1
-            continue
-        detail = (r.stdout or r.stderr or "").strip().replace("\n", " ")
-        if r.returncode == 0:
-            print(f"{name}: restarted{f' ({detail})' if detail else ''}")
-        else:
-            print(f"{name}: restart FAILED: {detail or r.returncode}")
-            rc = 1
-    return rc
+    res = restart_services.run(a.only or None, after=float(a.after or 0),
+                               force=a.force, dry_run=a.dry_run,
+                               echo=lambda line: print(line, flush=True))
+    return int(res["rc"])
 
 
 def cmd_recent(a) -> int:
@@ -9361,10 +9332,39 @@ def _build_parser() -> argparse.ArgumentParser:
                           "restart services), then re-judge them")
     doc.set_defaults(func=cmd_doctor)
 
-    rs = sub.add_parser("restart-services",
-                        help="restart the services this checkout owns")
+    rs = sub.add_parser(
+        "restart-services",
+        help="restart the services this checkout owns (safe for an agent: "
+             "busy checks, --after for a detached delayed restart)",
+        description="Restart the services this checkout owns, then check each "
+                    "is up within 20 s (a canvas must answer HTTP); a failure "
+                    "raises the host alert restart-services.<host>. Refused "
+                    "(exit 3) while restarting would cut something off: "
+                    "sessiond while a session other than yours is working, "
+                    "waiting on an approval, holding queued messages or running "
+                    "a task (or yours has more than this one task); speech "
+                    "services while a reply is being spoken; sessiond now from "
+                    "inside one of its sessions. From a phone chat use "
+                    "`--only sessiond --after 10`: the restart runs in a "
+                    "transient systemd unit (a detached child without systemd), "
+                    "checks again before acting, waits out a busy host (every "
+                    "15 s, up to 10 min, then alerts), and your turn ends first. "
+                    "Exit codes: 0 done or scheduled, 1 failed, 2 unknown name, "
+                    "3 busy.")
+    rs.add_argument("--only", nargs="+", metavar="NAME", default=None,
+                    help="just these services; short names work (sessiond, "
+                         "canvas, tts-shim, sink-speech, …). Unknown names: "
+                         "exit 2 with the list")
+    rs.add_argument("--after", type=float, default=0, metavar="SECONDS",
+                    help="restart SECONDS from now, detached from the caller "
+                         "(systemd-run --user --on-active), and return at once "
+                         "with the unit name. 10 is a good value from inside a "
+                         "chat. Default 0: now")
+    rs.add_argument("--force", action="store_true",
+                    help="skip the busy checks")
     rs.add_argument("--dry-run", action="store_true",
-                    help="name what would be restarted, touch nothing")
+                    help="name what would be restarted and show the busy "
+                         "checks, touch nothing (exit 3 if busy)")
     rs.set_defaults(func=cmd_restart_services)
 
     sg = sub.add_parser("state-gc",
