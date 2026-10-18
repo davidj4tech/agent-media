@@ -243,7 +243,7 @@ from urllib.parse import parse_qs
 from . import (abs_item, archive, auth, devices, drafts, harnesses, pins, routing, send,
                sessions, share, speech, threads)
 from . import alerts, audio, doc_chat, doc_read, music, org, org_chat, org_edit, org_listen, org_setup, org_zettel, refs, uploads
-from . import web_app
+from . import app_links, web_app
 
 # The endpoints a browser on another origin may reach. Everything here
 # carries its own credential — a paired device's token, or the caller's
@@ -513,6 +513,9 @@ def dispatch(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
         # and nothing under /app is an API route.
         if path == web_app.PREFIX or path.startswith(web_app.PREFIX + "/"):
             return web_app.serve(h, path)
+        # Android's check that /app/t/<session> links are the app's (app_links.py).
+        if path == app_links.PATH:
+            return app_links.serve(h)
         return _get(h, path)
     if method == "POST":
         return _post(h, path)

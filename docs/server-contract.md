@@ -5325,6 +5325,18 @@ Until those land, the defensible posture is A or B with the app routes
 proxied and the desk routes left on the mesh; with them landed, the whole
 port can go behind one vhost, canvas page included.
 
+### Thread links (18 Oct 2026)
+
+A link to one thread is `sasonica://t/<session>` (any server) or
+`https://<server>/app/t/<session>`: the web app's own thread page
+(web_app.py), which a browser opens there. On a phone with the app, the
+https form is an Android App Link for the hosts the app's manifest claims
+(red5.sasonica.com today): Android checks `GET /.well-known/assetlinks.json`
+(app_links.py — no credential, every listener, the public one included),
+which names `com.sasonica.app` and `com.sasonica.app.debug` with their
+signing keys (`MEDIA_APP_LINKS_EXTRA` adds others). Tapped inside the app,
+either form opens the thread in place (sasonica-app lib/threadLinks.ts).
+
 ---
 
 ## Appendix A — routes outside the app contract
