@@ -4248,8 +4248,14 @@ other providers we have bridges for"). `bridges`, the owner's book only, on
 whenever this host reads bridges as the owner (`MATRIX_OWNER_BRIDGES`):
 the other party of **each one-to-one bridged room** this process holds
 (Messenger `facebookgo`, Instagram `instagramgo`, Teams `msteams`, SMS
-`gmessages`, …). A group adds no one, nor do the bots or **David's own
-ghosts** — a ghost in every room of its network (at least 3 of them;
+`gmessages`, …), and — since 19 Oct 2026 (David: "a full list of my
+bridged contacts") — **every ghost in its group rooms** (a member whose id
+is a bridge's puppet, `@<network>_…`; a Matrix account of its own is not).
+Someone met only in groups carries the label **"Messenger groups"** or
+**"Instagram groups"**; everyone on Teams carries **"Teams"**; someone in a
+one-to-one chat carries none of its own. A group room is still no one's
+(its members are several people). Neither the bots nor **David's own
+ghosts** come in — a ghost in every room of its network (at least 3 of them;
 Instagram puppets him into each chat), one named as the owner is in that
 room, or his own number's (`MEDIA_CONTACTS_SELF`). One record per ghost:
 its name, the number or address its id or displayname carries, and its
@@ -4300,6 +4306,51 @@ name. Both are one list. These are also the work/personal tags the
 proposal waited on. `GET /contacts?label=<name>` (case and accents
 ignored) lists only the people with it. Pinned by
 `packages/server/tests/test_contacts_labels.py`.
+
+**Exports** (19 Oct 2026; David: "a full list of my bridged contacts"). A
+bridge knows only who is in a chat, so whole lists come from each
+network's own data download, the `import` source, per book: a **Facebook**
+"Download your information" export's friends (`your_friends.json` under
+`connections/friends/`, or the older `friends_and_followers/friends.json`
+and `friends/friends.json`; `friends_v2`, `friends` and the newest
+`label_values` rows; Facebook's escaped UTF-8 undone) and an **Instagram**
+one's followers and following (`followers_1.json`…, `following.json` under
+`connections/followers_and_following/`). Removed friends, requests and close
+friends are not read; an HTML export is refused with "download it as
+JSON". Labels **"Facebook friends"**, **"Instagram followers"**,
+**"Instagram following"** (someone both is one person with both). An
+export person joins as a bridge's does (a kept Join, a number, an address;
+a same name is "Same person?", and Join / Not the same take an export's
+person as a bridge's), and an Instagram username joins the bridged
+Instagram ghost it names (its displayname, `{{or .DisplayName
+.Username}}`). Each person's id is stable (Instagram's username; a Facebook
+friend's name and the day they became friends), so importing a newer
+export replaces that network's last import (an unfriended person goes) and
+David's Joins hold. The source is `{"kind": "import", "id", "export":
+"facebook" | "instagram", "lists": ["followers", …]}`; an Instagram
+person's handle is `{"network": "instagram", "id": "instagram:<username>",
+"username", "url"}`. Pinned by
+`packages/server/tests/test_contacts_import.py`.
+
+#### `POST /contacts/import[?name=<file name>]` — gated (`auth.gate`)
+
+The body is the export: a `.zip` of it (the whole download, or the
+friends / followers part) or one of those JSON files, raw
+(`application/zip`, `application/json`) or as a `multipart/form-data`
+file. At most 64 MiB (413 before a byte is read). Into the caller's own
+book. →
+
+```json
+{"ok": true, "imported": {"facebook_friends": 412},
+ "people": 412, "joined": 37, "contacts": 3290}
+```
+
+`imported` counts each list read (`instagram_followers`,
+`instagram_following`); `people` is how many contacts hold an export's
+person now, `joined` how many of them are someone already here. 400
+`{"code": "not_an_export"}` with why (HTML, no list found, not a zip that
+opens). Names are never logged. CLI: `media contacts [--account WHO]
+import <file>`.
 
 #### `GET /contacts/labels` — gated (`auth.gate`)
 

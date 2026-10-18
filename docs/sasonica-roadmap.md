@@ -1260,7 +1260,12 @@ ahead.
     joins; a same name off SMS is "Same person?" on the card, Join / Not
     the same), their rooms roll up as their own channels, and Google's
     labels (the phone's groups, "My Contacts" included) are on each person
-    with a filter on People.
+    with a filter on People. **The full list, built 19 Oct 2026** (§6.25
+    "Exports", `POST /contacts/import`): everyone in a bridged group chat
+    ("Messenger groups", "Instagram groups", "Teams" labels), and Facebook
+    friends and Instagram followers / following from each network's own
+    JSON export, uploaded in Settings → Contacts → Import a file (the export
+    steps are in the proposal's "The full list").
 
 ## Loose ends
 
