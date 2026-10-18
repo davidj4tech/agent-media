@@ -337,3 +337,68 @@ def test_a_folder_that_could_not_move_is_said_beside_the_move(
     assert obj["ok"] is True                       # the thread moved
     assert "already there" in obj["folder_error"]  # its files did not
     assert moves.moved(SID)["project"] == "p-agent-mail"
+
+
+# --- headless sessions ----------------------------------------------------------
+
+def test_the_newest_copy_moves_and_the_stale_ones_are_set_aside(
+        claude, monkeypatch, tmp_path):
+    """A resume in the old directory after an earlier move left a second
+    copy; the first by name was moved, not the one being written."""
+    import os
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    old = claude / moves.encoded_dir("/home/ryer/projects/agent-media") / f"{SID}.jsonl"
+    early = claude / moves.encoded_dir("/home/ryer/projects/a-early")
+    early.mkdir()
+    (early / f"{SID}.jsonl").write_text("stale\n")
+    os.utime(early / f"{SID}.jsonl", (1, 1))
+    old.write_text("live\n")
+    assert moves.move_transcript(SID, OTHER) == ""
+    assert (claude / moves.encoded_dir(OTHER) / f"{SID}.jsonl").read_text() == "live\n"
+    assert not (early / f"{SID}.jsonl").exists()
+    aside = list((tmp_path / "cache" / "claude-stale-transcripts").glob("*/*.jsonl"))
+    assert [f.read_text() for f in aside] == ["stale\n"]
+
+
+@pytest.fixture()
+def headless(monkeypatch):
+    """SID is a headless session; record what sessiond is told."""
+    from agent_media_server import driver
+
+    log: list = []
+    answer = {"why": ""}
+
+    class Fake:
+        def relocate(self, session, cwd):
+            log.append((session, cwd))
+            return answer["why"]
+
+    monkeypatch.setattr(driver, "headless_state",
+                        lambda s: {"state": "waiting", "live": False, "pane": None}
+                        if s == SID else None)
+    monkeypatch.setattr(driver, "owned_headless", lambda s: s == SID)
+    monkeypatch.setattr(driver, "headless_driver", lambda: Fake())
+    return log, answer
+
+
+def test_a_headless_session_is_told_its_new_directory(
+        server, shelf, signed_in, claude, dest, windows, headless):
+    log, _ = headless
+    res, obj = call(server, "POST", "/session/move",
+                    {"session": SID, "project": "p-agent-mail"}, AUTH)
+    assert res.status == 200, obj
+    assert log == [(SID, dest)]
+    assert (claude / moves.encoded_dir(dest) / f"{SID}.jsonl").exists()
+
+
+def test_a_headless_session_sessiond_will_not_move_stays_put(
+        server, shelf, signed_in, claude, dest, windows, headless):
+    _, answer = headless
+    answer["why"] = "session bb2649cd is working"
+    res, obj = call(server, "POST", "/session/move",
+                    {"session": SID, "project": "p-agent-mail"}, AUTH)
+    assert res.status == 503 and "working" in obj["error"]
+    assert moves.moved(SID) == {}
+    assert (claude / moves.encoded_dir("/home/ryer/projects/agent-media")
+            / f"{SID}.jsonl").exists()

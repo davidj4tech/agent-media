@@ -354,6 +354,32 @@ class HeadlessDriver:
         return True, {"session": session, "pane": None, "live": False,
                       "closed": bool(r.get("closed")), "driver": HEADLESS}
 
+    def relocate(self, session: str, cwd: str) -> str:
+        """Make `session` resume in `cwd` (moves.py). "" when done, else why
+        not. With sessiond down its record on disk is rewritten, which is
+        what it reads when it comes back; a sessiond from before the op has
+        to be restarted to take it."""
+        from .. import sessiond
+
+        r = call("relocate", session=session, cwd=cwd, timeout=30.0)
+        if r.get("ok"):
+            return ""
+        code = r.get("code")
+        if code == "down":
+            rec = sessiond.read_record(session)
+            if rec is None:
+                return ""
+            try:
+                sessiond._write_atomic(sessiond.record_path(session),
+                                       {**rec, "cwd": cwd})
+            except OSError as e:
+                return f"could not record its new directory: {e}"
+            return ""
+        if code == "bad_request":
+            return ("the session host is too old to move a headless session; "
+                    "restart sessiond and move it again")
+        return str(r.get("error") or "the session host did not move it")
+
     def configure(self, session, *, model=None, mode=None):
         """The model and plan mode (session_settings.py)."""
         kw = {k: v for k, v in (("model", model), ("mode", mode)) if v is not None}

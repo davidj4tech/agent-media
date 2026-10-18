@@ -79,7 +79,8 @@ never has two writers.
 Ops (request `{"op", …}` → `{"ok": true, …}` or `{"ok": false, "error",
 "code"}`): `ping`, `list`, `get`, `start`, `send`, `resume`, `interrupt`,
 `answer`, `close`, `park`, `events`, `configure` (model and plan mode;
-session_settings.py).
+session_settings.py), `relocate` (the directory a moved thread resumes in;
+moves.py).
 
 Config (env): MEDIA_SESSIOND_SOCKET, MEDIA_SESSIOND_IDLE, MEDIA_SESSIOND_MAX,
 MEDIA_SESSIOND_MIN_FREE_MB, MEDIA_SESSIOND_BACKGROUND_AFTER, MEDIA_SESSIOND_TASK_STALE_S,
@@ -1107,6 +1108,32 @@ class Supervisor:
             return {"session": session, "model": s.model, "mode": s.mode, "told": told,
                     **self._brief(s)}
 
+    def relocate(self, session: str, cwd: str) -> dict:
+        """Resume `session` in `cwd` from now on (moves.py). Its `--resume`
+        runs in `s.cwd`, and Claude Code files the transcript under the
+        directory it runs in, so a move that left this alone came back in
+        the old directory and went on writing there. A live idle session is
+        parked first, so its next message respawns it in the new one; one
+        mid-turn or holding a question is refused (the move waits for it)."""
+        cwd = (cwd or "").strip()
+        if not cwd or not os.path.isdir(cwd):
+            raise Refused(f"no such directory {cwd!r}", "bad_cwd")
+        with self.lock:
+            s = self._get(session)
+            if s.agent == "opencode":
+                # opencode's server keeps its sessions per directory: not
+                # movable from here, and the thread moves by its override.
+                return {"session": session, "cwd": s.cwd, "relocated": False,
+                        **self._brief(s)}
+            if s.live:
+                if s.state in ("working", "starting", "approval") or s.pending:
+                    raise Refused(f"session {session[:8]} is working", "busy")
+                self._park(s)
+                self._await_exit(s)
+            s.cwd = cwd
+            self._save(s)
+            return {"session": session, "cwd": s.cwd, "relocated": True, **self._brief(s)}
+
     def resume(self, session: str) -> dict:
         if self._agent(session) == "opencode":
             proc = self.oc.ensure()
@@ -1546,6 +1573,8 @@ class Supervisor:
                 return {"ok": True, **self.rename(sid, str(req.get("title") or ""))}
             if op == "resume":
                 return {"ok": True, **self.resume(sid)}
+            if op == "relocate":
+                return {"ok": True, **self.relocate(sid, str(req.get("cwd") or ""))}
             if op == "interrupt":
                 return {"ok": True, **self.interrupt(sid, bool(req.get("cancel_queued")))}
             if op == "stop_task":

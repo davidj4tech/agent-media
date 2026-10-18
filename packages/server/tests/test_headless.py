@@ -1147,3 +1147,37 @@ def test_on_windows_an_orphan_is_ended_by_its_recorded_pid_only_while_an_agent(
         for p in (agent, other):
             if p.poll() is None:
                 p.kill()
+
+
+def test_relocate_parks_an_idle_session_and_it_resumes_in_the_new_directory(
+        host, tmp_path):
+    """A moved headless thread came back in its old directory: sessiond
+    resumed it in the cwd it started in (scratch, 18 Oct 2026)."""
+    sid = start(host, "reply: a")
+    wait_for(lambda: state(host, sid) == "waiting")
+    new = tmp_path / "spl" / "admin"
+    new.mkdir(parents=True)
+    assert driver.headless_driver().relocate(sid, str(new)) == ""
+    assert not host.sup.get(sid)["live"]
+    assert host.sup.get(sid)["cwd"] == str(new)
+    driver.headless_driver().send(sid, "", "reply: b")
+    wait_for(lambda: last_text(host, sid) == "b")
+    assert starts(host)[-1]["cwd"] == str(new)
+
+
+def test_relocate_refuses_a_session_mid_turn_or_holding_a_question(host, tmp_path):
+    sid = start(host, "tool: touch z")
+    wait_for(lambda: state(host, sid) == "approval")
+    why = driver.headless_driver().relocate(sid, str(tmp_path))
+    assert "working" in why
+    assert host.sup.get(sid)["cwd"] == str(host.work)
+
+
+def test_relocate_with_sessiond_down_rewrites_the_record(host, tmp_path):
+    sid = start(host, "reply: a")
+    wait_for(lambda: state(host, sid) == "waiting")
+    host.sup.park(sid)
+    wait_for(lambda: not host.sup.get(sid)["live"])
+    sessiond.stop(host.srv)
+    assert driver.headless_driver().relocate(sid, str(tmp_path)) == ""
+    assert sessiond.read_record(sid)["cwd"] == str(tmp_path)

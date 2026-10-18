@@ -28,6 +28,10 @@ What a move does, in order:
    (`start`). David, 15 Oct 2026: move a thread mid-turn without having to
    end the session first.
 
+   A headless session (sessiond) has no pane to reopen: sessiond is told
+   its new directory (`relocate`, which parks it if it sits idle), and its
+   next message resumes it there.
+
 4. **Its folder moves.** The conversation's own files are
    `<project>/<title>` under the Conversations root, so the folder is moved
    under the new project and the manifest points at it there: the files on
@@ -136,10 +140,16 @@ def move_transcript(session: str, cwd: str) -> str:
     moves the thread.
     """
     root = claude_root()
-    hits = sorted(root.glob(f"*/{session}.jsonl"))
+    hits = sorted(root.glob(f"*/{session}.jsonl"),
+                  key=lambda f: f.stat().st_mtime, reverse=True)
     if not hits:
         return ""
+    # The newest is the live one. A resume that ran in the old directory
+    # after an earlier move (sessiond resumed headless sessions where they
+    # had started, 18 Oct 2026) left a stale copy behind it, and the first
+    # by name was moved instead of the one still being written.
     src = hits[0]
+    _set_aside(session, hits[1:])
     dest = transcript_dir(cwd)
     if dest == src.parent:
         return ""
@@ -156,6 +166,23 @@ def move_transcript(session: str, cwd: str) -> str:
             pass                        # the thread moved; its subagents did not
     sessions._CWDS.pop(session, None)
     return ""
+
+
+def _set_aside(session: str, stale: list[Path]) -> None:
+    """Move older copies of a transcript out of `~/.claude/projects`, into
+    `~/.cache/claude-stale-transcripts/<session>-<when>/<encoded dir>.jsonl`,
+    so nothing reads or resumes them as the session. Best effort."""
+    if not stale:
+        return
+    aside = (Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+             / "claude-stale-transcripts"
+             / f"{session[:8]}-{time.strftime('%Y%m%d-%H%M%S')}")
+    for f in stale:
+        try:
+            aside.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(f), str(aside / f"{f.parent.name}.jsonl"))
+        except OSError:
+            pass
 
 
 # --- where the conversation's own files live ----------------------------------
@@ -292,6 +319,17 @@ def _carry_out(session: str, project: str, dest: str) -> tuple[bool, dict]:
         ok, detail = send.close_pane(session, pane)
         if not ok:
             return False, detail
+
+    # A headless session resumes wherever sessiond has it, whatever the
+    # transcript says: tell sessiond first (it parks one sitting idle), or
+    # its next message brings it back in the old directory.
+    from . import driver
+
+    if driver.owned_headless(session):
+        why = driver.headless_driver().relocate(session, dest)
+        if why:
+            return False, {"error": why, "project": project, "cwd": dest,
+                           "restarted": False, "status": 503}
 
     why = move_transcript(session, dest)
     if why:
