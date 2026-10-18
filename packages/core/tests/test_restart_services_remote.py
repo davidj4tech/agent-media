@@ -59,6 +59,9 @@ def phone(tmp_path, monkeypatch):
     cfg = tmp_path / "config.toml"
     cfg.write_text('[peers.phone]\nhost = "p8a"\nroles = ["observe"]\n')
     monkeypatch.setenv("MEDIA_CONFIG", str(cfg))
+    # No server of this host's own to ask first (run_device): a closed port,
+    # never the real canvas.
+    monkeypatch.setenv("MEDIA_PHONE_JOBS_URL", "http://127.0.0.1:9")
     yield fake
     srv.shutdown()
     srv.server_close()
@@ -169,6 +172,9 @@ def test_round_trip_through_the_real_route(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("MEDIA_CONFIG", str(tmp_path / "none.toml"))
+    # Never this host's real canvas (run_device asks it first).
+    monkeypatch.setenv("MEDIA_PHONE_JOBS_URL", "http://127.0.0.1:9")
+    monkeypatch.delenv("AMUX_AUTH_TOKEN", raising=False)
     devices._reset_for_tests()
     svcs = [rs.Service("media-visual-canvas", "up", "runit"),
             rs.Service("media-sessiond", "up", "runit")]
@@ -199,3 +205,36 @@ def test_round_trip_through_the_real_route(tmp_path, monkeypatch, capsys):
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+def test_canvas_names_the_canvas_wherever_it_runs():
+    svcs = [rs.Service("canvas-local", "up", "runit"),
+            rs.Service("agent-media-visual-canvas", "up", "systemd"),
+            rs.Service("phone-jobs", "up", "runit")]
+    sel, unknown = rs.resolve(["canvas"], svcs)
+    assert [s.name for s in sel] == ["canvas-local", "agent-media-visual-canvas"] and not unknown
+    assert rs.resolve(["canvas-local"], svcs)[0] == [svcs[0]]
+
+
+def test_no_server_here_to_ask_falls_through_to_the_peer(phone, capsys):
+    """run_device finds no server of this host's own (a closed port): NAME is
+    then a peer, as before."""
+    assert rs.run_device("phone") is None
+
+
+def test_json_mode_prints_runs_dict(monkeypatch, capsys):
+    seen = {}
+
+    def fake_run(only, **kw):
+        seen.update(only=only, **{k: v for k, v in kw.items() if k != "echo"})
+        kw["echo"]("canvas-local: restarted")
+        return {"rc": 0, "lines": ["canvas-local: restarted"]}
+
+    monkeypatch.setattr(rs, "run", fake_run)
+    assert rs.main(["--json", "--only", "canvas", "--after", "5", "--dry-run"]) == 0
+    out, err = capsys.readouterr()
+    got = json.loads(out.strip().splitlines()[-1])
+    assert got["rc"] == 0 and got["host"] == rs.host()
+    assert "canvas-local: restarted" in err
+    assert seen == {"only": ["canvas"], "after": 5.0, "force": False, "dry_run": True,
+                    "caller": "", "detach_own": True}

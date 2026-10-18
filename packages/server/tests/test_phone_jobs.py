@@ -125,3 +125,218 @@ def test_the_public_listener_cannot_queue(monkeypatch):
         assert r[0].status == 404
     finally:
         srv.shutdown()
+
+
+# --- a restart, its own kind of job (David, 18 Oct 2026: "I don't want to
+# have to rely on tailscale") -------------------------------------------------------
+#
+# `media restart-services --host p8a` on red5 is restart_services.run_device:
+# this server's POST /jobs/restart, down the stream the phone's worker holds
+# open. The worker runs agent_media_core.restart_services.run() through a
+# fake "python" that fakes every service first: nothing real is restarted.
+
+from agent_media_core import cli as core_cli  # noqa: E402
+from agent_media_core import restart_services as rs  # noqa: E402
+
+FAKE_PY = r'''#!{python}
+import os, sys
+from agent_media_core import restart_services as rs
+log = os.environ["FAKE_RESTART_LOG"]
+def note(line):
+    with open(log, "a") as f:
+        f.write(line + "\n")
+rs.services = lambda: [rs.Service("canvas-local", "up", "runit"),
+                       rs.Service("phone-jobs", "up", "runit"),
+                       rs.Service("sink-speech", "up", "runit")]
+rs._restart_one = lambda s: (note("restart " + s.name), (True, ""))[1]
+rs.health = lambda done, within=None: []
+rs.alert = lambda *a, **k: None
+rs.busy = lambda sel, caller, now=False: ["a reply is being spoken"] if os.environ.get("FAKE_BUSY") else []
+rs._own_cgroup = lambda: ""
+# The worker is phone-jobs' main process: this script's parent.
+rs._main_pid = lambda s: os.getppid() if s.name == "phone-jobs" else 0
+rs.schedule = lambda sel, after, force: (note("schedule %s %s" % (" ".join(x.name for x in sel), after)),
+                                         {{"how": "detached", "unit": "pid 1", "log": "-"}})[1]
+assert sys.argv[1:3] == ["-m", "agent_media_core.restart_services"], sys.argv
+note("argv " + " ".join(sys.argv[3:]))
+sys.exit(rs.main(sys.argv[3:]))
+'''
+
+
+@pytest.fixture()
+def fake_py(tmp_path, monkeypatch):
+    py = tmp_path / "fake-python"
+    py.write_text(FAKE_PY.format(python=sys.executable))
+    py.chmod(0o755)
+    log = tmp_path / "restart.log"
+    log.touch()
+    monkeypatch.setenv("MEDIA_PHONE_JOBS_PYTHON", str(py))
+    monkeypatch.setenv("FAKE_RESTART_LOG", str(log))
+    monkeypatch.delenv("FAKE_BUSY", raising=False)
+    return lambda: log.read_text().splitlines()
+
+
+def _worker_module():
+    spec = importlib.util.spec_from_file_location("phone_jobs_worker_t", WORKER)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _empty() -> bool:
+    with phone_jobs._COND:
+        return not phone_jobs._JOBS and not phone_jobs._QUEUE
+
+
+def test_a_restart_goes_down_the_workers_own_connection(worker, host, fake_py):
+    said: list[str] = []
+    res = rs.run_device("p8a", ["canvas"], echo=said.append)
+    assert res["rc"] == 0, res
+    assert "argv --json --only canvas" in fake_py()
+    assert "restart canvas-local" in fake_py()          # `canvas` is the phone's canvas-local
+    assert said[0] == "on p8a Termux jobs (down its own connection to this server):"
+    assert "  canvas-local: restarted" in said
+    assert res["device"] == "p8a Termux jobs" and res["selected"] == ["canvas-local"]
+    assert _empty()
+
+
+def test_the_cli_takes_the_device_channel_and_its_rc(worker, host, fake_py, capsys):
+    # The worker restarting itself: run() sees it is inside phone-jobs and
+    # schedules it detached, 10 s out, so the answer gets back first.
+    assert core_cli.main(["restart-services", "--host", "p8a", "--only", "phone-jobs"]) == 0
+    assert "schedule phone-jobs 10.0" in fake_py()
+    assert not any(line.startswith("restart ") for line in fake_py())
+    out = capsys.readouterr().out
+    assert "on p8a Termux jobs" in out and "restarting in 10 s, detached" in out
+
+
+def test_after_force_and_dry_run_reach_the_phone(worker, host, fake_py):
+    res = rs.run_device("P8A", ["sink-speech"], after=30, force=True, dry_run=True)
+    assert res["rc"] == 0
+    assert "argv --json --only sink-speech --after 30.0 --force --dry-run" in fake_py()
+    assert not any(line.startswith(("restart ", "schedule ")) for line in fake_py())
+
+
+def test_busy_on_the_phone_is_its_exit_code(worker, host, fake_py, monkeypatch):
+    monkeypatch.setenv("FAKE_BUSY", "1")
+    res = rs.run_device("p8a", ["sink-speech"])
+    assert res["rc"] == rs.BUSY and res["busy"] == ["a reply is being spoken"]
+    assert not any(line.startswith("restart ") for line in fake_py())
+
+
+def test_offline_is_1_at_once_and_nothing_stays_queued(server, host, monkeypatch, capsys):
+    _, dev = _device("p8a Termux jobs")
+    monkeypatch.setenv("MEDIA_PHONE_JOBS_DEVICE", dev)
+    t0 = time.monotonic()
+    assert core_cli.main(["restart-services", "--host", "p8a", "--only", "canvas"]) == 1
+    assert time.monotonic() - t0 < 3
+    assert "p8a Termux jobs is offline" in capsys.readouterr().out
+    assert _empty()
+
+
+def test_a_worker_too_old_for_restarts_is_never_handed_one(server, host, monkeypatch):
+    from test_thread_events import Stream
+
+    headers, dev = _device("p8a Termux jobs")
+    monkeypatch.setenv("MEDIA_PHONE_JOBS_DEVICE", dev)
+    st = Stream(server, "/jobs/events", headers)      # no ?kinds=restart
+    try:
+        assert _wait(phone_jobs.connected)
+        status, ans = phone_jobs.restart("p8a", {"only": ["canvas"]})
+        assert status == 503 and "too old" in ans["lines"][0] and ans["rc"] == 1
+        assert _empty()
+    finally:
+        st.close()
+
+
+def test_not_a_device_is_404_and_the_cli_tries_a_peer(server, host, monkeypatch):
+    _, dev = _device("p8a Termux jobs")
+    _device("homer media")                            # paired, but not the worker
+    monkeypatch.setenv("MEDIA_PHONE_JOBS_DEVICE", dev)
+    r = call(server, "POST", "/jobs/restart", {"device": "homer"}, {"X-Auth-Token": "hosttok"})
+    assert r[0].status == 404 and r[1]["code"] == "not_a_device"
+    assert rs.run_device("homer") is None
+    tried = []
+    monkeypatch.setattr(rs, "run_remote", lambda name, *a, **k: tried.append(name) or {"rc": 0})
+    assert core_cli.main(["restart-services", "--host", "homer"]) == 0 and tried == ["homer"]
+
+
+@pytest.mark.parametrize("body, why", [
+    ({"only": ["canvas"], "cmd": "rm -rf ~"}, "not a restart field: cmd"),
+    ({"only": ["canvas; reboot"]}, "only:"),
+    ({"only": "canvas", "after": "soon"}, "after:"),
+    ({"after": True}, "after:"),
+    ({"force": "yes"}, "force:"),
+])
+def test_only_a_restarts_fields_are_queued(server, host, monkeypatch, body, why):
+    _, dev = _device("p8a Termux jobs")
+    monkeypatch.setenv("MEDIA_PHONE_JOBS_DEVICE", dev)
+    phone_jobs._WORKERS[1] = {"at": 0, "kinds": {"cmd", "restart"}}
+    r = call(server, "POST", "/jobs/restart", {"device": "p8a", **body},
+             {"X-Auth-Token": "hosttok"})
+    assert r[0].status == 400 and why in r[1]["error"]
+    assert _empty()
+
+
+def test_the_worker_refuses_anything_but_a_restarts_fields(monkeypatch):
+    mod = _worker_module()
+    assert mod.restart_argv({"only": ["canvas"]}, "py")[0] == [
+        "py", "-m", "agent_media_core.restart_services", "--json", "--only", "canvas"]
+    for spec in ({"cmd": "id"}, {"only": ["$(id)"]}, {"only": "canvas"},
+                 {"after": -1}, {"dry_run": "1"}, "canvas"):
+        assert mod.restart_argv(spec, "py")[0] is None, spec
+    answered, ran = [], []
+    monkeypatch.setattr(mod, "_answer", lambda jid, body, tok: answered.append((jid, body)))
+    monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: ran.append(a))
+    mod._handle({"id": "j1", "kind": "restart", "restart": {"only": ["x"], "cmd": "id"}}, "t")
+    mod._handle({"id": "j2", "kind": "shell", "cmd": "id"}, "t")
+    assert ran == []
+    assert [(j, b["rc"]) for j, b in answered] == [("j1", 2), ("j2", 2)]
+    assert "not a restart field: cmd" in answered[0][1]["err"]
+
+
+def test_a_job_nobody_takes_is_given_up_after_pickup(server, host, monkeypatch):
+    _, dev = _device("p8a Termux jobs")
+    monkeypatch.setenv("MEDIA_PHONE_JOBS_DEVICE", dev)
+    monkeypatch.setattr(phone_jobs, "PICKUP_S", 0.2)
+    phone_jobs._WORKERS[1] = {"at": 0, "kinds": {"cmd", "restart"}}   # a stream gone quiet
+    status, ans = phone_jobs.restart("p8a", {"only": ["canvas"]}, timeout=5)
+    assert status == 503 and "no phone worker took it" in ans["lines"][0]
+    assert _empty()
+
+
+def test_a_job_taken_but_not_answered_times_out_and_a_late_answer_is_dropped(
+        server, host, monkeypatch):
+    _, dev = _device("p8a Termux jobs")
+    monkeypatch.setenv("MEDIA_PHONE_JOBS_DEVICE", dev)
+    monkeypatch.setattr(phone_jobs, "ANSWER_MARGIN_S", 0.0)
+    phone_jobs._WORKERS[1] = {"at": 0, "kinds": {"cmd", "restart"}}
+    taken = []
+
+    def take():
+        while True:
+            with phone_jobs._COND:
+                if phone_jobs._QUEUE:
+                    jid = phone_jobs._QUEUE.popleft()
+                    phone_jobs._JOBS[jid]["taken"] = time.monotonic()
+                    taken.append(jid)
+                    return
+            time.sleep(0.01)
+
+    threading.Thread(target=take, daemon=True).start()
+    t0 = time.monotonic()
+    status, ans = phone_jobs.restart("p8a", {"only": ["canvas"]}, timeout=1)
+    assert status == 503 and "timed out on the phone" in ans["lines"][0]
+    assert time.monotonic() - t0 < 3 and _empty()
+    assert phone_jobs.result(dev, {"id": taken[0], "rc": 0, "result": {"rc": 0}}) == (
+        True, {"late": True})
+
+
+def test_queueing_a_restart_takes_the_host_token_or_an_admin(server, host, monkeypatch):
+    _, dev = _device("p8a Termux jobs")
+    monkeypatch.setenv("MEDIA_PHONE_JOBS_DEVICE", dev)
+    r = call(server, "POST", "/jobs/restart", {"device": "p8a"}, {"X-Auth-Token": "wrong"})
+    assert r[0].status == 401
+    admin, _ = _device("David's laptop")              # may_admin: a paired device
+    r = call(server, "POST", "/jobs/restart", {"device": "p8a"}, admin)
+    assert r[0].status == 503 and r[1]["rc"] == 1     # past the gate: the phone is offline

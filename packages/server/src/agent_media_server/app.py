@@ -89,6 +89,10 @@ device gets its token):
                   for `media restart-services --host` on another; may_admin.
                   Its own server restarts detached, after 10 s by default.
                   400 unknown name, 409 busy, 500 failed (contract §6.6)
+  POST /jobs/restart {"device", "only"?, "after"?, "force"?, "dry_run"?} →
+                  the same on the phone, down its jobs worker's own stream
+                  (phone_jobs.py, §6.21a); host token or may_admin. 404
+                  not_a_device, 400 another field, 503 offline / no answer
   GET  /sessions/events → the same, as a stream of changes, for a phone's
                   background notifier (session_events.py, §6.13)
   GET  /sessions/state  → every live session's working / waiting / approval,
@@ -562,7 +566,9 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         # device named by MEDIA_PHONE_JOBS_DEVICE.
         from . import phone_jobs
 
-        return phone_jobs.serve(h, auth.device_id(_bearer(h)))
+        kinds = ",".join(parse_qs(query).get("kinds") or []).split(",")
+        return phone_jobs.serve(h, auth.device_id(_bearer(h)),
+                                [k.strip() for k in kinds if k.strip()])
     if path == "/phone/ask":
         # An agent's tool waiting on the phone's answer (§6.21): the host's
         # token, a long poll of up to a minute.
@@ -1566,6 +1572,24 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
                   f"{a['session'][:8] if a['session'] else 'a new chat'}",
                   file=sys.stderr, flush=True)
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/jobs/restart":
+        # `media restart-services --host <the phone>` (phone_jobs.restart,
+        # contract §6.21a): queued down the stream the phone's worker holds
+        # open to this server, so nothing has to reach the phone. The host's
+        # own token (the CLI on this host), else a caller that may_admin.
+        from . import phone_jobs
+
+        if not (_TOKEN_OK is not None and _TOKEN_OK(h)):
+            user, err = auth.may_admin(_bearer(h))
+            if not user:
+                _json(h, err.pop("status", 403), {"ok": False, **err})
+                return True
+        body = _read_json(h)
+        name = str(body.pop("device", "") or "") if isinstance(body, dict) else ""
+        status, detail = phone_jobs.restart(name, body)
+        print(f"jobs/restart: {name!r} {json.dumps(body)[:200]} → {status} "
+              f"rc {detail.get('rc')}", file=sys.stderr, flush=True)
+        _json(h, status, detail)
     elif path == "/jobs/result":
         from . import phone_jobs
 

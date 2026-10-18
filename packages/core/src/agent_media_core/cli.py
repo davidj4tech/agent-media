@@ -8263,8 +8263,17 @@ def cmd_restart_services(a) -> int:
     from . import restart_services
 
     if getattr(a, "host", None):
-        # Another host, through its own server (POST /services/restart), as a
-        # paired device of it: `media peer pair`. Never ssh.
+        # A device that dials out to this host's server (the phone's jobs
+        # worker) first: the restart goes down its own connection, so nothing
+        # has to reach it. Else another host through its own server (POST
+        # /services/restart), as a paired device of it: `media peer pair`.
+        # Never ssh.
+        echo = lambda line: print(line, flush=True)  # noqa: E731
+        res = restart_services.run_device(a.host, a.only or None,
+                                          after=float(a.after or 0), force=a.force,
+                                          dry_run=a.dry_run, echo=echo)
+        if res is not None:
+            return int(res["rc"])
         res = restart_services.run_remote(a.host, a.only or None,
                                           after=float(a.after or 0), force=a.force,
                                           dry_run=a.dry_run,
@@ -9405,11 +9414,15 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="name what would be restarted and show the busy "
                          "checks, touch nothing (exit 3 if busy)")
     rs.add_argument("--host", metavar="NAME", default=None,
-                    help="do it on another host, through its server's POST "
-                         "/services/restart as a paired device of it (a peer "
-                         "alias, its host name or a role; pair once with "
-                         "`media peer pair`). No ssh. Its own server restarts "
-                         "detached, after 10 s")
+                    help="do it on another host. A device that dials out to "
+                         "this host's server (the phone's jobs worker: p8a, the "
+                         "first word of its device name) gets it down its own "
+                         "connection, waited on up to 60 s; otherwise through "
+                         "that host's server's POST /services/restart as a "
+                         "paired device of it (a peer alias, its host name or "
+                         "a role; pair once with `media peer pair`). No ssh, "
+                         "no inbound connection to a device. A service the "
+                         "answer runs in restarts detached, after 10 s")
     rs.set_defaults(func=cmd_restart_services)
 
     pe = sub.add_parser(

@@ -53,12 +53,17 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
-#: Short names that are not just the unit name less its prefix.
-ALIASES = {"canvas": "visual-canvas"}
+#: Short names that are not just the unit name less its prefix. `canvas` is
+#: red5's `agent-media-visual-canvas`, the phone's loopback `canvas-local`
+#: and an Android install's `sasonica-canvas`, so `--only canvas` means the
+#: canvas wherever it runs.
+ALIASES = {"canvas": ("visual-canvas", "canvas-local", "sasonica-canvas")}
 #: Prefixes a short name drops: systemd's `agent-media-x`, runit's `media-x`.
 PREFIXES = ("agent-media-", "media-")
 #: Services a restart of which cuts off a reply being spoken (short names).
@@ -111,7 +116,7 @@ def short_name(name: str) -> str:
             name = name[len(p):]
             break
     for alias, real in ALIASES.items():
-        if name == real:
+        if name in real:
             return alias
     return name
 
@@ -135,7 +140,7 @@ def resolve(only: "Optional[list[str]]", svcs: list[Service]
     for raw in only:
         n = raw.strip().removesuffix(".service")
         hits = [s for s in svcs if n in (s.name, s.short)
-                or ALIASES.get(n) in (s.name, s.short)]
+                or s.name in ALIASES.get(n, ())]
         if not hits:
             unknown.append(raw)
         wanted.update(id(s) for s in hits)
@@ -672,16 +677,95 @@ def run_remote(name: str, only: "Optional[list[str]]" = None, *, after: float = 
     return {**fail, **ans, "rc": int(ans.get("rc", FAILED))}
 
 
+def run_device(name: str, only: "Optional[list[str]]" = None, *, after: float = 0,
+               force: bool = False, dry_run: bool = False,
+               echo: "Optional[Callable[[str], None]]" = None) -> "Optional[dict]":
+    """`run()` on a device that dials out to this host's server — the phone's
+    Termux worker (server phone_jobs.py, contract §6.21a) — rather than a
+    server this host dials in to. Nothing has to reach the device: the
+    restart goes down the stream its worker holds open, as a job of its own
+    kind, and the device's run() dict comes back the same way.
+
+    Asks this host's own canvas (`POST /jobs/restart`, the host's token,
+    `MEDIA_PHONE_JOBS_URL` / `MEDIA_VISUAL_URL`, as phone_run does). None when
+    NAME is not this server's device, or there is no server here to ask (or
+    one too old for the route): the caller then tries NAME as a peer. Else
+    the device's dict, or one with `rc` FAILED saying why there is none
+    (offline, no answer in time, a refused token)."""
+    from . import phone_run
+
+    body: dict = {"device": name, "force": force, "dry_run": dry_run}
+    if only:
+        body["only"] = list(only)
+    if after > 0:
+        body["after"] = after
+    req = urllib.request.Request(
+        phone_run._base() + "/jobs/restart", data=json.dumps(body).encode(),
+        method="POST", headers={"Content-Type": "application/json",
+                                "X-Auth-Token": phone_run._token()})
+    try:
+        with urllib.request.urlopen(req, timeout=DEVICE_TIMEOUT_S) as r:
+            status, ans = r.status, json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        status = e.code
+        try:
+            ans = json.loads(e.read() or b"{}")
+        except ValueError:
+            ans = {}
+    except (OSError, ValueError):
+        return None
+    if not isinstance(ans, dict) or status in (401, 403, 404):
+        # Not a device of ours (`not_a_device`), a server without the route,
+        # or one that does not take this host's token (not this host's own
+        # server): nothing here to ask, so NAME is tried as a peer.
+        return None
+    fail = {"rc": FAILED, "lines": [], "selected": [], "busy": [], "unknown": [],
+            "scheduled": None, "own": [], "after": after}
+    if "rc" not in ans:
+        why = (f"this host's server refused the restart ({status}: "
+               f"{ans.get('error') or ans})")
+        if echo:
+            echo(why)
+        return {**fail, "lines": [why]}
+    where = ans.get("device") or name
+    if status == 200 and echo:
+        echo(f"on {where} (down its own connection to this server):")
+    for line in ans.get("lines") or []:
+        if echo:
+            echo(f"  {line}" if status == 200 else line)
+    return {**fail, **ans, "rc": int(ans.get("rc", FAILED))}
+
+
+#: How long `run_device` waits on this host's server, which waits on the phone
+#: (phone_jobs.RESTART_TIMEOUT_S, 60 s, and its own margin).
+DEVICE_TIMEOUT_S = 80.0
+
+
 def main(argv: "Optional[list[str]]" = None) -> int:
     """The detached run's entry point (`python -m agent_media_core.restart_services
-    --fire --only …`); people use `media restart-services`."""
+    --fire --only …`); people use `media restart-services`.
+
+    `--json` is the phone's jobs worker asking (phone-jobs.py, a restart job
+    from the server it dials out to): run() with `--after`/`--dry-run`/
+    `--force` as given, the caller no session (`caller=""`) and `detach_own`
+    (the worker may be among the restarted services), and its dict printed
+    as one line of JSON on stdout, the lines on stderr as they come."""
     import argparse
 
     ap = argparse.ArgumentParser(prog="restart_services")
     ap.add_argument("--only", nargs="+", default=None)
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--fire", action="store_true")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--after", type=float, default=0)
+    ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv)
+    if a.json:
+        res = run(a.only, after=max(0.0, a.after), force=a.force, dry_run=a.dry_run,
+                  caller="", detach_own=True,
+                  echo=lambda line: print(line, file=sys.stderr, flush=True))
+        print(json.dumps({**res, "host": host()}), flush=True)
+        return int(res["rc"])
     print(f"restart-services: detached run for {' '.join(a.only or ['all'])}", flush=True)
     res = run(a.only, force=a.force, fire=a.fire,
               echo=lambda line: print(line, flush=True))
