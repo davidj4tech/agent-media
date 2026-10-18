@@ -3526,8 +3526,17 @@ def replay_sentence_map(row: dict) -> list[str]:
     return []
 
 
+def _replay_rank(row: dict) -> int:
+    """The rank a replay of `row` holds the token at: above a question for a
+    held reply not yet heard (`_UNREAD_RANK`: catching up on a thread is not
+    interrupted), else `_REPLAY_RANK`."""
+    from .intake.submit import _REPLAY_RANK, _UNREAD_RANK
+    ex = row.get("extras") or {}
+    return _UNREAD_RANK if ex.get("held") and not ex.get("heard") else _REPLAY_RANK
+
+
 def _replay_row(row: dict, from_sentence: Optional[int] = None,
-                then_id: Optional[int] = None) -> int:
+                then_id: Optional[int] = None, lock_fd: int = -1) -> int:
     """Play one speech-history row: push its clips to the speech target and
     refresh now_playing (+ position follower). The traversal path addresses
     rows by index (`_do_replay`); the clip browser addresses them by history
@@ -3536,7 +3545,11 @@ def _replay_row(row: dict, from_sentence: Optional[int] = None,
 
     `from_sentence` starts it at that sentence of `replay_sentence_map(row)`
     ("read from here" in the app) — clamped into it, and ignored for a row
-    that has no sentence map (it plays from the top)."""
+    that has no sentence map (it plays from the top).
+
+    `lock_fd` is a playback token already held, handed down by the follower
+    of the replay before this one in a chain (`replay-track --then-id`), so
+    nothing waiting gets in between the two."""
     uri = row.get("uri")
     if not uri:
         return 1
@@ -3590,10 +3603,15 @@ def _replay_row(row: dict, from_sentence: Optional[int] = None,
     # one holding the token.
     _stop_replay_trackers()
     replay_lock = None
-    if recorded:
-        from .intake.submit import _REPLAY_RANK, _SpeechPlaybackLock
+    rank = _replay_rank(row)
+    if recorded and lock_fd is not None and lock_fd >= 0:
+        from .intake.submit import _SpeechPlaybackLock
+        replay_lock = _SpeechPlaybackLock.adopt(lock_fd, rank=rank,
+                                                session=f"replay:{os.getpid()}")
+    elif recorded:
+        from .intake.submit import _SpeechPlaybackLock
         replay_lock = _SpeechPlaybackLock(kind="replay")
-        if not replay_lock.take_within(_replay_wait_s(), rank=_REPLAY_RANK,
+        if not replay_lock.take_within(_replay_wait_s(), rank=rank,
                                        session=f"replay:{os.getpid()}"):
             print("media replay: speech is busy; playing anyway",
                   file=sys.stderr)
@@ -3611,7 +3629,7 @@ def _replay_row(row: dict, from_sentence: Optional[int] = None,
         # it itself only when no follower runs).
         return _push_replay(row, ex, clip_uris, clip_durations, replay_text,
                             speech_target, pane, recorded, replay_lock,
-                            start=start, then_id=then_id)
+                            start=start, then_id=then_id, rank=rank)
     finally:
         # Handed to the follower, the descriptor is closed here and the token
         # lives on in it; otherwise this is the release.
@@ -3736,7 +3754,7 @@ def _seek_when_loaded(sock, secs: float, tries: int = 20) -> bool:
 def _push_replay(row: dict, ex: dict, clip_uris: list, clip_durations: list,
                  replay_text: str, speech_target: Target, pane: str,
                  recorded: bool, replay_lock, start: int = 0,
-                 then_id: Optional[int] = None) -> int:
+                 then_id: Optional[int] = None, rank: Optional[int] = None) -> int:
     """The body of `_replay_row` once the token is settled: push the clips,
     label them, write now_playing and spawn the follower.
 
@@ -3974,6 +3992,7 @@ def _push_replay(row: dict, ex: dict, clip_uris: list, clip_durations: list,
              "--pane", pane,
              "--durations", json.dumps(clip_durations)]
             + (["--lock-fd", str(lock_fd)] if lock_fd is not None else [])
+            + (["--rank", str(rank)] if lock_fd is not None and rank is not None else [])
             + (["--then-id", str(then_id)] if then_id is not None else [])
             + (["--heard-id", str(held_id)] if held_id is not None else []),
             start_new_session=True,
@@ -4068,6 +4087,10 @@ def cmd_replay(a) -> int:
         if row is not None:
             then_id = _next_unheard(row)
             kw = {"then_id": then_id} if then_id is not None else {}
+            # Handed down by the follower of the reply before this one.
+            lock_fd = getattr(a, "lock_fd", -1)
+            if lock_fd is not None and lock_fd >= 0:
+                kw["lock_fd"] = lock_fd
             return (_replay_row(row, **kw) if start is None
                     else _replay_row(row, from_sentence=start, **kw))
         print(f"media replay: no clip with id {a.id}", file=sys.stderr)
@@ -4596,8 +4619,10 @@ def cmd_replay_track(a) -> int:
     lock_fd = getattr(a, "lock_fd", -1)
     if lock_fd is not None and lock_fd >= 0:
         from .intake.submit import _REPLAY_RANK, _SpeechPlaybackLock
-        token = _SpeechPlaybackLock.adopt(lock_fd, rank=_REPLAY_RANK,
-                                          session=f"replay:{os.getpid()}")
+        rank = getattr(a, "rank", None)
+        token = _SpeechPlaybackLock.adopt(
+            lock_fd, rank=_REPLAY_RANK if rank is None else rank,
+            session=f"replay:{os.getpid()}")
 
     def _barged_in() -> bool:
         """A question, a permission prompt or an urgent say wants the voice.
@@ -4772,22 +4797,43 @@ def cmd_replay_track(a) -> int:
 
     def _then() -> int:
         """Start the row queued behind this one (`--then-id`: the reply after
-        a replayed question, or the thread's next unheard reply), as its own replay with its own follower. The
-        token goes first, or that replay would wait on us for it. Both lanes
-        hand on: the clock lane (the phone) as well as the player-polling one."""
-        if token is not None:
+        a replayed question, or the thread's next unheard reply), as its own
+        replay with its own follower. The token is handed to it (`--lock-fd`),
+        not released: released, a question waiting for the voice took it in
+        the gap and was spoken between two unread replies (18 Oct 2026). On
+        Windows, where a descriptor cannot be passed, it is released first, or
+        that replay would wait on us for it. Both lanes hand on: the clock
+        lane (the phone) as well as the player-polling one."""
+        nonlocal token
+        fd = token.fileno if token is not None and os.name != "nt" else None
+        if token is not None and fd is None:
             try:
                 token.release()
             except Exception:  # noqa: BLE001
                 pass
+            token = None
         try:
             subprocess.Popen([sys.executable, "-m", "agent_media_core.cli",
-                              "replay", "--id", str(then_id)],
+                              "replay", "--id", str(then_id)]
+                             + (["--lock-fd", str(fd)] if fd is not None else []),
                              start_new_session=True, stdin=subprocess.DEVNULL,
                              stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL)
+                             stderr=subprocess.DEVNULL,
+                             pass_fds=(fd,) if fd is not None else ())
         except OSError:
-            pass
+            # Not started: keep nothing waiting on a token nobody will use.
+            if token is not None:
+                try:
+                    token.release()
+                except Exception:  # noqa: BLE001
+                    pass
+                token = None
+            return 0
+        if token is not None:
+            # The child shares the open file description now; an unlock from
+            # here would free its token too.
+            token.handed_off()
+            token = None
         return 0
 
     if offsets:
@@ -9363,6 +9409,9 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="the last reply from where it was stopped, else the "
                         "open thread's newest (a headset's play with nothing "
                         "loaded)")
+    # With --id: the playback token, already held by the replay before this
+    # one in a chain and handed down (replay-track's --then-id).
+    s.add_argument("--lock-fd", type=int, default=-1, help=argparse.SUPPRESS)
     s.set_defaults(func=cmd_replay)
 
     s = sub.add_parser("replay-prev", help=argparse.SUPPRESS)  # popup < (restart-first)
@@ -9381,6 +9430,9 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("--durations", default="")
     # The playback token, taken by the replay and handed down (_replay_row).
     s.add_argument("--lock-fd", type=int, default=-1)
+    # The rank the token is held at (_replay_rank): above a question for an
+    # unread reply.
+    s.add_argument("--rank", type=int, default=None)
     # A history row to replay once this one has played to its end (the
     # reply after a replayed question). Not after a Stop or a barge-in.
     s.add_argument("--then-id", type=int, default=None)

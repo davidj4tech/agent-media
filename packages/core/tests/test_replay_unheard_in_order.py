@@ -63,6 +63,7 @@ def test_replay_by_id_chains_the_next_unheard(store, monkeypatch):
     calls = []
     monkeypatch.setattr(cli, "_replay_row",
                         lambda row, **kw: calls.append((row["id"], kw)) or 0)
-    a = argparse.Namespace(id=first, from_sentence=None, again=False)
+    a = argparse.Namespace(id=first, from_sentence=None, again=False, lock_fd=7)
     assert cli.cmd_replay(a) == 0
-    assert calls == [(first, {"then_id": second})]
+    # The token handed down by the reply before it goes on to its replay.
+    assert calls == [(first, {"then_id": second, "lock_fd": 7})]

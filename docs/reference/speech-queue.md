@@ -24,6 +24,11 @@ replies NORMAL and questions, notifications and permission prompts HIGH. A
 short notification cutting ahead of a long reply is an effect of that
 tagging, not of length. A replay holds the token at `_REPLAY_RANK` (HIGH − 1):
 above every reply, below a question.
+A replay of an unread reply (a held reply not yet heard: opening a thread,
+or its Play) holds at `_UNREAD_RANK` (HIGH + 1) instead, so a question waits
+until the reading is done and only URGENT barges in; the run of unread
+replies hands the token from one follower to the next replay (`--lock-fd`)
+rather than releasing it, so nothing gets in between two of them either.
 
 Across **different sessions**:
 

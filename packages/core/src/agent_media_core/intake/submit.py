@@ -1889,6 +1889,14 @@ _PRIO_RANK = {
 #: read that reply's wait to resume as a reason to step aside.
 _REPLAY_RANK = _PRIO_RANK[Priority.HIGH] - 1
 
+#: The rank a replay of an unread reply holds the token at: one above HIGH, so
+#: a question or a permission prompt waits until the reading is done instead
+#: of cutting into it; only URGENT still barges in. Reading a thread's unread
+#: replies is the listener catching up, and a question spoken in the middle
+#: pulled the follow-along off the text being read (David, 18 Oct 2026). The
+#: question's card is on screen meanwhile; only its voice waits.
+_UNREAD_RANK = _PRIO_RANK[Priority.HIGH] + 1
+
 
 def _rank_of(priority: Priority) -> int:
     return _PRIO_RANK.get(priority, _PRIO_RANK[Priority.NORMAL])
