@@ -23,6 +23,7 @@ def _env(tmp_path, monkeypatch):
     monkeypatch.delenv("CLAUDE_CONTEXT_WINDOW", raising=False)
     # The thread link has its own tests, below.
     monkeypatch.setenv("MEDIA_THREAD_LINK", "0")
+    monkeypatch.setenv("MEDIA_AGENT_NOTES", "0")
 
 
 def test_a_known_1m_model_is_not_warned_at_120k(tmp_path, monkeypatch, capsys):
@@ -154,3 +155,50 @@ def test_a_compaction_tells_it_again_beside_a_band(tmp_path, monkeypatch, capsys
     t2 = _transcript(tmp_path, "some-model", 20_000)
     after = _run(context.main, monkeypatch, capsys, {**hook, "transcript_path": t2})
     assert "/app/t/s5" in after
+
+
+def _notes_env(tmp_path, monkeypatch, visual="0"):
+    _env(tmp_path, monkeypatch)
+    monkeypatch.delenv("MEDIA_AGENT_NOTES")
+    monkeypatch.delenv("MEDIA_AGENT_NOTES_FILE", raising=False)
+    monkeypatch.setenv("MEDIA_SPEECH_VISUAL", visual)
+
+
+def _note(out):
+    return json.loads(out)["hookSpecificOutput"]["additionalContext"]
+
+
+def test_the_notes_are_told_once_with_the_rules_that_apply(tmp_path, monkeypatch, capsys):
+    _notes_env(tmp_path, monkeypatch)
+    hook = {"session_id": "n1", "hook_event_name": "UserPromptSubmit",
+            "transcript_path": "/home/x/.claude/projects/p/n1.jsonl"}
+    note = _note(_run(context.main, monkeypatch, capsys, hook))
+    assert "read aloud" in note and "code block" in note
+    assert "AskUserQuestion" in note and "description" in note   # Claude Code's own tools
+    assert "[[visual:" not in note                                  # no canvas here
+    assert _run(context.main, monkeypatch, capsys, hook) == ""
+
+
+def test_another_harness_gets_no_claude_rules_and_the_canvas_adds_figures(tmp_path, monkeypatch, capsys):
+    _notes_env(tmp_path, monkeypatch, visual="1")
+    note = _note(_run(context.main, monkeypatch, capsys, {
+        "session_id": "n2", "hook_event_name": "UserPromptSubmit",
+        "transcript_path": "/home/x/.codex/sessions/rollout-n2.jsonl"}))
+    assert "read aloud" in note and "[[visual:" in note
+    assert "AskUserQuestion" not in note
+
+
+def test_a_sites_own_notes_and_off(tmp_path, monkeypatch, capsys):
+    _notes_env(tmp_path, monkeypatch)
+    own = tmp_path / "notes.md"
+    own.write_text("- [all] Answer in Swedish.\n- [nope] ignored\n")
+    monkeypatch.setenv("MEDIA_AGENT_NOTES_FILE", str(own))
+    out = _run(context.main, monkeypatch, capsys, {"session_id": "n3"})
+    assert "Answer in Swedish." in out and "ignored" not in out
+    monkeypatch.setenv("MEDIA_AGENT_NOTES", "0")
+    assert _run(context.main, monkeypatch, capsys, {"session_id": "n4"}) == ""
+
+
+def test_the_shipped_notes_parse():
+    rules = context.agent_notes({"transcript_path": "/x/.claude/p/s.jsonl"})
+    assert len(rules) >= 6 and all(not r.startswith("[") for r in rules)

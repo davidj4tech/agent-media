@@ -5346,6 +5346,14 @@ its first prompt and again after a compaction, built from
 one, the `sasonica://` form), with the ask to link any session it names the
 same way. `MEDIA_THREAD_LINK=0` leaves it out.
 
+The same hook also tells each session, once (and again after a compaction),
+how to write for a reader who mostly listens on a phone: the rules in
+`agent_media_core/agent_notes.md` — spoken replies kept short, things to
+copy in code blocks, full https links, a deadline on any background wait;
+for Claude Code, a plain description on every Bash call and questions as
+AskUserQuestion cards; with the canvas on, the `[[visual:]]` markers.
+`MEDIA_AGENT_NOTES=0` leaves them out, `MEDIA_AGENT_NOTES_FILE` replaces them.
+
 ---
 
 ## Appendix A — routes outside the app contract

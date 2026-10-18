@@ -275,8 +275,11 @@ def note_for(hook: dict) -> str:
     JSON all four read as context for the model — Gemini shows plain stdout
     to the person instead, and Codex is not known to read it at all. pi's extension asks
     without an event name, and takes the text as it is."""
+    from ._env import load_env_file
+
+    load_env_file("hook")  # the switches below may be set in the env files
     d = state_dir()
-    note = " ".join(n for n in (_band_note(hook, d), _link_note(hook, d)) if n)
+    note = " ".join(n for n in (_band_note(hook, d), _notes_note(hook, d), _link_note(hook, d)) if n)
     event = hook.get("hook_event_name")
     if note and event:
         note = json.dumps({"hookSpecificOutput": {
@@ -300,6 +303,7 @@ def _band_note(hook: dict, d: Path) -> str:
             # A compaction: what the session was told is gone with it.
             state.write_text("0")
             (d / f"{sid}.link").unlink(missing_ok=True)
+            (d / f"{sid}.notes").unlink(missing_ok=True)
         return ""
     for band, msg in BANDS:
         if pct >= band:
@@ -327,6 +331,51 @@ def thread_link_base() -> str:
     load_env_file("hook")
     pub = (os.environ.get("MEDIA_PUBLIC_URL") or "").strip().rstrip("/")
     return f"{pub}/app/t/" if pub.startswith("https://") else "sasonica://t/"
+
+
+#: The shipped notes (agent_media_core/agent_notes.md): how to write for a
+#: reader who mostly listens, on a phone — from what David's own sessions
+#: learnt (docs/proposals/2026-10-18-memories-to-docs.md, "D").
+NOTES_FILE = Path(__file__).resolve().parent.parent / "agent_notes.md"
+
+
+def agent_notes(hook: dict) -> list[str]:
+    """The notes' rules that apply to this session: `all`, `claude` when it
+    is a Claude Code session (its transcript is under ~/.claude), `canvas`
+    when the canvas draws figures."""
+    from ._env import load_env_file
+    from ._visual import visual_enabled
+
+    load_env_file("hook")
+    path = Path(os.environ.get("MEDIA_AGENT_NOTES_FILE") or NOTES_FILE).expanduser()
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return []
+    claude = "/.claude/" in str(hook.get("transcript_path") or "")
+    want = {"all"} | ({"claude"} if claude else set()) | ({"canvas"} if visual_enabled() else set())
+    out = []
+    for line in lines:
+        if not line.startswith("- ["):
+            continue
+        tag, _, rule = line[3:].partition("] ")
+        if tag in want and rule.strip():
+            out.append(rule.strip())
+    return out
+
+
+def _notes_note(hook: dict, d: Path) -> str:
+    """The shipped notes, told once per session (again after a compaction).
+    MEDIA_AGENT_NOTES=0 keeps them out."""
+    sid = hook.get("session_id")
+    if not sid or (os.environ.get("MEDIA_AGENT_NOTES") or "").strip() in ("0", "-", "off"):
+        return ""
+    marker = d / f"{sid}.notes"
+    if marker.exists():
+        return ""
+    marker.write_text("1")
+    rules = agent_notes(hook)
+    return ("How to write for this user (agent-media): " + " ".join(rules)) if rules else ""
 
 
 def _link_note(hook: dict, d: Path) -> str:
