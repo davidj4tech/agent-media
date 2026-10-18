@@ -117,3 +117,68 @@ def test_malformed_response_returns_none(monkeypatch):
     payload = {"unexpected": "shape"}
     monkeypatch.setattr(_summary.urllib.request, "urlopen", _fake_urlopen(payload))
     assert _summary.summarize_for_speech("a long reply") is None
+
+
+# --- describe: a block the model took for a request (18 Oct 2026) ---------------
+
+import pathlib as _pathlib
+
+_REPLY = json.loads((_pathlib.Path(__file__).parent / "fixtures" /
+                     "described_code_reply.json").read_text())["reply"]
+#: What claude-haiku-4-5 said, verbatim, for both blocks of that reply when
+#: each was sent bare — and what the voice then read out as their descriptions.
+_REFUSALS = [
+    "I don't see a code block in your message to describe. Could you please "
+    "share the text-to-speech code you'd like me to describe?",
+    "I don't see a code block for text-to-speech in your message. Could you "
+    "please share the code you'd like me to describe?",
+    "I don't see a code block to describe in your message.",
+]
+
+
+def test_describe_sends_the_block_tagged_as_the_thing_to_describe(monkeypatch):
+    """A directory tree and an ini file went to the model bare, and it answered
+    as if asked for code it had not been given. The block now goes inside
+    <code> tags, and the prompt says that is what it is."""
+    from agent_media_core.intake._text import strip_markdown
+    sent = []
+
+    def chat(prompt, user_text, timeout, model=None):
+        sent.append((prompt, user_text))
+        return "A directory tree with three project folders."
+    monkeypatch.setattr(_summary, "_chat", chat)
+    monkeypatch.delenv("MEDIA_DESCRIBE_LOG", raising=False)
+    monkeypatch.delenv("MEDIA_DESCRIBE_CODE_PROMPT", raising=False)
+    strip_markdown(_REPLY, describe=True)
+    assert len(sent) == 2
+    tree, ini = (u for _p, u in sent)
+    assert tree.startswith("<code>\n~/projects/\n") and tree.endswith("\n</code>")
+    assert ini.startswith('<code>\n[includeIf "gitdir:~/projects/spl/"]')
+    assert all("<code> tags" in p for p, _u in sent)
+
+
+def test_a_reply_that_is_not_a_description_falls_back_to_the_placeholder(monkeypatch):
+    """"I don't see a code block…" was spoken twice in one reply as if it
+    described the block. Anything that is a question back or says there is no
+    code is not a description: the placeholder is said instead."""
+    from agent_media_core.intake._text import strip_markdown
+    replies = iter(_REFUSALS[:2])
+    monkeypatch.setattr(_summary, "_chat", lambda *a, **k: next(replies))
+    monkeypatch.delenv("MEDIA_DESCRIBE_LOG", raising=False)
+    out = strip_markdown(_REPLY, describe=True)
+    assert "I don't see" not in out and "share" not in out
+    assert "code block, 4 lines, omitted." in out
+    assert "ini code block, 4 lines, omitted." in out
+    for r in _REFUSALS:
+        assert not _summary._is_description(r), r
+
+
+def test_real_descriptions_still_pass():
+    for ok in ("A directory tree showing three project folders.",
+               "A Git configuration file that conditionally includes per-folder settings.",
+               "a shell command that force-pushes the main branch",
+               "A function that returns no value when the input is empty.",
+               "a three-row table comparing hosts by sync status"):
+        assert _summary._is_description(ok), ok
+    assert not _summary._is_description("")
+    assert not _summary._is_description("What would you like described?")

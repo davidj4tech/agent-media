@@ -3770,6 +3770,9 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
                      "source_tmux_session": source_tmux_session,
                      "source_window": source_window,
                      "source_title": reply_title}
+    if (event.metadata or {}).get("dedup_key"):
+        # What joins the live line to its message (see the local lane).
+        source_extras["dedup_key"] = event.metadata["dedup_key"]
     # Per-sentence state for a lane that renders and plays the whole reply on
     # another device. We split the text the same way the local path does; the
     # renderer tells us where each sentence lands (or, failing that, how long
@@ -5010,6 +5013,15 @@ def _submit_event(event: Event,
                 # rather than the run-together sentence the voice was given.
                 if event.metadata.get("ask"):
                     extras["ask"] = event.metadata["ask"]
+                # The reply's dedup key, so the turn being spoken joins its
+                # message by key while it plays (book_tracks._live_turn →
+                # transcript.join_speech). Without it the live line joined by
+                # words alone, and a reply whose code block was spoken as a
+                # description or "code block, N lines, omitted." scored under
+                # the join ratio — no live line, no bold, the whole reply long
+                # (David, 18 Oct 2026). History gets the key when the turn ends.
+                if event.metadata.get("dedup_key"):
+                    extras["dedup_key"] = event.metadata["dedup_key"]
                 if live is not None:
                     # Mirror the *remote* player's live state into now_playing so a
                     # status read (popup redraw) is a local DB hit, not a ~600ms

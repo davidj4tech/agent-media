@@ -713,3 +713,26 @@ def test_live_turn_starts_its_clock_at_the_first_word(monkeypatch):
     turn = b._live_turn("s1")
     assert turn["offsets"] == [0.0, 9.2, 16.0]
     assert 49.5 < turn["elapsed"] < 50.2
+
+
+def test_the_live_line_carries_the_replys_key(tmp_path, monkeypatch):
+    """The turn being spoken joins its message by key (transcript.join_speech).
+    Keyless, it joined by words — and a reply whose two code blocks were spoken
+    as descriptions scored 0.56 against a 0.6 bar, so it had no live line and
+    no bold for its whole length (session 2ccb8b31, 18 Oct 2026)."""
+    import os
+    from agent_media_core import book_tracks as bt, session_feed
+    from agent_media_core.state.store import StateStore
+    folder = tmp_path / "p-scratch" / "A talk"
+    monkeypatch.setattr(bt, "_read_manifest", lambda s: {"turns": []})
+    monkeypatch.setattr(bt, "_abs_ready", lambda target=None: None)
+    monkeypatch.setattr(session_feed, "turns", lambda s, store=None: [])
+    monkeypatch.setattr(StateStore, "get_now_playing", lambda self, sink: {
+        "started_at": 300.0,
+        "extras": {"source_session": "sess-1", "text": "Described words.",
+                   "writer_pid": os.getpid(), "dedup_key": "c900c50f",
+                   "clip_sentences": ["Described words."],
+                   "clip_durations_s": [2.0], "play_started_at": 1000.0}})
+    assert bt._live_turn("sess-1")["key"] == "c900c50f"
+    (line,) = bt.conversation_log("sess-1", folder)
+    assert line["live"] and line["key"] == "c900c50f"

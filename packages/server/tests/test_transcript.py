@@ -524,6 +524,30 @@ def test_a_figure_does_not_cost_the_reply_its_live_line(script):
     assert reply["spoken"]["live"] == {k: live[k] for k in T.LIVE_FIELDS}
 
 
+def test_a_described_code_block_does_not_cost_the_reply_its_live_line(script):
+    """The reply that showed it (session 2ccb8b31, 18 Oct 2026): a directory
+    tree and an ini block in the first 400 characters, each spoken as a
+    one-line description, so the live line's words scored 0.56 against the
+    message's — under the 0.6 bar — and the reply got no live line and no bold
+    at all. The live line now carries the reply's dedup key, which holds
+    whatever the voice said for the blocks."""
+    import json
+    import pathlib
+    fx = json.loads((pathlib.Path(__file__).parent / "fixtures" /
+                     "described_code_reply.json").read_text())
+    script.prompt("How should I split my projects folder?")
+    script.text(fx["reply"])
+    out = msgs()
+    reply = out[1]
+    (key,) = T.spoken_keys(texts(reply)[-1])
+    live = {"live": True, "sentences": fx["sentences"], "sentence": 1,
+            "offsets": [0.0] * len(fx["sentences"]), "elapsed": 12.0,
+            "server_time": 100.0, "delay": 0.0, "paused": False}
+    T.join_speech(out, [_line("agent", fx["spoken"], reply["at"] + 10, key=key, **live)])
+    assert reply["spoken"] is not None, "the reply lost its live line to its code blocks"
+    assert reply["spoken"]["live"] == {k: live[k] for k in T.LIVE_FIELDS}
+
+
 def test_reveal_halves_join_by_their_own_key(script):
     script.prompt("Draw")
     script.text("Look here. [[reveal: a diagram]] As you can see, it works.")

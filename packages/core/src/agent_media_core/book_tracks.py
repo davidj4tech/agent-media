@@ -868,6 +868,10 @@ def _live_turn(session: str) -> Optional[dict]:
         # off as well put the bold a beat behind at every boundary.
         delay = 0.0
     return {"at": round(float(at), 3), "text": text,
+            # The reply's dedup key: what joins the live line to its message
+            # (transcript.join_speech) when the spoken words differ from the
+            # written ones — a described or omitted code block.
+            "key": str(ex.get("dedup_key") or ""),
             "listener": bool(ex.get("listener")),
             "sentences": [str(x) for x in (ex.get("clip_sentences") or [])],
             "sentence": sentence, "offsets": offsets,
@@ -1024,7 +1028,7 @@ def conversation_log(session: str, folder: Path, *, target=None,
         replayed = next((l for l in out if l.get("id") == live["history_id"]), None)
     if live and (replayed is not None or live["at"] not in seen):
         line = replayed if replayed is not None else _line(
-            live["listener"], live["text"], {}, live["at"])
+            live["listener"], live["text"], {}, live["at"], live.get("key", ""))
         # Marked live, with the sentence being spoken, so the transcript can
         # follow the voice sentence by sentence rather than just show the turn.
         # A replay marks the turn it replays, in its place.

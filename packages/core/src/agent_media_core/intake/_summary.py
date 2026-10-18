@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 
@@ -156,17 +157,41 @@ def summarize_for_speech(text: str) -> str | None:
 DEFAULT_DESCRIBE_TIMEOUT = 8
 
 DESCRIBE_CODE_PROMPT = (
-    "You describe a code block for text-to-speech in ONE short spoken sentence. "
-    "No markdown, no symbols, do not quote the code. Say what it does or is — "
-    "e.g. 'a shell command that force-pushes the main branch'. Output only the "
-    "sentence."
+    "You turn ONE code block into ONE short spoken sentence for text-to-speech. "
+    "The user message is the code block itself, between <code> tags; it may be "
+    "a program, a shell command, a config file, a directory tree or any other "
+    "preformatted text. No markdown, no symbols, do not quote it. Say what it "
+    "is or does — e.g. 'a shell command that force-pushes the main branch', "
+    "'a directory tree with three project folders'. Never ask for anything and "
+    "never say there is no code. Output only the sentence."
 )
 DESCRIBE_TABLE_PROMPT = (
-    "You describe a table for text-to-speech in ONE short spoken sentence. No "
-    "markdown, do not read cells verbatim. Say what it contains or compares and "
-    "its size — e.g. 'a three-row table comparing hosts by sync status'. Output "
-    "only the sentence."
+    "You turn ONE table into ONE short spoken sentence for text-to-speech. The "
+    "user message is the table itself, between <table> tags, one row per line. "
+    "No markdown, do not read cells verbatim. Say what it contains or compares "
+    "and its size — e.g. 'a three-row table comparing hosts by sync status'. "
+    "Never ask for anything and never say there is no table. Output only the "
+    "sentence."
 )
+
+#: What a describer says when it took the block for a request about something
+#: else: "I don't see a code block in your message to describe. Could you
+#: please share the text-to-speech code…?" (claude-haiku-4-5 on a bare
+#: directory tree, 18 Oct 2026 — spoken twice in one reply). Not a description;
+#: the placeholder is better than reading that out.
+_NOT_A_DESCRIPTION = re.compile(
+    r"\b(?:i\s+(?:do\s*n[o']?t|can\s*n[o']?t|cannot|am\s+unable|'m\s+unable)\s+(?:see|find|access|describe)"
+    r"|(?:no|any)\s+(?:code(?:\s+block)?|table)\s+(?:in|to|was|provided|here)"
+    r"|(?:please|could\s+you|can\s+you)\s+(?:please\s+)?(?:share|paste|provide|send)"
+    r"|you(?:'d|\s+would)\s+like\s+me\s+to)\b",
+    re.IGNORECASE)
+
+
+def _is_description(out: "str | None") -> bool:
+    """A one-sentence description, not a question back or a "there is no
+    code" — anything else falls back to the mechanical placeholder."""
+    text = (out or "").strip()
+    return bool(text) and not text.endswith("?") and not _NOT_A_DESCRIPTION.search(text)
 
 
 def describe_enabled() -> bool:
@@ -191,10 +216,19 @@ def _log_describe(kind: str, in_chars: int, secs: float, out: "str | None") -> N
 
 
 def _timed_describe(kind: str, prompt: str, text: str) -> str | None:
+    """Describe one block. The block goes to the model wrapped in a tag
+    (``<code>…</code>``) so it reads as the thing to describe: sent bare, a
+    directory tree or a config file came back as "I don't see a code block in
+    your message" — which was then spoken as if it were the description."""
     import time as _time
     t0 = _time.perf_counter()
-    out = _chat(prompt, text, _int_env("MEDIA_DESCRIBE_TIMEOUT", DEFAULT_DESCRIBE_TIMEOUT),
+    tag = "table" if kind == "table" else "code"
+    body = (text or "").strip("\n")
+    out = _chat(prompt, f"<{tag}>\n{body}\n</{tag}>" if body.strip() else "",
+                _int_env("MEDIA_DESCRIBE_TIMEOUT", DEFAULT_DESCRIBE_TIMEOUT),
                 model=os.environ.get("MEDIA_DESCRIBE_MODEL") or None)
+    if out is not None and not _is_description(out):
+        out = None
     _log_describe(kind, len(text or ""), _time.perf_counter() - t0, out)
     return out
 

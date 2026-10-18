@@ -364,3 +364,17 @@ def test_a_finished_reply_on_a_local_target_is_unchanged():
     assert "streaming" not in ex
     assert len(sink.plays) == len(ex["clip_sentences"])
     assert _row(state)["text"] == text
+
+
+def test_the_live_row_carries_the_replys_dedup_key():
+    """The turn being spoken joins its thread message by key while it plays
+    (book_tracks._live_turn → transcript.join_speech). Without the key on the
+    live row, a reply whose code blocks were spoken as descriptions joined
+    nothing and had no follow-along (session 2ccb8b31, 18 Oct 2026)."""
+    state, coord = StateStore(), _Coord()
+    seen = []
+    sink = _LocalSink(on_play=lambda n: seen.append(
+        ((state.get_now_playing("speech") or {}).get("extras") or {}).get("dedup_key")))
+    S.submit_stream(iter(SENTS), _event(title="Thread name", dedup_key="c900c50f"),
+                    state=state, sink=sink, coordinator=coord)
+    assert seen and all(k == "c900c50f" for k in seen), seen
