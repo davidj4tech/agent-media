@@ -86,11 +86,96 @@ and other Matrix clients sit.
 6. **Release-build checks**: a CI check that the release APK has the
    WebView user-agent strip turned off.
 
+## The hot springs pitch (David, 19 Oct 2026)
+
+"It will be about integrating AI into the current Hot Springs workflows.
+I'm not sure to what degree. I'm not sure whether we'd host them here or
+on their own servers yet." So the pitch is not "Sasonica the messaging
+app" but AI fitted into how they already work, with Sasonica as the
+delivery vehicle where it fits. Both open questions stay open: how far,
+and who hosts.
+
+That uncertainty is itself the reason to **sell a paid discovery first**,
+not a build.
+
+## Quoting advice
+
+Rough Australian market figures for an independent AI or software
+consultant in 2026. Check them against local peers before quoting. Prices
+exclude GST: add 10% once South Pen Labs is registered (required at $75k
+turnover).
+
+### Quote in three phases, each its own decision
+
+1. **Discovery: a fixed fee, about 1–2 weeks.** Sit with front desk,
+   bookings, guest messaging, marketing and management. Map each workflow,
+   the hours it takes and the systems involved (booking platform, POS,
+   Microsoft 365 or Google, CRM). The deliverable is a short report: three
+   to five AI opportunities ranked by hours saved against risk, a hosting
+   recommendation, and a fixed quote for the pilot. Typical price is
+   **$3k–$8k**. Credit it against the pilot if they go ahead, which makes
+   the yes easy.
+2. **Pilot: one workflow, fixed price, about 4–8 weeks.** Pick the
+   workflow with the clearest payoff, for example drafting replies to
+   guest enquiries for a person to approve, or a staff assistant that
+   answers questions from their own policies and procedures. Agree the
+   success measure up front (hours per week, response time). Typical price
+   is **$15k–$40k**, depending on the integrations. Fix the scope in
+   writing; anything beyond it is a change request with its own price.
+3. **Ongoing: a monthly retainer.** It covers support, monitoring, prompt
+   and model updates, and small changes. Typical price is
+   **$1k–$4k/month**, depending on hosting (below) and response-time
+   commitments.
+
+Internally, estimate in day rates (about **$1,200–$2,000/day**, or
+$150–$250/hour). Quote fixed prices, not hours: the client is buying an
+outcome, and fixed prices reward you for the reusable Sasonica pieces.
+Sanity-check against value. If the pilot saves 20 staff hours a week at
+about $45/hour loaded, that is roughly $45k a year, so a $25k pilot pays
+back within a year.
+
+### Hosting changes the quote, not the phases
+
+| | Hosted by South Pen Labs | On their servers |
+|---|---|---|
+| Setup | lower (our stack, already built) | higher: their hardware or cloud, their IT, access and security review; add about 20–40% |
+| Monthly | higher retainer: covers our infrastructure, backups and on-call | lower retainer (support only), but remote-access work is billable |
+| Privacy Act | we hold their guests' data: we need a data processing agreement, breach plan and insurance | they hold it; we are a contractor with access |
+| Fit | small team, wants it to just work | has IT staff, or policy says data stays in-house |
+
+Put both options in the discovery report and let them choose. Don't
+guess before discovery.
+
+### AI usage costs
+
+Model API costs vary with use. Either **pass them through at cost plus
+about 15–25%** (itemised monthly), or **bundle a usage allowance** into
+the retainer, with overage above it. Never absorb them uncapped. Give a
+monthly estimate from the pilot's real usage before the retainer is
+signed.
+
+### In the contract
+
+- **IP**: South Pen Labs keeps Sasonica and anything reusable, and the
+  client gets a perpetual licence to use what was built for them. Their
+  data and content stay theirs.
+- **Payment**: 50% on signing each phase and 50% on delivery. Retainer
+  billed monthly in advance.
+- **Data**: what AI providers see their data, a no-training setting on the
+  API, where it is stored. Hospitality data includes guests' health
+  notes (spa and bathing), which is sensitive information under the
+  Privacy Act: keep it out of AI prompts unless they decide otherwise in
+  writing.
+- **Human in the loop**: in the pilot, AI drafts and staff send. This
+  protects them (and us) from an AI reply going straight to a guest.
+- **Insurance**: professional indemnity and cyber cover before the
+  pilot, more so if we host.
+
 ## Open questions for David
 
-- Is the hot springs pitch staff (Teams), customers (WhatsApp, Messenger,
-  Instagram, SMS) or both? That decides which official connector comes
-  first.
-- Hosted (South Pen Labs runs the homeserver and connectors) or on the
-  customer's own box? Hosted makes us the data holder under the Privacy
-  Act.
+- Staff side (Teams, internal procedures), guest side (enquiries, bookings,
+  WhatsApp, Messenger, Instagram, SMS) or both? Discovery answers this;
+  it decides which official connector comes first.
+- Hosted or on their servers: decided in discovery (table above).
+- Which booking and POS systems they run: the biggest unknown in pilot
+  pricing.
