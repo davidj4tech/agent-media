@@ -326,7 +326,7 @@ def record_listener_turn(session: str, text: str, *, store=None,
     text = tidy_lines(text)
     if not text or not session:
         return False
-    from ._paths import cache_dir
+    from ._paths import speech_audio_dir
     from .render.engines import render_text
     from .state.store import StateStore
 
@@ -342,9 +342,8 @@ def record_listener_turn(session: str, text: str, *, store=None,
         return True
     if not _claim_listener_turn(session, text, at, st):
         return True
-    d = cache_dir() / "audio"
     try:
-        d.mkdir(parents=True, exist_ok=True)
+        d = speech_audio_dir()
     except OSError as e:
         log.warning("book-tracks: no clip dir (%s)", e)
         return False

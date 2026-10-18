@@ -5,11 +5,13 @@ shape is in [the proposal](../proposals/2026-08-30-a-feed-of-what-was-said.md);
 this page is the surface.
 
 Everything agent-media speaks is rendered to audio and then, historically,
-forgotten: the clips live in `~/.cache/agent-media/audio`, which is a cache and
-is allowed to delete them — a disk-full sweep on 2026-08-28 destroyed the audio
-behind 373 history rows. The feed is where audio goes to be *kept*, and a
-podcast client is how it comes back: queue, resume position, playback speed,
-offline download and lock-screen controls, none of which we had to write.
+forgotten: the clips lived in `~/.cache/agent-media/audio`, which is a cache
+and is allowed to delete them — a disk-full sweep on 2026-08-28 destroyed the
+audio behind 373 history rows. (They are state since 18 Oct 2026, in
+`~/.local/state/agent-media/audio`, but a host may still prune them by age.)
+The feed is where audio goes to be *kept*, and a podcast client is how it comes
+back: queue, resume position, playback speed, offline download and lock-screen
+controls, none of which we had to write.
 
 An **episode** is one audio file plus a JSON sidecar. A **feed** is a directory
 of them, served as RSS. Three feeds exist by convention:

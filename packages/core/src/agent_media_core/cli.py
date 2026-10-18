@@ -8135,7 +8135,9 @@ def _mic_detect_facts() -> "dict[str, str]":
 def _cache_dirs() -> "list[tuple[str, object]]":
     from ._paths import cache_dir, state_dir
 
-    return [("cache_audio_mb", cache_dir() / "audio"),      # rendered speech
+    # The fact keeps its name (fleet reports compare it across versions);
+    # the clips have been state since 18 Oct 2026 (_paths.speech_audio_dir).
+    return [("cache_audio_mb", state_dir() / "audio"),      # rendered speech
             ("cache_books_mb", cache_dir() / "books"),      # fetched longform
             ("cache_docs_mb", cache_dir() / "docs"),        # rendered documents
             ("feed_spool_mb", state_dir() / "feed")]        # published episodes

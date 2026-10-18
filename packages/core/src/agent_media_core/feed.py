@@ -23,8 +23,9 @@ There is no table in `state.db`, on purpose. The audio and the metadata that
 describes it are then one thing: a restored backup is a working feed, a
 half-copied episode is visible as such, and there is no way for a row to
 survive the file it points at — which is exactly the failure the clip cache
-already has (`~/.cache/agent-media/audio` holds the only copy of every clip,
-and a row whose audio has been swept still lists as replayable).
+had (`~/.cache/agent-media/audio` held the only copy of every clip — state,
+since 18 Oct 2026: `_paths.speech_audio_dir` — and a row whose audio has been
+swept still lists as replayable).
 
 Custody is the whole point of the spool. `cache_dir()` is a cache: it is
 allowed to delete anything, and on 2026-08-28 a disk-full sweep did, taking

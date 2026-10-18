@@ -1224,6 +1224,28 @@ class StateStore:
 
     # ---- retention -------------------------------------------------------
 
+    def relocate_prefix(self, old: str, new: str) -> int:
+        """Point stored paths under directory `old` at `new`; rows changed.
+
+        For a directory that moved — the speech clips, from the cache to the
+        state dir (_paths.speech_audio_dir): history rows hold each clip's
+        absolute path, in `uri` and in the `clip_uris` of `extras`, and replay
+        opens what they name. Both arguments are directories; a trailing
+        slash is added so `audio` never matches `audio-old`. Idempotent.
+        """
+        old = old.rstrip("/") + "/"
+        new = new.rstrip("/") + "/"
+        if old == new:
+            return 0
+        n = 0
+        with self._cursor() as cur:
+            for table in ("history", "now_playing"):
+                for col in ("uri", "extras"):
+                    cur.execute(f"UPDATE {table} SET {col} = replace({col}, ?, ?)"
+                                f" WHERE instr({col}, ?) > 0", (old, new, old))
+                    n += max(0, cur.rowcount)
+        return n
+
     def gc(self, *, errors_days: float = 30.0,
            other_days: Optional[float] = None,
            clip_days: float = 30.0, dry_run: bool = False) -> dict:

@@ -110,12 +110,21 @@ See also: `server-contract.md` §19, "Thread links".
 
 ### Can I delete `~/.cache/agent-media` to free disk?
 
-Not unless you are willing to lose replay. `~/.cache/agent-media/audio` holds
-the **only** copy of every spoken clip, and history points at those files.
-Delete it and your transcripts and search still work, but old replies can no
-longer be replayed. New speech works straight away. To free space safely,
-clear other caches (`pip`, `uv`, `pre-commit`, `go-build`), or move the clips
-to a bigger disk with `MEDIA_AUDIO_DIR`.
+Yes. Since 18 Oct 2026 it holds only copies of things that live elsewhere or
+are made again on demand: fetched books and music, rendered documents and web
+clips, downloaded Matrix voice notes (a held one that has not been played yet
+loses its Play, but the note is still on the Matrix server). The spoken clips
+that replay needs live in the state dir, `~/.local/state/agent-media/audio`
+(`$XDG_STATE_HOME`, or `MEDIA_AUDIO_DIR` to put them on a bigger disk). Don't
+delete that one unless you are willing to lose replay: history points at those
+files, so transcripts and search keep working but old replies can no longer be
+heard.
+
+An older install kept the clips in `~/.cache/agent-media/audio`. The first
+speech after upgrading moves them across, rewrites the history rows to the new
+path and leaves `~/.cache/agent-media/audio` as a link to the new folder (the
+clip server for the phone serves it from there). Deleting the link is
+harmless: it is made again on the next reply.
 
 ### I changed `agent-media.env` and nothing changed.
 

@@ -2777,30 +2777,15 @@ def speech_queue() -> list[dict]:
 
 
 def _audio_dir() -> Path:
-    """Where rendered audio lands. Cache-y, GC-able. Per-user.
+    """Where rendered audio lands: `state_dir()/audio` (MEDIA_AUDIO_DIR wins).
 
-    On Termux+proot, the proot-side `/home/<user>` is bind-mounted to
-    the Termux-native `/data/data/com.termux/files/home`, but services
-    running outside the proot (sink-speech under runit) only see the
-    Termux-native path. Prefer that root when it's present so audio
-    paths handed over IPC resolve identically from both sides.
+    State, not cache, since 18 Oct 2026: a clip is the only copy of what was
+    said, and replay reads it back. `_paths.speech_audio_dir` resolves it the
+    same from proot and native Termux (the paths are handed over IPC) and
+    moves clips left in the old `~/.cache/agent-media/audio`.
     """
-    explicit = os.environ.get("MEDIA_AUDIO_DIR")
-    if explicit:
-        d = Path(explicit)
-        d.mkdir(parents=True, exist_ok=True)
-        return d
-    termux_home = Path("/data/data/com.termux/files/home")
-    base: Path
-    if termux_home.is_dir():
-        base = Path(os.environ.get("XDG_CACHE_HOME",
-                                   str(termux_home / ".cache")))
-    else:
-        base = Path(os.environ.get("XDG_CACHE_HOME",
-                                   str(Path.home() / ".cache")))
-    d = base / "agent-media" / "audio"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    from .._paths import speech_audio_dir
+    return speech_audio_dir()
 
 
 def _clip_duration(path: Path) -> float:
