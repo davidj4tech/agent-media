@@ -5287,12 +5287,11 @@ an origin's 502 or 504 is replaced by Cloudflare's own HTML page, which has
 no `Access-Control-Allow-Origin`, so a browser or WebView client's fetch
 throws and the app says "Could not reach <server>" instead of showing the
 server's error. 400, 408, 409, 422, 500, 501 and 503 pass through untouched
-(tested with a quick tunnel). The server does **not** remap these today
-(18 Oct 2026): a client behind Cloudflare cannot read a 502 or 504 body. The
-fix is to answer 500 for 502 and 503 for 504 when the request carries
-`Cf-Ray`, leaving tailnet and LAN clients the real codes. When "Could not
-reach" appears only on the public route while the canvas log shows the
-request arriving, suspect this first.
+(tested with a quick tunnel). So the server answers 500 for 502 and 503
+for 504 when the request carries `Cf-Ray` (`app._status`), leaving tailnet
+and LAN clients the real codes. (The fix was lost from main on 13 Oct and
+restored on 18 Oct.) When "Could not reach" appears only on the public route
+while the canvas log shows the request arriving, check this first.
 
 ### C. Tailnet only
 
