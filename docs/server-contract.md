@@ -3968,6 +3968,35 @@ merged into the book:
 says what is read and when it last was; `… contacts sync [--source
 android|google]` syncs now.
 
+**Whose book** (18 Oct 2026; proposal, "Where contacts live": one address
+book per person, several per server). Every route here and in §6.25a, and
+the `contact` on `/targets`' Matrix rows, answers from **the caller's
+book** only; another account's contacts are not there to be found (a
+contact id from another book is 404, as an unknown one is). Pinned by
+`packages/server/tests/test_contacts_accounts.py`.
+
+- **The owner's book** is the paths above, unchanged — no migration. It is
+  the book of a code-paired device (`pair`, someone at the desk), of ABS's
+  root, and of the owner's account: `MEDIA_OWNER_ACCOUNT`
+  (`MEDIA_OIDC_ALLOW`'s form, `<iss>|<sub>` or `<iss>|email=<addr>`), or,
+  unset, any account whose device may enrol others (an admin, who has the
+  store from a shell anyway). The host's `MEDIA_*` settings, the phone over
+  adb and the Matrix rooms are the owner's.
+- **Another account's book** — a device an account enrolled (§9, its row's
+  `iss` and `sub`) — is the same files under
+  `<state_dir>/accounts/<key>/` and `~/.config/agent-media/accounts/<key>/`,
+  `<key>` being `acct-` and 20 hex digits of the SHA-256 of `<iss>|<sub>`
+  (an ABS login that is not root: `abs-…` of its username). Its settings
+  are its `contacts.json` there (`{sources, self, timeline}`), its Google
+  sign-in and CRM connection (§ "The CRM") its own files there; Google's
+  OAuth client is shared. It never reads the phone, and no Matrix room is
+  any of its contacts' (they are the owner's rooms).
+- A request no one signed reads no book at all. The background sync
+  visits every book in turn; `… contacts [--account WHO] <command>` acts on
+  the owner's book unless WHO names another (its key, or an enrolled
+  account's email or sub; unknown is an error, not a new book), and
+  `… contacts accounts` lists the books and the accounts enrolled here.
+
 #### `GET /contacts?q=[&limit=]` — gated (`auth.gate`)
 
 Everyone, by name; or, with `q`, those it matches as it is typed. Gzipped
@@ -4090,6 +4119,12 @@ seconds, a one-line summary, **never message bodies** — kept in the CRM's
 Drupal module) and in this host's ledger, `<state_dir>/timeline.db` (0600),
 so a CRM that cannot be reached loses nothing and is written later
 (`timeline.py`; pinned by `packages/server/tests/test_contacts_timeline.py`).
+
+Each book (§6.25 "Whose book") has its own ledger:
+`<state_dir>/accounts/<key>/timeline.db` for an account other than the
+owner's, which counts only `notes` and `email` (`texts` and `calls` are
+the owner's rooms and phone) and is switched in its `contacts.json`
+`timeline`.
 
 **Sources**, each switched on in `MEDIA_TIMELINE_SOURCES` (comma
 separated; default `texts,notes`):
