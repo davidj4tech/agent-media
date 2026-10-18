@@ -288,3 +288,25 @@ def test_canvas_must_answer_http(host, monkeypatch, capsys):
     monkeypatch.setenv("MEDIA_CANVAS_URL", "http://127.0.0.1:9/")   # nothing there
     assert _run("--only", "canvas") == 1
     assert "not answering HTTP" in capsys.readouterr().out
+
+
+def test_a_runit_service_is_ours_by_its_run_too(tmp_path, monkeypatch):
+    # p8a: phone-jobs is a real dir whose run links into the checkout, and
+    # canvas-local's run lives in dotfiles but execs this checkout's venv.
+    from agent_media_core import cli
+
+    home = tmp_path / "home"
+    root = home / "projects" / "agent-media"
+    (root / "deploy").mkdir(parents=True)
+    (root / "deploy" / "run").write_text("#!/bin/sh\nexec python3 ./w.py\n")
+    sv = tmp_path / "sv"
+    for name in ("phone-jobs", "canvas-local", "sshd"):
+        (sv / name).mkdir(parents=True)
+    (sv / "phone-jobs" / "run").symlink_to(root / "deploy" / "run")
+    (sv / "canvas-local" / "run").write_text(
+        'export PATH="$HOME/projects/agent-media/.venv/bin:$PATH"\nexec media-visual-canvas\n')
+    (sv / "sshd" / "run").write_text("exec sshd -D\n")
+    monkeypatch.setenv("HOME", str(home))
+    assert cli._run_is_ours(sv / "phone-jobs", root)
+    assert cli._run_is_ours(sv / "canvas-local", root)
+    assert not cli._run_is_ours(sv / "sshd", root)

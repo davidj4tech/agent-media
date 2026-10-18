@@ -7562,6 +7562,30 @@ def _adopted_app_names(root: "Optional[Path]") -> "list[str]":
     return names
 
 
+def _run_is_ours(entry: "Path", root: "Path") -> bool:
+    """Whether a runit service's `run` belongs to this checkout though its
+    dir does not: the `run` links into it (p8a's phone-jobs), or it starts a
+    program from it — its text names the checkout, as `$HOME/…` or in full
+    (p8a's canvas-local lives in dotfiles and execs this checkout's
+    media-visual-canvas from its .venv). Without this, `restart-services
+    --only canvas` on the phone said "unknown" (David, 18 Oct 2026)."""
+    from pathlib import Path
+
+    run = entry / "run"
+    try:
+        if root in run.resolve().parents:
+            return True
+        text = run.read_text(errors="replace")
+    except OSError:
+        return False
+    names = {str(root)}
+    try:
+        names.add("$HOME/" + str(root.relative_to(Path.home())))
+    except ValueError:
+        pass
+    return any(n in text for n in names)
+
+
 def _runit_service_states(root: "Optional[Path]") -> "list[tuple[str, str]]":
     """(name, state) for the runit services this checkout is responsible for.
 
@@ -7582,7 +7606,7 @@ def _runit_service_states(root: "Optional[Path]") -> "list[tuple[str, str]]":
             target = entry.resolve()
         except OSError:
             continue
-        ours = root in target.parents
+        ours = root in target.parents or _run_is_ours(entry, root)
         # `mopidy` for app mopidy, `beets-web` for app beets — the service name
         # is the app name or a variant of it.
         if not ours:
