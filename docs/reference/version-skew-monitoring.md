@@ -367,6 +367,23 @@ $PREFIX/var/service/phone-jobs`), or does not answer in time. Nothing is
 left queued in any of these cases. The worker takes only the four fields
 `only`, `after`, `force` and `dry_run`. It runs no command.
 
+**Updating the phone the same way.** `media update --host p8a` (red5) pulls
+the phone's checkout and restarts what it owns, down the same connection
+(contract §6.21a, `POST /jobs/update`): `git pull --ff-only` bounded at 90 s,
+refused when the checkout has uncommitted changes, then, only when HEAD
+moved, `restart_services.run()` there with the busy checks, detached, 10 s
+out (`--after` to change it, `--only` to narrow it). `--dry-run` fetches and
+says what would come and what would restart. It does not `pip install`: a
+change of dependencies still wants one by hand. `media doctor --fix` uses
+this for a host that is one of red5's jobs devices, and for one ssh could
+not reach (the phone off the tailnet); any other host is fixed over ssh as
+before.
+
+```
+media update --host p8a --dry-run
+media update --host p8a
+```
+
 **A reachable server: as a paired device of it.** For any other NAME, it
 calls that host's `POST /services/restart` (server contract §6.6). The exit
 code is the remote run's; 1 also covers not paired, not reachable, a refused

@@ -93,6 +93,10 @@ device gets its token):
                   the same on the phone, down its jobs worker's own stream
                   (phone_jobs.py, §6.21a); host token or may_admin. 404
                   not_a_device, 400 another field, 503 offline / no answer
+  POST /jobs/update {"device", "only"?, "after"?, "force"?, "dry_run"?} →
+                  `git pull --ff-only` on that device, then its restart when
+                  HEAD moved (10 s out by default); the same gates and
+                  statuses; 200 {rc, lines, pulled {from, to}, moved, restart}
   GET  /sessions/events → the same, as a stream of changes, for a phone's
                   background notifier (session_events.py, §6.13)
   GET  /sessions/state  → every live session's working / waiting / approval,
@@ -1572,9 +1576,10 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
                   f"{a['session'][:8] if a['session'] else 'a new chat'}",
                   file=sys.stderr, flush=True)
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
-    elif path == "/jobs/restart":
+    elif path in ("/jobs/restart", "/jobs/update"):
         # `media restart-services --host <the phone>` (phone_jobs.restart,
-        # contract §6.21a): queued down the stream the phone's worker holds
+        # contract §6.21a) and `media update --host <it>` (phone_jobs.update:
+        # pull, then restart): queued down the stream the phone's worker holds
         # open to this server, so nothing has to reach the phone. The host's
         # own token (the CLI on this host), else a caller that may_admin.
         from . import phone_jobs
@@ -1586,8 +1591,9 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
                 return True
         body = _read_json(h)
         name = str(body.pop("device", "") or "") if isinstance(body, dict) else ""
-        status, detail = phone_jobs.restart(name, body)
-        print(f"jobs/restart: {name!r} {json.dumps(body)[:200]} → {status} "
+        fn = phone_jobs.restart if path == "/jobs/restart" else phone_jobs.update
+        status, detail = fn(name, body)
+        print(f"{path[1:]}: {name!r} {json.dumps(body)[:200]} → {status} "
               f"rc {detail.get('rc')}", file=sys.stderr, flush=True)
         _json(h, status, detail)
     elif path == "/jobs/result":

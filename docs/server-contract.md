@@ -3557,6 +3557,27 @@ narrowed to a restart's four fields: no command.
   it does not know, with rc 2, and runs nothing. A restart of the worker's own
   service is detached, 10 s out, so the answer gets back first.
 
+**Updates** (built 18 Oct 2026). The same channel carries an update: pull,
+then restart.
+
+- `POST /jobs/update {device, only?, after?, force?, dry_run?}`: the same
+  gates, fields and statuses as `/jobs/restart` (503 "too old to take an
+  update" for a worker whose stream did not say `?kinds=…,update`). Waits up
+  to 180 s. 200: `{ok, rc, lines, pulled: {from, to}, moved, restart, device}`,
+  `restart` the device's `run()` dict, or null when nothing moved (or the
+  pull failed).
+- Frame: `{id, kind: "update", update: {only, after, force, dry_run},
+  timeout}`. The worker refuses a checkout with uncommitted changes (rc 1,
+  nothing pulled), runs `git pull --ff-only` (90 s at most; a hang is named
+  "no route to its git remote"), and only when HEAD moved runs the restart
+  as above, detached, `after` 10 s when 0 or absent. A dry run fetches and
+  says what a pull would bring (`would pull a -> b (n commit(s))`), and its
+  restart is a dry run. Nothing else: no ref, no branch, no command.
+- CLI: `media update --host NAME [--only …] [--after S] [--force]
+  [--dry-run]` (`restart_services.update_device`). `media doctor --fix`
+  deploys a host that is one of this server's jobs devices this way instead
+  of over ssh, and also one ssh could not reach.
+
 `canvas` names the canvas wherever it runs: `canvas-local` on the phone,
 `agent-media-visual-canvas` on red5, `sasonica-canvas` on an Android
 install. So restarting the phone's canvas, on red5, is:

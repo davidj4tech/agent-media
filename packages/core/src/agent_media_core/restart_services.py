@@ -677,6 +677,37 @@ def run_remote(name: str, only: "Optional[list[str]]" = None, *, after: float = 
     return {**fail, **ans, "rc": int(ans.get("rc", FAILED))}
 
 
+def _device_post(path: str, body: dict, timeout: float) -> "tuple[int, Optional[dict]]":
+    """`(status, answer)` from this host's own canvas for a device job
+    (`POST /jobs/restart`, `/jobs/update`), with the host's token; answer
+    None when there is no server here to ask."""
+    from . import phone_run
+
+    req = urllib.request.Request(
+        phone_run._base() + path, data=json.dumps(body).encode(),
+        method="POST", headers={"Content-Type": "application/json",
+                                "X-Auth-Token": phone_run._token()})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, json.loads(r.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read() or b"{}")
+        except ValueError:
+            return e.code, {}
+    except (OSError, ValueError):
+        return 0, None
+
+
+def _device_body(name: str, only, after: float, force: bool, dry_run: bool) -> dict:
+    body: dict = {"device": name, "force": force, "dry_run": dry_run}
+    if only:
+        body["only"] = list(only)
+    if after > 0:
+        body["after"] = after
+    return body
+
+
 def run_device(name: str, only: "Optional[list[str]]" = None, *, after: float = 0,
                force: bool = False, dry_run: bool = False,
                echo: "Optional[Callable[[str], None]]" = None) -> "Optional[dict]":
@@ -692,28 +723,9 @@ def run_device(name: str, only: "Optional[list[str]]" = None, *, after: float = 
     one too old for the route): the caller then tries NAME as a peer. Else
     the device's dict, or one with `rc` FAILED saying why there is none
     (offline, no answer in time, a refused token)."""
-    from . import phone_run
-
-    body: dict = {"device": name, "force": force, "dry_run": dry_run}
-    if only:
-        body["only"] = list(only)
-    if after > 0:
-        body["after"] = after
-    req = urllib.request.Request(
-        phone_run._base() + "/jobs/restart", data=json.dumps(body).encode(),
-        method="POST", headers={"Content-Type": "application/json",
-                                "X-Auth-Token": phone_run._token()})
-    try:
-        with urllib.request.urlopen(req, timeout=DEVICE_TIMEOUT_S) as r:
-            status, ans = r.status, json.loads(r.read() or b"{}")
-    except urllib.error.HTTPError as e:
-        status = e.code
-        try:
-            ans = json.loads(e.read() or b"{}")
-        except ValueError:
-            ans = {}
-    except (OSError, ValueError):
-        return None
+    status, ans = _device_post("/jobs/restart",
+                               _device_body(name, only, after, force, dry_run),
+                               DEVICE_TIMEOUT_S)
     if not isinstance(ans, dict) or status in (401, 403, 404):
         # Not a device of ours (`not_a_device`), a server without the route,
         # or one that does not take this host's token (not this host's own
@@ -734,6 +746,42 @@ def run_device(name: str, only: "Optional[list[str]]" = None, *, after: float = 
         if echo:
             echo(f"  {line}" if status == 200 else line)
     return {**fail, **ans, "rc": int(ans.get("rc", FAILED))}
+
+
+def update_device(name: str, only: "Optional[list[str]]" = None, *, after: float = 0,
+                  force: bool = False, dry_run: bool = False,
+                  echo: "Optional[Callable[[str], None]]" = None) -> "Optional[dict]":
+    """`media update --host NAME`: on a device that dials out to this host's
+    server, `git pull --ff-only` of its checkout and, when HEAD moved, its
+    `run()` (or `only`'s), by default 10 s out, detached — down the device's
+    own connection (`POST /jobs/update`, contract §6.21a). A dirty checkout is
+    refused there. None as for `run_device` (not a device of this server, or
+    no server here); else `{rc, lines, pulled: {from, to}, moved, restart}`.
+    `after` 0 means the device's default (10 s)."""
+    body = _device_body(name, only, after, force, dry_run)
+    status, ans = _device_post("/jobs/update", body, UPDATE_TIMEOUT_S)
+    if not isinstance(ans, dict) or status in (401, 403, 404):
+        return None
+    fail = {"rc": FAILED, "lines": [], "pulled": None, "moved": False, "restart": None}
+    if "rc" not in ans:
+        why = f"this host's server refused the update ({status}: {ans.get('error') or ans})"
+        if echo:
+            echo(why)
+        return {**fail, "lines": [why]}
+    say = echo or (lambda line: None)
+    if status == 200:
+        say(f"on {ans.get('device') or name} (down its own connection to this server):")
+    for line in ans.get("lines") or []:
+        say(f"  {line}" if status == 200 else line)
+    restart = ans.get("restart") if isinstance(ans.get("restart"), dict) else None
+    for line in (restart or {}).get("lines") or []:
+        say(f"  restart: {line}")
+    return {**fail, **ans, "rc": int(ans.get("rc", FAILED))}
+
+
+#: How long `update_device` waits on this host's server, which waits on the
+#: device (phone_jobs.UPDATE_TIMEOUT_S, 180 s, and its own margin).
+UPDATE_TIMEOUT_S = 200.0
 
 
 #: How long `run_device` waits on this host's server, which waits on the phone

@@ -340,3 +340,167 @@ def test_queueing_a_restart_takes_the_host_token_or_an_admin(server, host, monke
     admin, _ = _device("David's laptop")              # may_admin: a paired device
     r = call(server, "POST", "/jobs/restart", {"device": "p8a"}, admin)
     assert r[0].status == 503 and r[1]["rc"] == 1     # past the gate: the phone is offline
+
+
+# --- an update: pull, then restart, down the same connection (David, 18 Oct
+# 2026) --------------------------------------------------------------------------
+#
+# `media update --host p8a` (restart_services.update_device): POST
+# /jobs/update, a job of kind "update" down the worker's stream. The worker
+# pulls a real git checkout here (a clone of a bare origin in tmp), then runs
+# the same fake python as a restart.
+
+GIT_ENV = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t@t", "GIT_CONFIG_NOSYSTEM": "1"}
+
+
+def _git(cwd, *args):
+    r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True,
+                       env={**os.environ, **GIT_ENV})
+    assert r.returncode == 0, r.stderr
+    return r.stdout.strip()
+
+
+@pytest.fixture()
+def repos(tmp_path, monkeypatch):
+    """(device checkout, upstream work tree): the device is a clone of origin."""
+    origin, work, dev = tmp_path / "origin.git", tmp_path / "work", tmp_path / "device"
+    _git(tmp_path, "init", "-q", "--bare", "-b", "main", str(origin))
+    _git(tmp_path, "clone", "-q", str(origin), str(work))
+    (work / "a").write_text("1\n")
+    _git(work, "add", "a")
+    _git(work, "commit", "-q", "-m", "one")
+    _git(work, "push", "-q", "origin", "HEAD:main")
+    _git(tmp_path, "clone", "-q", str(origin), str(dev))
+    monkeypatch.setenv("MEDIA_JOBS_CHECKOUT", str(dev))
+    for k, v in GIT_ENV.items():
+        monkeypatch.setenv(k, v)
+    return dev, work
+
+
+def _upstream_commit(work):
+    (work / "a").write_text("2\n")
+    _git(work, "commit", "-q", "-am", "two")
+    _git(work, "push", "-q", "origin", "HEAD:main")
+    return _git(work, "rev-parse", "--short", "HEAD")
+
+
+def test_an_update_pulls_then_restarts_down_the_workers_connection(worker, host, fake_py,
+                                                                    repos):
+    dev, work = repos
+    before = _git(dev, "rev-parse", "--short", "HEAD")
+    after = _upstream_commit(work)
+    said: list[str] = []
+    res = rs.update_device("p8a", echo=said.append)
+    assert res["rc"] == 0, res
+    assert res["pulled"] == {"from": before, "to": after} and res["moved"] is True
+    assert _git(dev, "rev-parse", "--short", "HEAD") == after
+    # The services the checkout owns, 10 s out, detached: the answer first.
+    assert "argv --json --after 10.0" in fake_py()
+    assert any(line.startswith("schedule canvas-local phone-jobs sink-speech 10.0")
+               for line in fake_py())
+    assert said[0] == "on p8a Termux jobs (down its own connection to this server):"
+    assert f"  pulled {before} -> {after}" in said
+    assert res["restart"]["scheduled"]["how"] == "detached"
+    assert _empty()
+
+
+def test_an_update_with_nothing_new_restarts_nothing(worker, host, fake_py, repos):
+    res = rs.update_device("p8a", ["canvas"])
+    assert res["rc"] == 0 and res["moved"] is False and res["restart"] is None
+    assert res["lines"][-1] == "nothing to restart"
+    assert not any(line.startswith("argv") for line in fake_py())
+
+
+def test_a_dirty_checkout_is_never_pulled(worker, host, fake_py, repos):
+    dev, work = repos
+    before = _git(dev, "rev-parse", "--short", "HEAD")
+    _upstream_commit(work)
+    (dev / "a").write_text("local edit\n")
+    res = rs.update_device("p8a")
+    assert res["rc"] == 1 and res["pulled"] is None
+    assert "uncommitted changes" in res["lines"][0]
+    assert _git(dev, "rev-parse", "--short", "HEAD") == before
+    assert (dev / "a").read_text() == "local edit\n"
+    assert fake_py() == []
+
+
+def test_a_dry_run_update_fetches_and_says(worker, host, fake_py, repos):
+    dev, work = repos
+    before = _git(dev, "rev-parse", "--short", "HEAD")
+    after = _upstream_commit(work)
+    res = rs.update_device("p8a", ["sink-speech"], dry_run=True)
+    assert res["rc"] == 0, res
+    assert res["lines"][0] == f"would pull {before} -> {after} (1 commit(s))"
+    assert _git(dev, "rev-parse", "--short", "HEAD") == before      # not merged
+    assert "argv --json --only sink-speech --dry-run --after 10.0" in fake_py()
+    assert not any(line.startswith(("restart ", "schedule ")) for line in fake_py())
+
+
+def test_the_cli_update_and_its_exit_code(worker, host, fake_py, repos, capsys):
+    _upstream_commit(repos[1])
+    assert core_cli.main(["update", "--host", "p8a", "--only", "canvas", "--after", "30"]) == 0
+    assert "argv --json --only canvas --after 30.0" in fake_py()
+    assert "pulled" in capsys.readouterr().out
+
+
+def test_update_not_a_device_is_1_with_how(server, host, monkeypatch, capsys):
+    _, dev = _device("p8a Termux jobs")
+    monkeypatch.setenv("MEDIA_PHONE_JOBS_DEVICE", dev)
+    assert rs.update_device("homer") is None
+    assert core_cli.main(["update", "--host", "homer"]) == 1
+    assert "not a jobs device" in capsys.readouterr().err
+
+
+def test_a_worker_too_old_for_updates_is_never_handed_one(server, host, monkeypatch):
+    _, dev = _device("p8a Termux jobs")
+    monkeypatch.setenv("MEDIA_PHONE_JOBS_DEVICE", dev)
+    phone_jobs._WORKERS[1] = {"at": 0, "kinds": {"cmd", "restart"}}  # 18 Oct's worker
+    status, ans = phone_jobs.update("p8a", {})
+    assert status == 503 and "too old to take an update" in ans["lines"][0]
+    assert _empty()
+
+
+def test_only_an_updates_fields_are_queued(server, host, monkeypatch):
+    _, dev = _device("p8a Termux jobs")
+    monkeypatch.setenv("MEDIA_PHONE_JOBS_DEVICE", dev)
+    phone_jobs._WORKERS[1] = {"at": 0, "kinds": {"cmd", "restart", "update"}}
+    r = call(server, "POST", "/jobs/update", {"device": "p8a", "ref": "evil"},
+             {"X-Auth-Token": "hosttok"})
+    assert r[0].status == 400 and "ref" in r[1]["error"]
+    r = call(server, "POST", "/jobs/update", {"device": "p8a"}, {"X-Auth-Token": "wrong"})
+    assert r[0].status == 401
+    assert _empty()
+
+
+def test_the_worker_refuses_an_update_with_another_field(monkeypatch):
+    mod = _worker_module()
+    answered, ran = [], []
+    monkeypatch.setattr(mod, "_answer", lambda jid, body, tok: answered.append((jid, body)))
+    monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: ran.append(a))
+    mod._handle({"id": "u1", "kind": "update", "update": {"branch": "evil"}}, "t")
+    mod._handle({"id": "u2", "kind": "update", "update": "main"}, "t")
+    assert ran == [] and [b["rc"] for _, b in answered] == [2, 2]
+    assert "update: not a restart field: branch" in answered[0][1]["err"]
+
+
+def test_doctor_fix_uses_the_device_channel_for_a_device(worker, host, fake_py, repos):
+    after = _upstream_commit(repos[1])
+    ok, lines = core_cli._fix_host("p8a")
+    assert ok, lines
+    assert lines[0] == "via its own connection to this server (no ssh)"
+    assert any(ln.startswith("fix=agent-media pulled ") and ln.endswith(after) for ln in lines)
+    assert any(ln.startswith("restart=scheduled:") for ln in lines)
+
+
+def test_doctor_fix_falls_back_to_ssh_for_any_other_host(server, host, monkeypatch):
+    _, dev = _device("p8a Termux jobs")
+    monkeypatch.setenv("MEDIA_PHONE_JOBS_DEVICE", dev)
+    ran = []
+
+    class R:
+        returncode, stdout, stderr = 0, "fix=agent-media already at abc\n", ""
+
+    monkeypatch.setattr(subprocess, "run", lambda argv, **k: ran.append(argv) or R())
+    ok, lines = core_cli._fix_host("homer")
+    assert ok and ran[0][:1] == ["ssh"] and lines == ["fix=agent-media already at abc"]

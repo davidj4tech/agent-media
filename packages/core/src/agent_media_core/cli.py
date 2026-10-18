@@ -8328,6 +8328,26 @@ def cmd_restart_services(a) -> int:
     return int(res["rc"])
 
 
+def cmd_update(a) -> int:
+    """`media update --host NAME`: pull and restart a host down its own
+    connection to this host's server (restart_services.update_device,
+    contract §6.21a). The device refuses a dirty checkout; it restarts only
+    when HEAD moved, with the busy checks, 10 s out unless --after says."""
+    from . import restart_services
+
+    res = restart_services.update_device(a.host, a.only or None,
+                                         after=float(a.after or 0), force=a.force,
+                                         dry_run=a.dry_run,
+                                         echo=lambda line: print(line, flush=True))
+    if res is None:
+        print(f"update: {a.host!r} is not a jobs device of this host's server (or "
+              "there is no server here). Pair its jobs worker with this server "
+              "(`media jobs pair` there), or use `media doctor --fix` (ssh)",
+              file=sys.stderr)
+        return 1
+    return int(res["rc"])
+
+
 def cmd_peer(a) -> int:
     """`media peer pair NAME LINK` and `media peer list`: this host's device
     tokens for other hosts' servers (peer_link.py), which `restart-services
@@ -8797,9 +8817,41 @@ def fix_targets(skewed: "list[str]", unhealthy: "list[str]") -> "list[str]":
     return [h for h in skewed if h not in unhealthy and h != "local"]
 
 
+def _fix_device(host: str) -> "Optional[tuple[bool, list[str]]]":
+    """Deploy a host that is one of this server's jobs devices, down its own
+    connection (`media update --host`): None when it is not one (or there is
+    no server here), so the caller uses ssh. agent-media only: the device
+    pulls its own checkout."""
+    from . import restart_services
+
+    res = restart_services.update_device(host)
+    if res is None:
+        return None
+    lines = ["via its own connection to this server (no ssh)"]
+    pulled = res.get("pulled") or {}
+    for ln in res.get("lines") or []:
+        if ln.startswith(("pulled ", "already at ")):
+            lines.append(f"fix=agent-media {ln}")
+        elif "FAILED" in ln or "uncommitted" in ln:
+            lines.append(f"fix=agent-media {ln if 'FAILED' in ln else 'skipped: ' + ln}")
+        elif ln != "nothing to restart":
+            lines.append(ln)
+    restart = res.get("restart") or {}
+    for ln in restart.get("lines") or []:
+        lines.append(f"restart={ln}")
+    ok = int(res.get("rc", 1)) == 0 and bool(pulled)
+    if not ok and not any("FAILED" in ln for ln in lines):
+        lines.append(f"restart=FAILED: rc {res.get('rc')}")
+    return ok, lines
+
+
 def _fix_host(host: str) -> "tuple[bool, list[str]]":
-    """Deploy one host. (ok, report lines)."""
+    """Deploy one host. (ok, report lines). A jobs device of this server goes
+    down its own connection; any other host over ssh."""
     import subprocess
+    dev = _fix_device(host)
+    if dev is not None:
+        return dev
     try:
         res = subprocess.run(
             ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", host, "sh"],
@@ -8939,6 +8991,18 @@ def cmd_doctor(a) -> int:
             for host in failed_fix:
                 if host not in unhealthy:
                     unhealthy.append(host)
+        # A host ssh could not reach may still hold its own connection to this
+        # server (the phone off the tailnet): deploy it that way. Pull
+        # --ff-only, restart only when HEAD moved, a dirty checkout refused.
+        for host in [h for h in unreachable if h not in targets]:
+            dev = _fix_device(host)
+            if dev is None:
+                continue
+            ok, lines = dev
+            for ln in lines:
+                print(f"  {host}: {ln}")
+            if not ok:
+                print(f"  {host}: fix incomplete — needs a look")
 
     return _write_ledger(hosts, skewed, unhealthy, unreachable)
 
@@ -9479,6 +9543,35 @@ def _build_parser() -> argparse.ArgumentParser:
                          "no inbound connection to a device. A service the "
                          "answer runs in restarts detached, after 10 s")
     rs.set_defaults(func=cmd_restart_services)
+
+    up = sub.add_parser(
+        "update",
+        help="pull and restart another host down its own connection to this "
+             "host's server (its jobs worker): no ssh, no Tailscale",
+        description="On the device: git pull --ff-only of its agent-media "
+                    "checkout (refused when the checkout has uncommitted "
+                    "changes; a pull is bounded at 90 s), then, when HEAD "
+                    "moved, media restart-services there (the services its "
+                    "checkout owns, or --only), with the busy checks, detached, "
+                    "10 s out unless --after says. No pip install: a change of "
+                    "dependencies still wants one by hand. Waits up to 3 min. Exit "
+                    "codes: the restart's (0 done or scheduled, 1 failed, 2 "
+                    "unknown name, 3 busy); 1 also for a refused or failed "
+                    "pull, an offline device, or no answer.")
+    up.add_argument("--host", metavar="NAME", required=True,
+                    help="the device: its id, its name or the first word of its "
+                         "name (p8a for 'p8a Termux jobs', pn for 'pn jobs')")
+    up.add_argument("--only", nargs="+", metavar="NAME", default=None,
+                    help="restart just these after the pull (short names work)")
+    up.add_argument("--after", type=float, default=0, metavar="SECONDS",
+                    help="when to restart after a pull (default, and 0: 10 s; "
+                         "an update's restart is always detached)")
+    up.add_argument("--force", action="store_true",
+                    help="restart past the busy checks")
+    up.add_argument("--dry-run", action="store_true",
+                    help="fetch and say what a pull would bring and what would "
+                         "restart; pull and restart nothing")
+    up.set_defaults(func=cmd_update)
 
     pe = sub.add_parser(
         "peer",

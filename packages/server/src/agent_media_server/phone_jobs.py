@@ -70,8 +70,11 @@ ANSWER_MARGIN_S = 5.0
 #: How long a restart's caller waits for the phone to say it was done,
 #: scheduled or refused (a restart now waits out its 20 s health check).
 RESTART_TIMEOUT_S = 60.0
+#: How long an update's caller waits: a pull (at most 90 s on the device),
+#: then its restart (up to 60 s), and a margin.
+UPDATE_TIMEOUT_S = 180.0
 #: The kinds a worker may say it takes besides a command (`?kinds=`).
-KINDS = ("restart",)
+KINDS = ("restart", "update")
 #: A restart's fields, and nothing else.
 RESTART_KEYS = frozenset({"only", "after", "force", "dry_run"})
 #: A service name as restart_services matches it (unit stem, runit dir, a
@@ -194,6 +197,37 @@ def _fail(lines: list[str], **extra) -> dict:
             "unknown": [], "scheduled": None, "own": [], "after": 0, **extra}
 
 
+def _device_job(kind: str, name: str, body, timeout: float) -> tuple[int, dict | None, dict]:
+    """Queue a `kind` job ({only, after, force, dry_run}) for the device NAME
+    names and wait for it: `(status, job, answer)`, `job` None unless it was
+    answered (status 200), `answer` the error to send otherwise."""
+    dev = device_for(name)
+    if dev is None:
+        return 404, None, {"ok": False, "code": "not_a_device",
+                           "error": f"{name!r} is not this server's phone jobs worker"}
+    spec, why = restart_spec(body)
+    if spec is None:
+        return 400, None, {"ok": False, "error": why}
+    label = str(dev.get("name") or dev.get("id"))
+    timeout = max(1.0, min(float(timeout), MAX_TIMEOUT_S))
+    with _COND:
+        if not _WORKERS:
+            return 503, None, _fail([f"{label} is offline: its jobs worker is not "
+                                     "connected to this server (phone-jobs on the phone)"],
+                                    device=label)
+        if not any(kind in w["kinds"] for w in _WORKERS.values()):
+            return 503, None, _fail([f"{label}'s jobs worker is too old to take "
+                                     f"{'a restart' if kind == 'restart' else 'an update'}: "
+                                     "pull agent-media on the phone and restart its "
+                                     "phone-jobs service"], device=label)
+        job = _new(kind, timeout, **{kind: spec})
+        if _submit(job, timeout) is None:
+            return 503, None, _fail([f"{label}: {job['why']} (waited {timeout:g} s); "
+                                     "nothing is left queued"], device=label)
+    job["label"] = label
+    return 200, job, {}
+
+
 def restart(name: str, body, timeout: float = RESTART_TIMEOUT_S) -> tuple[int, dict]:
     """`media restart-services --host NAME` for the phone: `(status, answer)`.
 
@@ -202,27 +236,10 @@ def restart(name: str, body, timeout: float = RESTART_TIMEOUT_S) -> tuple[int, d
     `rc` 1 when the worker is not connected, too old to take a restart, did
     not take it or did not answer within `timeout`; else 200 and the phone's
     `run()` dict, `rc` its exit code, `device` the device's name."""
-    dev = device_for(name)
-    if dev is None:
-        return 404, {"ok": False, "code": "not_a_device",
-                     "error": f"{name!r} is not this server's phone jobs worker"}
-    spec, why = restart_spec(body)
-    if spec is None:
-        return 400, {"ok": False, "error": why}
-    label = str(dev.get("name") or dev.get("id"))
-    timeout = max(1.0, min(float(timeout or RESTART_TIMEOUT_S), MAX_TIMEOUT_S))
-    with _COND:
-        if not _WORKERS:
-            return 503, _fail([f"{label} is offline: its jobs worker is not connected "
-                               "to this server (phone-jobs on the phone)"], device=label)
-        if not any("restart" in w["kinds"] for w in _WORKERS.values()):
-            return 503, _fail([f"{label}'s jobs worker is too old to take a restart: "
-                               "pull agent-media on the phone and restart its phone-jobs "
-                               "service"], device=label)
-        job = _new("restart", timeout, restart=spec)
-        if _submit(job, timeout) is None:
-            return 503, _fail([f"{label}: {job['why']} (waited {timeout:g} s); "
-                               "nothing is left queued"], device=label)
+    status, job, err = _device_job("restart", name, body, timeout or RESTART_TIMEOUT_S)
+    if job is None:
+        return status, err
+    label = job["label"]
     res = job.get("result") if isinstance(job.get("result"), dict) else {}
     if "rc" not in res:
         lines = [f"{label}: the worker could not run the restart (rc {job['rc']})"]
@@ -230,6 +247,27 @@ def restart(name: str, body, timeout: float = RESTART_TIMEOUT_S) -> tuple[int, d
             lines += job["err"].strip().splitlines()[-5:]
         return 200, _fail(lines, device=label, rc=job["rc"] or 1)
     return 200, {**_fail([]), **res, "ok": int(res["rc"]) == 0, "device": label}
+
+
+def update(name: str, body, timeout: float = UPDATE_TIMEOUT_S) -> tuple[int, dict]:
+    """`media update --host NAME`: `git pull --ff-only` of the device's
+    checkout, then, when HEAD moved, its restart_services.run() (or `only`'s),
+    by default 10 s out, detached. `(status, answer)`, the statuses as
+    `restart`'s; 200's answer is `{ok, rc, lines, pulled: {from, to}, moved,
+    restart: run()'s dict or None, device}`. The device refuses a dirty
+    checkout (rc 1, nothing pulled or restarted)."""
+    status, job, err = _device_job("update", name, body, timeout or UPDATE_TIMEOUT_S)
+    if job is None:
+        return status, {**err, "pulled": None, "moved": False, "restart": None}
+    label = job["label"]
+    res = job.get("result") if isinstance(job.get("result"), dict) else None
+    if res is None:
+        lines = [f"{label}: the worker could not run the update (rc {job['rc']})"]
+        if job.get("err"):
+            lines += job["err"].strip().splitlines()[-5:]
+        return 200, {**_fail(lines, device=label, rc=job["rc"] or 1),
+                     "pulled": None, "moved": False, "restart": None}
+    return 200, {"ok": job["rc"] == 0, "rc": job["rc"], "device": label, **res}
 
 
 def result(device: str, body) -> tuple[bool, dict]:
@@ -249,6 +287,8 @@ def result(device: str, body) -> tuple[bool, dict]:
         job["err"] = str(body.get("err") or "")[:MAX_RESULT]
         if job["kind"] == "restart":
             job["result"] = _clean_result(body.get("result"), job["rc"])
+        elif job["kind"] == "update":
+            job["result"] = _clean_update(body.get("result"))
         job["done"] = True
         _COND.notify_all()
     return True, {}
@@ -272,9 +312,25 @@ def _clean_result(got, rc: int) -> dict | None:
     return out
 
 
+def _clean_update(got) -> dict | None:
+    """An update's `result` as the device sent it, kept to its shape."""
+    if not isinstance(got, dict):
+        return None
+    pulled = got.get("pulled")
+    pulled = ({"from": str(pulled.get("from") or "")[:40], "to": str(pulled.get("to") or "")[:40]}
+              if isinstance(pulled, dict) else None)
+    lines = got.get("lines")
+    restart = got.get("restart")
+    return {"pulled": pulled, "moved": got.get("moved") is True,
+            "lines": [str(x)[:2000] for x in lines[:200]] if isinstance(lines, list) else [],
+            "restart": (_clean_result(restart, int(restart.get("rc", 1))
+                                      if isinstance(restart.get("rc"), int) else 1)
+                        if isinstance(restart, dict) else None)}
+
+
 def _frame(job: dict) -> dict:
-    if job["kind"] == "restart":
-        return {"id": job["id"], "kind": "restart", "restart": job["restart"],
+    if job["kind"] in ("restart", "update"):
+        return {"id": job["id"], "kind": job["kind"], job["kind"]: job[job["kind"]],
                 "timeout": job["timeout"]}
     return {"id": job["id"], "cmd": job["cmd"], "timeout": job["timeout"]}
 

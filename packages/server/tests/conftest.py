@@ -50,6 +50,11 @@ def _clean_media_env(monkeypatch, tmp_path, request):
     # A quick tunnel's URL is published to sasonica.com/r (tunnel.py): never
     # from a test. test_tunnel.py points it at a local stand-in.
     monkeypatch.setenv("MEDIA_LOOKUP_URL", "-")
+    # A device job (`media restart-services --host`, `media update --host`,
+    # doctor --fix) asks this host's canvas, by default 127.0.0.1:8781 with
+    # the real ~/.amux token: on red5 that is the live server, which would
+    # pull and restart the real phone. Nowhere, unless a test sets its own.
+    monkeypatch.setenv("MEDIA_PHONE_JOBS_URL", "http://127.0.0.1:9")
     # Paired devices live under that state dir too (devices.json, the pairing
     # codes); the in-process bits — the parsed-file cache and the per-address
     # pairing-failure counts — are reset so one test's refusals cannot

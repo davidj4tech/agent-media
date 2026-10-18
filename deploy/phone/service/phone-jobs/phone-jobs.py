@@ -26,9 +26,18 @@ this very service runs detached, so the answer gets out first. The stream
 says it takes them (`?kinds=restart`); a job of any kind this does not know
 is answered rc 2 and never run.
 
+**Updates** (David, 18 Oct 2026). `media update --host p8a` sends a job of
+kind `update`, `{id, kind: "update", update: {only, after, force, dry_run}}`:
+`git pull --ff-only` of this checkout (refused when it has uncommitted
+changes, bounded at 90 s), then, when HEAD moved, the same restart as above
+for the services the checkout owns (or `only`), 10 s out and detached, with
+the busy checks. Answered as `result: {pulled: {from, to}, moved, lines,
+restart}`. A dry run fetches and says what a pull would bring.
+
 Env: MEDIA_PHONE_JOBS_SERVER (https://red5.sasonica.com),
 MEDIA_PHONE_JOBS_TOKEN (else the token file), MEDIA_PHONE_JOBS_PYTHON (the
-python with agent_media_core, else the checkout's venv).
+python with agent_media_core, else the checkout's venv), MEDIA_JOBS_CHECKOUT
+(the checkout an update pulls, else the one this script lives in).
 """
 
 from __future__ import annotations
@@ -52,9 +61,16 @@ MAX_OUT = 1 << 20
 #: the worker names itself.
 UA = "sasonica-phone-jobs/1"
 #: The kinds of job besides a command this worker takes (`?kinds=`).
-KINDS = ("restart",)
-#: A restart's fields, and nothing else (server phone_jobs.RESTART_KEYS).
+KINDS = ("restart", "update")
+#: A restart's fields, and nothing else (server phone_jobs.RESTART_KEYS). An
+#: update takes the same four: they are its restart's.
 RESTART_KEYS = frozenset({"only", "after", "force", "dry_run"})
+#: An update's git steps, each at most this long: the interesting failure is a
+#: network that takes the connection and then hangs (cli._REMOTE_FIX).
+GIT_TIMEOUT_S = 90
+#: An update's restart, when the job does not say when: detached, so the
+#: answer gets out before this worker (one of the services) restarts.
+UPDATE_AFTER_S = 10.0
 SERVICE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9@._-]{0,63}")
 
 
@@ -144,33 +160,38 @@ def restart_argv(spec, python: str = "") -> "tuple[list[str] | None, str]":
     return argv, ""
 
 
+def checkout() -> "Path | None":
+    """The agent-media checkout this worker updates: MEDIA_JOBS_CHECKOUT, else
+    the one this script lives in (the service dir links into it), else
+    ~/projects/agent-media (a copied service dir)."""
+    env = (os.environ.get("MEDIA_JOBS_CHECKOUT") or "").strip()
+    if env:
+        return Path(env).expanduser()
+    for d in Path(__file__).resolve().parents:
+        if (d / ".git").exists() and (d / "packages" / "core").is_dir():
+            return d
+    d = Path.home() / "projects" / "agent-media"
+    return d if (d / ".git").exists() else None
+
+
 def _python() -> str:
     """The python that has agent_media_core: MEDIA_PHONE_JOBS_PYTHON, else the
-    venv of the checkout this script lives in (the service dir links into
-    it), else ~/projects/agent-media's (a copied service dir), else this
+    checkout's venv (bin/python, or Scripts/python.exe on Windows), else this
     one."""
     env = os.environ.get("MEDIA_PHONE_JOBS_PYTHON", "").strip()
     if env:
         return env
-    for venv in (Path(__file__).resolve().parents[3] / ".venv" / "bin" / "python",
-                 Path.home() / "projects" / "agent-media" / ".venv" / "bin" / "python"):
-        if venv.exists():
-            return str(venv)
+    root = checkout()
+    if root is not None:
+        for venv in (root / ".venv" / "bin" / "python",
+                     root / ".venv" / "Scripts" / "python.exe"):
+            if venv.exists():
+                return str(venv)
     return sys.executable
 
 
-def _restart(job: dict, token: str) -> None:
-    """A restart job: restart_services.run() here, its dict as `result`."""
-    argv, why = restart_argv(job.get("restart"))
-    if argv is None:
-        print(f"job {job.get('id')}: refused: {why}", flush=True)
-        _answer(job.get("id"), {"rc": 2, "out": "", "err": why}, token)
-        return
-    try:
-        timeout = max(5.0, float(job.get("timeout") or 60) - 5)
-    except (TypeError, ValueError):
-        timeout = 55.0
-    t0 = time.monotonic()
+def _run_restart(argv: list, timeout: float) -> "tuple[int, str, dict | None]":
+    """restart_services.run() through `argv`: (rc, its stderr, its dict)."""
     result = None
     try:
         r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout,
@@ -187,12 +208,129 @@ def _restart(job: dict, token: str) -> None:
         rc, err = 124, f"restart_services did not answer within {timeout:.0f} s"
     except OSError as e:
         rc, err = 127, f"{argv[0]}: {e}"
+    return rc, err or "", result
+
+
+def _timeout(job: dict, default: float) -> float:
+    try:
+        return max(5.0, float(job.get("timeout") or default) - 5)
+    except (TypeError, ValueError):
+        return default - 5
+
+
+def _restart(job: dict, token: str) -> None:
+    """A restart job: restart_services.run() here, its dict as `result`."""
+    argv, why = restart_argv(job.get("restart"))
+    if argv is None:
+        print(f"job {job.get('id')}: refused: {why}", flush=True)
+        _answer(job.get("id"), {"rc": 2, "out": "", "err": why}, token)
+        return
+    t0 = time.monotonic()
+    rc, err, result = _run_restart(argv, _timeout(job, 60))
     print(f"job {job.get('id')}: restart {' '.join(argv[4:]) or 'all'}: rc {rc} "
           f"in {time.monotonic() - t0:.1f}s", flush=True)
-    body = {"rc": rc, "out": "", "err": (err or "")[-MAX_OUT:]}
+    body = {"rc": rc, "out": "", "err": err[-MAX_OUT:]}
     if result is not None:
         body["result"] = result
     _answer(job.get("id"), body, token)
+
+
+def _git(root: Path, *args: str, timeout: float = 30) -> "tuple[int, str]":
+    """(rc, output) of `git -C root …`; 124 when it hung past `timeout`."""
+    try:
+        r = subprocess.run(["git", "-C", str(root), *args], capture_output=True,
+                           text=True, timeout=timeout, stdin=subprocess.DEVNULL)
+        return r.returncode, ((r.stdout or "") + (r.stderr or "")).strip()
+    except subprocess.TimeoutExpired:
+        return 124, f"git {args[0]} timed out after {timeout:.0f} s"
+    except OSError as e:
+        return 127, f"git: {e}"
+
+
+def update(spec, budget: float = 175.0, python: str = "") -> "tuple[int, dict | None, str]":
+    """An update job: `git pull --ff-only` of this checkout, then, when HEAD
+    moved, restart_services.run() for the services it owns (or `only`), with
+    the busy checks and, unless `after` says otherwise, 10 s out, detached.
+    `(rc, result, why)`: result None and rc 2 for a spec that is not an
+    update's (nothing run). A dirty checkout is refused, never stashed or
+    reset; a dry run fetches and says what a pull would bring, and its
+    restart is a dry run too. `after` 0 means 10 s: an update's restart is
+    always detached, as doctor --fix's has been.
+
+    result: {"pulled": {"from", "to"}, "moved", "lines", "restart": run()'s
+    dict or None}."""
+    argv, why = restart_argv(spec, python)
+    if argv is None:
+        return 2, None, why.replace("restart:", "update:", 1)
+    t0 = time.monotonic()
+    lines: list = []
+    res = {"pulled": None, "moved": False, "lines": lines, "restart": None}
+    root = checkout()
+    if root is None:
+        lines.append("no agent-media checkout here (MEDIA_JOBS_CHECKOUT): nothing to pull")
+        return 1, res, ""
+    rc, out = _git(root, "status", "--porcelain")
+    if rc != 0:
+        lines.append(f"{root}: git status failed: {out[-300:]}")
+        return 1, res, ""
+    if out:
+        lines.append(f"{root}: uncommitted changes, not pulled (nothing restarted)")
+        return 1, res, ""
+    _, before = _git(root, "rev-parse", "--short", "HEAD")
+    dry = spec.get("dry_run") is True
+    if dry:
+        rc, out = _git(root, "fetch", "--quiet", timeout=GIT_TIMEOUT_S)
+        if rc != 0:
+            lines.append(_pull_failed(rc, out, before))
+            return 1, res, ""
+        _, after = _git(root, "rev-parse", "--short", "@{u}")
+        _, n = _git(root, "rev-list", "--count", "HEAD..@{u}")
+        res["pulled"] = {"from": before, "to": after}
+        res["moved"] = before != after
+        lines.append(f"would pull {before} -> {after} ({n} commit(s))" if before != after
+                     else f"already at {before}")
+    else:
+        rc, out = _git(root, "pull", "--ff-only", "--quiet", timeout=GIT_TIMEOUT_S)
+        if rc != 0:
+            lines.append(_pull_failed(rc, out, before))
+            return 1, res, ""
+        _, after = _git(root, "rev-parse", "--short", "HEAD")
+        res["pulled"] = {"from": before, "to": after}
+        res["moved"] = before != after
+        lines.append(f"pulled {before} -> {after}" if before != after
+                     else f"already at {before}")
+    if not res["moved"]:
+        lines.append("nothing to restart")
+        return 0, res, ""
+    if "--after" not in argv:
+        # 0 (or none) is the default: an update's restart is always detached.
+        argv += ["--after", str(UPDATE_AFTER_S)]
+    left = max(5.0, budget - (time.monotonic() - t0))
+    rc, err, result = _run_restart(argv, left)
+    res["restart"] = result
+    if result is None:
+        lines.append(f"restart_services could not run (rc {rc}): "
+                     f"{' '.join(err.strip().splitlines()[-3:])}")
+    return rc, res, err
+
+
+def _pull_failed(rc: int, out: str, at: str) -> str:
+    if rc == 124:
+        return f"FAILED: no route to its git remote (pull timed out at {at})"
+    return f"FAILED: {' '.join(out.split())[:500]}"
+
+
+def _update(job: dict, token: str) -> None:
+    t0 = time.monotonic()
+    rc, result, err = update(job.get("update"), _timeout(job, 180))
+    if result is None:
+        print(f"job {job.get('id')}: refused: {err}", flush=True)
+        _answer(job.get("id"), {"rc": 2, "out": "", "err": err}, token)
+        return
+    print(f"job {job.get('id')}: update: {'; '.join(result['lines'])}: rc {rc} "
+          f"in {time.monotonic() - t0:.1f}s", flush=True)
+    _answer(job.get("id"), {"rc": rc, "out": "", "err": err[-MAX_OUT:],
+                            "result": result}, token)
 
 
 def _handle(job: dict, token: str) -> None:
@@ -201,6 +339,8 @@ def _handle(job: dict, token: str) -> None:
         _run(job, token)
     elif kind == "restart":
         _restart(job, token)
+    elif kind == "update":
+        _update(job, token)
     else:
         _answer(job.get("id"), {"rc": 2, "out": "", "err": f"unknown job kind {kind!r}"},
                 token)
