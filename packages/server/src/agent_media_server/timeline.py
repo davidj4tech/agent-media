@@ -74,9 +74,10 @@ CREATE INDEX IF NOT EXISTS entries_contact ON entries(contact, day);
 # --- where things are -----------------------------------------------------------
 
 def db_path() -> Path:
-    from agent_media_core._paths import state_dir
+    """The current book's ledger (contacts.account_state_dir)."""
+    from .contacts import account_state_dir
 
-    return state_dir() / "timeline.db"
+    return account_state_dir() / "timeline.db"
 
 
 def _connect() -> sqlite3.Connection:
@@ -92,13 +93,23 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+#: What only the owner's book can count: the Matrix rooms and the phone are
+#: the owner's (contacts.for_room).
+OWNER_ONLY = ("texts", "calls")
+
+
 def enabled() -> list[str]:
-    """The sources switched on: `MEDIA_TIMELINE_SOURCES`, else texts and
-    notes (calls and email are opt-in)."""
-    raw = os.environ.get("MEDIA_TIMELINE_SOURCES")
+    """The sources switched on: `MEDIA_TIMELINE_SOURCES` (another account's
+    `contacts.json` `timeline`), else texts and notes (calls and email are
+    opt-in). Texts and calls are the owner's book's alone."""
+    from . import contacts
+
+    raw = contacts.setting("MEDIA_TIMELINE_SOURCES", "timeline")
     if raw is None or not raw.strip():
-        return list(DEFAULT_SOURCES)
-    return [s for s in (x.strip() for x in raw.split(",")) if s in SOURCES]
+        got = list(DEFAULT_SOURCES)
+    else:
+        got = [s for s in (x.strip() for x in raw.split(",")) if s in SOURCES]
+    return got if contacts.is_owner() else [s for s in got if s not in OWNER_ONLY]
 
 
 def days(n: int | None = None) -> list[str]:
@@ -235,14 +246,14 @@ def calls(window: list[str]) -> list[tuple]:
 
 
 def imap_settings() -> dict | None:
-    from .contacts import config_dir
+    from .contacts import account_config_dir, owner_env
 
-    raw = (os.environ.get("MEDIA_TIMELINE_IMAP") or "").strip()
+    raw = (owner_env("MEDIA_TIMELINE_IMAP") or "").strip()
     try:
         if raw.startswith("{"):
             got = json.loads(raw)
         else:
-            p = Path(raw).expanduser() if raw else config_dir() / "timeline-imap.json"
+            p = Path(raw).expanduser() if raw else account_config_dir() / "timeline-imap.json"
             if not p.is_file():
                 return None
             got = json.loads(p.read_text())

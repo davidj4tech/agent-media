@@ -8557,7 +8557,7 @@ def _server_module(name: str):
 def cmd_contacts(a) -> int:
     """`media contacts …`: the server's contacts and their timeline
     (agent_media_server.contacts): status, sync, seed, note, timeline,
-    rollup."""
+    rollup, accounts; `--account WHO` first for another account's book."""
     contacts = _server_module("contacts")
     if contacts is None:
         return 1
@@ -9538,7 +9538,8 @@ def _build_parser() -> argparse.ArgumentParser:
     contacts = sub.add_parser(
         "contacts", add_help=False,
         help="contacts and their timeline: status, sync, seed, note <who> <text>, "
-             "timeline <who>, rollup")
+             "timeline <who>, rollup, accounts ([--account WHO] first: another "
+             "account's book; default the owner's)")
     contacts.add_argument("args", nargs=argparse.REMAINDER)
     contacts.set_defaults(func=cmd_contacts)
 

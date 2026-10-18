@@ -67,21 +67,26 @@ class CrmError(Exception):
 # --- where things are -----------------------------------------------------------
 
 def config_path() -> Path:
-    from .contacts import config_dir
+    """The current book's connection (contacts.account_config_dir): the
+    owner's in the config dir, another account's under `accounts/<key>/`."""
+    from .contacts import account_config_dir
 
-    return config_dir() / "drupal-crm.json"
+    return account_config_dir() / "drupal-crm.json"
 
 
 def token_path() -> Path:
-    from .contacts import config_dir
+    from .contacts import account_config_dir
 
-    return config_dir() / "drupal-crm-token.json"
+    return account_config_dir() / "drupal-crm-token.json"
 
 
 def settings() -> dict | None:
-    """The connection, or None: `MEDIA_DRUPAL_CRM` (a path, or the JSON),
-    else the file. Needs `url`, `client_id` and `client_secret`."""
-    raw = (os.environ.get("MEDIA_DRUPAL_CRM") or "").strip()
+    """The connection, or None: `MEDIA_DRUPAL_CRM` (a path, or the JSON;
+    the owner's book only), else the file. Needs `url`, `client_id` and
+    `client_secret`."""
+    from .contacts import owner_env
+
+    raw = (owner_env("MEDIA_DRUPAL_CRM") or "").strip()
     try:
         if raw.startswith("{"):
             got = json.loads(raw)

@@ -487,6 +487,8 @@ def dispatch(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
     # Who is on the other end, for a paired device's `last_ip` (auth.py
     # reads it when the bearer turns out to be a device token).
     auth.set_client_ip(h.client_address[0] if h.client_address else "")
+    # And whose it is, for whose address book a contact join reads (§6.25).
+    auth.set_request_bearer(_bearer(h))
     if path in AUDIO_PATHS and method in ("GET", "POST"):
         return _audio(h, method, path)
     if path in MUSIC_PATHS and method in ("GET", "POST"):

@@ -37,6 +37,19 @@ read-only card is `GET /contacts/<id>` (`card`).
   token is kept next to `secrets.env`, owner-only, in
   `~/.config/agent-media/google-contacts-token.json`.
 * `MEDIA_CONTACTS=0` leaves the background sync off.
+* **One book per person** (David, 18 Oct 2026: "Where contacts live").
+  Every read and write is of the current account's book (`account()`): a
+  request's caller (auth.request_account — a device's enrolled account, the
+  owner's for a code-paired one), else the one `as_account` names (the
+  background sync, `--account`), else the owner's. The owner's book is the
+  paths above, unchanged; another account's is the same files under
+  `<state_dir>/accounts/<key>/` and `<config>/agent-media/accounts/<key>/`,
+  so no query can forget to filter and nothing is migrated. The host's
+  `MEDIA_*` settings, the phone over adb and the Matrix rooms are the
+  owner's; another account's settings are its `contacts.json` there
+  (`{sources, self, timeline}`), its Google sign-in and CRM connection
+  its own files there. Google's OAuth *client* (the app's registration)
+  is shared.
 
 Contacts are personal data: they stay on this host, and nothing here sends
 them anywhere but back to a signed-in device.
@@ -46,6 +59,8 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
+import contextvars
 import hashlib
 import json
 import logging
@@ -90,10 +105,103 @@ _NS = uuid.UUID("5b0e6f8c-7d0a-4c55-9a4b-2f1d0c6e1a17")
 
 # --- where things are -----------------------------------------------------------
 
+# Whose book: set by `as_account` (the sync loop, the CLI); unset, the
+# request's caller (auth.request_account), and outside a request the owner.
+_ACCOUNT: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "contacts_account", default=None)
+
+
+def account() -> str:
+    """The current book: "" for the owner's, else an account's key."""
+    got = _ACCOUNT.get()
+    if got is not None:
+        return got
+    from . import auth
+
+    return auth.request_account()
+
+
+def is_owner() -> bool:
+    return account() == ""
+
+
+@contextlib.contextmanager
+def as_account(key: str):
+    """Read and write `key`'s book in this block ("" the owner's)."""
+    from . import auth
+
+    key = key or ""
+    if key and key != auth.NOBODY and not auth.ACCOUNT_KEY.fullmatch(key):
+        raise ValueError(f"not an account key: {key!r}")
+    tok = _ACCOUNT.set(key)
+    try:
+        yield key
+    finally:
+        _ACCOUNT.reset(tok)
+
+
 def config_dir() -> Path:
     """`$XDG_CONFIG_HOME/agent-media`, where `secrets.env` is."""
     base = os.environ.get("XDG_CONFIG_HOME")
     return (Path(base) if base else Path.home() / ".config") / "agent-media"
+
+
+def account_config_dir() -> Path:
+    """Where the current book's own config is: the config dir for the
+    owner, `accounts/<key>/` in it for anyone else."""
+    key = account()
+    return config_dir() if not key else config_dir() / "accounts" / key
+
+
+def account_state_dir() -> Path:
+    from agent_media_core._paths import state_dir
+
+    key = account()
+    return state_dir() if not key else state_dir() / "accounts" / key
+
+
+def owner_env(name: str) -> str | None:
+    """A host setting, which is the owner's: None in anyone else's book."""
+    return os.environ.get(name) if is_owner() else None
+
+
+def account_settings() -> dict:
+    """Another account's `contacts.json` (`{sources, self, timeline}`); {}
+    for the owner, whose settings are the environment."""
+    if is_owner():
+        return {}
+    try:
+        got = json.loads((account_config_dir() / "contacts.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    return got if isinstance(got, dict) else {}
+
+
+def setting(env: str, key: str) -> str | None:
+    """The owner's `env`, else this account's `contacts.json` `key` (a list
+    is joined with commas, as the env would be)."""
+    if is_owner():
+        return os.environ.get(env)
+    v = account_settings().get(key)
+    if isinstance(v, list):
+        return ",".join(str(x) for x in v)
+    return None if v is None else str(v)
+
+
+def accounts() -> list[str]:
+    """Every book on this host: the owner's, and each account with a
+    directory of its own (config or state)."""
+    from agent_media_core._paths import state_dir
+    from . import auth
+
+    out = {""}
+    for base in (config_dir() / "accounts", state_dir() / "accounts"):
+        try:
+            out |= {p.name for p in base.iterdir()
+                    if p.is_dir() and auth.ACCOUNT_KEY.fullmatch(p.name)}
+        except OSError:
+            pass
+    return sorted(out)
 
 
 def client_path() -> Path:
@@ -101,13 +209,11 @@ def client_path() -> Path:
 
 
 def token_path() -> Path:
-    return config_dir() / "google-contacts-token.json"
+    return account_config_dir() / "google-contacts-token.json"
 
 
 def db_path() -> Path:
-    from agent_media_core._paths import state_dir
-
-    return state_dir() / "contacts.db"
+    return account_state_dir() / "contacts.db"
 
 
 def region() -> str:
@@ -635,12 +741,18 @@ def code_from(text: str, state: str) -> str:
     raise ValueError("that is not the address Google sent you to")
 
 
-_ACCESS: dict = {}                    # {"token", "expires"}, this process only
+_ACCESS: dict = {}                    # {"token", "expires"}: the owner's, this process only
+_ACCESSES: dict = {"": _ACCESS}       # every book's, by account
+
+
+def _access() -> dict:
+    return _ACCESSES.setdefault(account(), {})
 
 
 def _store_access(body: dict) -> None:
-    _ACCESS.clear()
-    _ACCESS.update(token=body["access_token"],
+    acc = _access()
+    acc.clear()
+    acc.update(token=body["access_token"],
                    expires=time.time() + float(body.get("expires_in") or 3600))
 
 
@@ -665,8 +777,9 @@ def exchange(client: dict, code: str, verifier: str, redirect_uri: str) -> dict:
 
 def access_token() -> str:
     """A current access token, refreshed when it is near its end."""
-    if _ACCESS.get("token") and _ACCESS.get("expires", 0) - 60 > time.time():
-        return _ACCESS["token"]
+    acc = _access()
+    if acc.get("token") and acc.get("expires", 0) - 60 > time.time():
+        return acc["token"]
     client, tok = load_client(), load_token()
     if client is None:
         raise NotSignedIn(f"no OAuth client ({client_path()})")
@@ -685,7 +798,7 @@ def access_token() -> str:
     if body.get("refresh_token") and body["refresh_token"] != tok["refresh_token"]:
         _save_token({**tok, "refresh_token": body["refresh_token"]})
     _store_access(body)
-    return _ACCESS["token"]
+    return _access()["token"]
 
 
 # --- the sync -------------------------------------------------------------------
@@ -711,7 +824,7 @@ def _fetch(sync_token: str | None) -> tuple[list[dict], str | None]:
             "GET", f"{PEOPLE}/people/me/connections?{urllib.parse.urlencode(params)}",
             headers={"Authorization": f"Bearer {access_token()}"})
         if status == 401 and not retried:
-            _ACCESS.clear()                    # a token Google ended early
+            _access().clear()                  # a token Google ended early
             retried = True
             continue
         err = body.get("error") if isinstance(body.get("error"), dict) else {}
@@ -878,19 +991,22 @@ def sync_drupal() -> dict:
 
 
 def sources() -> list[str]:
-    """The sources this host reads: `MEDIA_CONTACTS_SOURCES` (comma
-    separated), else the phone when this host has the adb tool, Google
-    only when it is signed in, and the CRM only when its connection is set."""
+    """The sources this book reads: `MEDIA_CONTACTS_SOURCES` (comma
+    separated; another account's `contacts.json` `sources`), else the phone
+    when this host has the adb tool (the owner's book only), Google only
+    when signed in, and the CRM only when its connection is set."""
     from . import contacts_android, contacts_drupal
 
-    raw = (os.environ.get("MEDIA_CONTACTS_SOURCES") or "").strip()
+    raw = (setting("MEDIA_CONTACTS_SOURCES", "sources") or "").strip()
     if raw:
         want = [s.strip() for s in raw.split(",") if s.strip()]
     else:
         want = ["android", "google", "drupal"]
     out = []
     for s in want:
-        if s == "android" and contacts_android.available():
+        # The phone over adb is this host's, so the owner's: never another
+        # account's book.
+        if s == "android" and is_owner() and contacts_android.available():
             out.append(s)
         elif s == "google" and signed_in():
             out.append(s)
@@ -1066,7 +1182,8 @@ def identities(user_id: str, displayname: str = "", default_region: str = "AU") 
     return {"phones": phones, "emails": emails, "name": name}
 
 
-_INDEX: dict = {"gen": None, "checked": 0.0}
+_INDEX: dict = {"gen": None, "checked": 0.0}      # the owner's
+_INDEXES: dict = {"": _INDEX}                      # every book's, by account
 _ROOM_MEMO: dict = {}
 #: How long the store's generation is trusted before it is read again: a
 #: sync from the CLI (another process) shows within this.
@@ -1077,17 +1194,18 @@ def _index() -> dict | None:
     """Phones, emails and names to contact ids, and the overrides; rebuilt
     when the store changes. None when there is no store."""
     now = time.monotonic()
-    if _INDEX.get("gen") is not None and now - _INDEX["checked"] < _GEN_TTL_S:
-        return _INDEX
+    idx = _INDEXES.setdefault(account(), {"gen": None, "checked": 0.0})
+    if idx.get("gen") is not None and now - idx["checked"] < _GEN_TTL_S:
+        return idx
     conn = _connect(create=False)
     if conn is None:
-        _INDEX.update(gen=None, checked=now)
+        idx.update(gen=None, checked=now)
         return None
     try:
         gen = _meta(conn, "gen") or "0"
-        if gen == _INDEX.get("gen"):
-            _INDEX["checked"] = now
-            return _INDEX
+        if gen == idx.get("gen"):
+            idx["checked"] = now
+            return idx
         phones: dict[str, set] = {}
         emails: dict[str, set] = {}
         names: dict[str, set] = {}
@@ -1111,19 +1229,19 @@ def _index() -> dict | None:
                 splits.setdefault(room, set()).add(cid)
     finally:
         conn.close()
-    _INDEX.clear()
-    _INDEX.update(gen=gen, checked=now, phones=phones, emails=emails, names=names,
-                  display=display, joins=joins, splits=splits)
+    idx.clear()
+    idx.update(gen=gen, checked=now, phones=phones, emails=emails, names=names,
+               display=display, joins=joins, splits=splits)
     _ROOM_MEMO.clear()
-    return _INDEX
+    return idx
 
 
 def _self_ids() -> tuple[set, set]:
-    """`MEDIA_CONTACTS_SELF`: David's own numbers and addresses, comma
-    separated. Texts sent from the phone itself come in as the number's
+    """`MEDIA_CONTACTS_SELF` (another account's `contacts.json` `self`):
+    David's own numbers and addresses, comma separated. Texts sent from the phone itself come in as the number's
     puppet (no double puppeting), so his own number is in every SMS room."""
     phones, emails = set(), set()
-    for x in (os.environ.get("MEDIA_CONTACTS_SELF") or "").split(","):
+    for x in (setting("MEDIA_CONTACTS_SELF", "self") or "").split(","):
         x = x.strip()
         if "@" in x:
             emails.add(x.lower())
@@ -1190,7 +1308,12 @@ def _skip_of(r) -> set[str]:
 
 def for_room(r) -> dict | None:
     """The `contact` of a Matrix row (§6.1): `{id, name}`, or None. Cheap:
-    remembered per room until its members or the store change."""
+    remembered per room until its members or the store change.
+
+    The Matrix rooms this server reads are the owner's, so they are joined
+    to the owner's book only: in anyone else's, no room is a contact's."""
+    if not is_owner():
+        return None
     idx = _index()
     if idx is None:
         return None
@@ -1212,6 +1335,8 @@ def rooms_of(cid: str) -> list[dict]:
     from . import matrix
 
     out = []
+    if not is_owner():
+        return out
     for r in list(matrix._ROOMS.values()):
         got = for_room(r)
         if not got or got["id"] != cid:
@@ -1227,8 +1352,12 @@ def rooms_of(cid: str) -> list[dict]:
 def _reset_for_tests() -> None:
     _INDEX.clear()
     _INDEX.update(gen=None, checked=0.0)
+    _INDEXES.clear()
+    _INDEXES[""] = _INDEX
     _ROOM_MEMO.clear()
     _ACCESS.clear()
+    _ACCESSES.clear()
+    _ACCESSES[""] = _ACCESS
 
 
 # --- the background sync --------------------------------------------------------
@@ -1254,25 +1383,33 @@ def _run() -> None:
         interval = INTERVAL_S
     time.sleep(15)
     while True:
-        try:
-            got = sync()
-            for s in got["synced"]:
-                if s.get("changed") or s.get("deleted") or s.get("unchanged") is False:
-                    print(f"contacts: {s['source']}: {s['contacts']} contacts", file=sys.stderr)
-            for s, e in got["errors"].items():
-                # The phone off Wi-Fi is the usual one: the last copy serves.
-                print(f"contacts: {s} unread ({e})", file=sys.stderr)
-            if (os.environ.get("MEDIA_TIMELINE") or "1").strip() != "0":
-                from . import timeline
-
-                t = timeline.rollup()
-                if t["changed"] or t["errors"] or t["source_errors"]:
-                    print(f"timeline: {t['changed']} changed, {t['pushed']} pushed, "
-                          f"{t['errors']} failed {t['source_errors'] or ''}".rstrip(),
-                          file=sys.stderr)
-        except Exception as e:  # noqa: BLE001 — never take the canvas down
-            print(f"contacts: sync failed ({e})", file=sys.stderr)
+        for key in accounts():
+            with as_account(key):
+                _sync_book(key)
         time.sleep(max(30.0, interval))
+
+
+def _sync_book(key: str) -> None:
+    """One book's sync and rollup, in the loop: said, never raised."""
+    who = f"contacts[{key}]" if key else "contacts"
+    try:
+        got = sync()
+        for s in got["synced"]:
+            if s.get("changed") or s.get("deleted") or s.get("unchanged") is False:
+                print(f"{who}: {s['source']}: {s['contacts']} contacts", file=sys.stderr)
+        for s, e in got["errors"].items():
+            # The phone off Wi-Fi is the usual one: the last copy serves.
+            print(f"{who}: {s} unread ({e})", file=sys.stderr)
+        if (os.environ.get("MEDIA_TIMELINE") or "1").strip() != "0":
+            from . import timeline
+
+            t = timeline.rollup()
+            if t["changed"] or t["errors"] or t["source_errors"]:
+                print(f"timeline{f'[{key}]' if key else ''}: {t['changed']} changed, "
+                      f"{t['pushed']} pushed, {t['errors']} failed "
+                      f"{t['source_errors'] or ''}".rstrip(), file=sys.stderr)
+    except Exception as e:  # noqa: BLE001 — never take the canvas down
+        print(f"{who}: sync failed ({e})", file=sys.stderr)
 
 
 # --- the sign-in, for a phone ---------------------------------------------------
@@ -1390,7 +1527,8 @@ def status() -> dict:
         if conn is not None:
             conn.close()
     tok = load_token()
-    return {"store": str(db_path()), "contacts": count, "sources": sources(),
+    return {"account": account() or "owner", "store": str(db_path()), "contacts": count,
+            "sources": sources(),
             "android": {"command": " ".join(contacts_android.command()),
                         "available": contacts_android.available(), **per.get("android", {})},
             "google": {"client": str(client_path()) if not os.environ.get("MEDIA_GOOGLE_OAUTH_CLIENT")
@@ -1407,7 +1545,7 @@ def status() -> dict:
 def _drupal_config_path():
     from . import contacts_drupal
 
-    return "MEDIA_DRUPAL_CRM" if os.environ.get("MEDIA_DRUPAL_CRM") else contacts_drupal.config_path()
+    return "MEDIA_DRUPAL_CRM" if owner_env("MEDIA_DRUPAL_CRM") else contacts_drupal.config_path()
 
 
 def _drupal_configured() -> bool:
@@ -1422,7 +1560,7 @@ def _when(v):
 
 def cmd_status(_a) -> int:
     s = status()
-    for k in ("store", "contacts", "sources", "background"):
+    for k in ("account", "store", "contacts", "sources", "background"):
         print(f"{k:13} {s[k]}")
     for src in KINDS:
         for k, v in s[src].items():
@@ -1549,7 +1687,12 @@ def main(argv: list[str] | None = None) -> int:
                                  description="Contacts for agent-media: the phone's over "
                                              "adb, Google's if signed in, the Drupal CRM's "
                                              "if connected, and their timeline.")
+    ap.add_argument("--account", default="",
+                    help="whose book: an account key, or an enrolled account's email "
+                         "(default: the owner's; `accounts` lists them)")
     sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("accounts", help="the books on this host, and the accounts "
+                                    "enrolled here").set_defaults(fn=cmd_accounts)
     p = sub.add_parser("login", help="sign in to Google (works from a phone)")
     p.add_argument("--port", type=int, default=0, help="loopback port (default: any free one)")
     p.set_defaults(fn=cmd_login)
@@ -1567,7 +1710,57 @@ def main(argv: list[str] | None = None) -> int:
 
     timeline.add_commands(sub)
     a = ap.parse_args(argv)
-    return a.fn(a)
+    try:
+        key = resolve_account(a.account)
+    except ValueError as e:
+        print(f"contacts: {e}", file=sys.stderr)
+        return 2
+    with as_account(key):
+        return a.fn(a)
+
+
+def enrolled_accounts() -> list[dict]:
+    """The accounts with a device here, and the book each reads:
+    `[{key, account, iss, sub, devices}]` ("" is the owner's)."""
+    from . import auth, devices
+
+    seen: dict[tuple, dict] = {}
+    for d in devices._load(fresh=True):
+        if not d.get("sub") or devices.is_jobs_worker(d):
+            continue
+        k = (str(d.get("iss") or "").rstrip("/"), str(d["sub"]))
+        row = seen.setdefault(k, {"key": auth.device_account(d), "account": d.get("account") or "",
+                                  "iss": k[0], "sub": k[1], "devices": 0})
+        row["devices"] += 1
+    return list(seen.values())
+
+
+def resolve_account(who: str) -> str:
+    """`--account`: "" (the owner), an account key, or an enrolled account's
+    email or sub. Unknown is an error, never a fresh empty book."""
+    from . import auth
+
+    who = (who or "").strip()
+    if not who or who == "owner":
+        return ""
+    if auth.ACCOUNT_KEY.fullmatch(who):
+        return who
+    hits = {r["key"] for r in enrolled_accounts()
+            if who.lower() in (r["account"].lower(), r["sub"].lower())}
+    if len(hits) == 1:
+        return hits.pop()
+    raise ValueError(f"no account here is {who!r}" if not hits
+                     else f"{who!r} is more than one account; give its key")
+
+
+def cmd_accounts(_a) -> int:
+    rows = {r["key"]: r for r in enrolled_accounts()}
+    for key in sorted(set(accounts()) | set(rows)):
+        r = rows.get(key)
+        label = "owner" if not key else key
+        extra = f"  {r['account'] or r['sub']} ({r['devices']} device(s))" if r else ""
+        print(f"{label}{extra}")
+    return 0
 
 
 if __name__ == "__main__":

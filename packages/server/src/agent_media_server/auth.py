@@ -36,6 +36,9 @@ from __future__ import annotations
 
 import threading
 
+import hashlib
+import re
+
 from . import auth_abs, devices
 
 # The source address of the request this thread is answering, for a device's
@@ -46,6 +49,13 @@ _REQ = threading.local()
 
 def set_client_ip(ip: str) -> None:
     _REQ.ip = ip or ""
+
+
+def set_request_bearer(bearer: str) -> None:
+    """The bearer of the request this thread is answering, for
+    `request_account` — set by `app.dispatch` beside the address."""
+    _REQ.bearer = bearer or ""
+    _REQ.account = None
 
 
 def _device(bearer: str) -> dict | None:
@@ -72,7 +82,78 @@ def _owner(dev: dict) -> dict:
     rides here so a route can ask without reading the store again.
     """
     return {"username": f"device:{dev.get('name') or dev.get('id')}", "type": "root",
-            "device": dev.get("id"), "enrol": devices.may_enrol(dev)}
+            "device": dev.get("id"), "enrol": devices.may_enrol(dev),
+            "account_key": device_account(dev)}
+
+
+# --- whose book (contacts, the timeline) ------------------------------------------
+#
+# One address book per person, several per server (contacts proposal, "Where
+# contacts live"). The owner's is "" — today's paths, unchanged; any other
+# account's is a key safe as a directory name. An account's identity is the
+# `iss`/`sub` its enrolment wrote on the device row.
+
+#: An account key: "" (the owner) or this.
+ACCOUNT_KEY = re.compile(r"(acct|abs)-[0-9a-f]{20}")
+NOBODY = "nobody"
+
+
+def _key(prefix: str, ident: str) -> str:
+    return f"{prefix}-" + hashlib.sha256(ident.encode()).hexdigest()[:20]
+
+
+def account_key_of(iss: str, sub: str) -> str:
+    return _key("acct", f"{(iss or '').rstrip('/')}|{sub}")
+
+
+def device_account(dev: dict) -> str:
+    """The book a device reads: "" (the owner's) for a code-paired device
+    (someone at the desk paired it) and for the owner's account; the
+    account's own key for anyone else's.
+
+    The owner's account is `MEDIA_OWNER_ACCOUNT` (MEDIA_OIDC_ALLOW's form:
+    `<iss>|<sub>`, `<iss>|email=<addr>`). Unset, an account whose device may
+    enrol others is the owner's — that is an admin, who could read the store
+    from a shell anyway, and it is how David's own enrolled devices keep his
+    book with nothing to set."""
+    sub = str(dev.get("sub") or "")
+    if not sub:
+        return ""
+    iss = str(dev.get("iss") or "").rstrip("/")
+    from . import oidc
+
+    rules = oidc._list("MEDIA_OWNER_ACCOUNT")
+    if rules:
+        claims = {"iss": iss, "sub": sub, "email": str(dev.get("account") or "")}
+        return "" if oidc._matches(claims, rules) else account_key_of(iss, sub)
+    return "" if devices.may_enrol(dev) else account_key_of(iss, sub)
+
+
+def account_key(user: dict | None) -> str:
+    """The book this caller (a `gate`/`identity` user) reads. An ABS login
+    is the owner when it is ABS's root, else a book of its own."""
+    if not user:
+        return NOBODY
+    if user.get("device"):
+        return str(user.get("account_key") or "")
+    if user.get("type") == "root":
+        return ""
+    return _key("abs", str(user.get("username") or user.get("id") or ""))
+
+
+def request_account() -> str:
+    """The book of the request this thread is answering ("" — the owner's —
+    outside one: the background sync, the CLI). A request nobody signed is
+    nobody's book, which holds nothing."""
+    bearer = getattr(_REQ, "bearer", None)
+    if bearer is None:
+        return ""
+    got = getattr(_REQ, "account", None)
+    if got is None:
+        # Once per request: /targets asks for every room.
+        got = account_key(identity(bearer)[0]) if bearer else NOBODY
+        _REQ.account = got
+    return got
 
 
 def identity(bearer: str) -> tuple[dict | None, int]:
