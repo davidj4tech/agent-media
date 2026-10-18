@@ -1237,7 +1237,10 @@ ahead.
     contact, and edits written back. The sources are Google Contacts and the
     Drupal CRM on red4, with Google winning where they disagree. The plan is
     docs/proposals/2026-10-17-contacts.md: open questions first, then five
-    steps, starting with Google read-only.
+    steps, starting with Google read-only. **Timeline** (18 Oct 2026):
+    daily per-contact rollups kept in the CRM as a distributable
+    `crm_activity` module; texts, Signal and agent notes on by default,
+    calls and email off; after step 3.
 
 ## Loose ends
 
