@@ -21,6 +21,8 @@ def _transcript(tmp_path, model, used):
 def _env(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.delenv("CLAUDE_CONTEXT_WINDOW", raising=False)
+    # The thread link has its own tests, below.
+    monkeypatch.setenv("MEDIA_THREAD_LINK", "0")
 
 
 def test_a_known_1m_model_is_not_warned_at_120k(tmp_path, monkeypatch, capsys):
@@ -111,3 +113,44 @@ def test_gemini_is_counted_to_where_it_compresses(tmp_path, monkeypatch, capsys)
         "transcript_path": str(t), "session_id": "g", "hook_event_name": "BeforeAgent"})
     ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
     assert "76% full (400k of 524k)" in ctx
+
+
+def _link_env(tmp_path, monkeypatch, public):
+    _env(tmp_path, monkeypatch)
+    monkeypatch.delenv("MEDIA_THREAD_LINK")
+    # "-" keeps a variable empty through the env files (intake/_env.py).
+    monkeypatch.setenv("MEDIA_PUBLIC_URL", public or "-")
+
+
+def test_the_thread_link_is_told_once_on_a_prompt(tmp_path, monkeypatch, capsys):
+    _link_env(tmp_path, monkeypatch, "https://red5.example.com/")
+    hook = {"session_id": "s1", "hook_event_name": "UserPromptSubmit"}
+    out = json.loads(_run(context.main, monkeypatch, capsys, hook))
+    note = out["hookSpecificOutput"]["additionalContext"]
+    assert "https://red5.example.com/app/t/s1" in note
+    assert "(https://red5.example.com/app/t/<session-id>)" in note
+    assert _run(context.main, monkeypatch, capsys, hook) == ""
+
+
+def test_without_a_public_address_the_link_is_the_apps_own(tmp_path, monkeypatch, capsys):
+    _link_env(tmp_path, monkeypatch, "")
+    out = _run(context.main, monkeypatch, capsys, {"session_id": "s2"})
+    assert "sasonica://t/s2" in out and "https://" not in out
+
+
+def test_not_when_off(tmp_path, monkeypatch, capsys):
+    _link_env(tmp_path, monkeypatch, "https://h.example.com")
+    monkeypatch.setenv("MEDIA_THREAD_LINK", "0")
+    assert _run(context.main, monkeypatch, capsys,
+                {"session_id": "s4", "hook_event_name": "UserPromptSubmit"}) == ""
+
+
+def test_a_compaction_tells_it_again_beside_a_band(tmp_path, monkeypatch, capsys):
+    _link_env(tmp_path, monkeypatch, "https://h.example.com")
+    t = _transcript(tmp_path, "some-model", 150_000)
+    hook = {"transcript_path": t, "session_id": "s5", "hook_event_name": "UserPromptSubmit"}
+    first = json.loads(_run(context.main, monkeypatch, capsys, hook))["hookSpecificOutput"]["additionalContext"]
+    assert "75% full" in first and "/app/t/s5" in first
+    t2 = _transcript(tmp_path, "some-model", 20_000)
+    after = _run(context.main, monkeypatch, capsys, {**hook, "transcript_path": t2})
+    assert "/app/t/s5" in after

@@ -275,8 +275,18 @@ def note_for(hook: dict) -> str:
     JSON all four read as context for the model — Gemini shows plain stdout
     to the person instead, and Codex is not known to read it at all. pi's extension asks
     without an event name, and takes the text as it is."""
-    sid = hook.get("session_id") or "x"
     d = state_dir()
+    note = " ".join(n for n in (_band_note(hook, d), _link_note(hook, d)) if n)
+    event = hook.get("hook_event_name")
+    if note and event:
+        note = json.dumps({"hookSpecificOutput": {
+            "hookEventName": event, "additionalContext": note}})
+    return note
+
+
+def _band_note(hook: dict, d: Path) -> str:
+    """The context band just crossed, once per band, or ""."""
+    sid = hook.get("session_id") or "x"
     got = measure(hook, d)
     if not got:
         return ""
@@ -287,20 +297,53 @@ def note_for(hook: dict) -> str:
     reported = int(state.read_text() or 0) if state.exists() else 0
     if pct < 50:
         if reported:
+            # A compaction: what the session was told is gone with it.
             state.write_text("0")
+            (d / f"{sid}.link").unlink(missing_ok=True)
         return ""
     for band, msg in BANDS:
         if pct >= band:
             if band <= reported:
                 return ""
             state.write_text(str(band))
-            note = msg.format(pct=pct, used=used // 1000, win=win // 1000)
-            event = hook.get("hook_event_name")
-            if event:
-                note = json.dumps({"hookSpecificOutput": {
-                    "hookEventName": event, "additionalContext": note}})
-            return note
+            return msg.format(pct=pct, used=used // 1000, win=win // 1000)
     return ""
+
+
+#: The session's own thread link (sasonica-app lib/threadLinks.ts; David,
+#: 18 Oct 2026): `<MEDIA_PUBLIC_URL>/app/t/<session>` opens it in the
+#: Sasonica app on a phone (an App Link, the server's assetlinks.json) and in
+#: the web app at a desk; with no public address, `sasonica://t/<session>`,
+#: app only.
+LINK_NOTE = ("This thread's link is {link} — it opens this conversation in the "
+             "Sasonica app. When you name a session or thread to the user, link "
+             "it the same way ({base}<session-id>), as a markdown link.")
+
+
+def thread_link_base() -> str:
+    """Where a thread's link starts, up to the session id."""
+    from ._env import load_env_file
+
+    load_env_file("hook")
+    pub = (os.environ.get("MEDIA_PUBLIC_URL") or "").strip().rstrip("/")
+    return f"{pub}/app/t/" if pub.startswith("https://") else "sasonica://t/"
+
+
+def _link_note(hook: dict, d: Path) -> str:
+    """The thread's link, told once per session (again after a compaction),
+    on whichever hook a harness reads context from. MEDIA_THREAD_LINK=0
+    keeps it out."""
+    sid = hook.get("session_id")
+    if not sid:
+        return ""
+    if (os.environ.get("MEDIA_THREAD_LINK") or "").strip() in ("0", "-", "off"):
+        return ""
+    marker = d / f"{sid}.link"
+    if marker.exists():
+        return ""
+    marker.write_text("1")
+    base = thread_link_base()
+    return LINK_NOTE.format(link=base + sid, base=base)
 
 
 def _hook() -> None:

@@ -26,6 +26,7 @@ def event(name, **kw):
 def hook(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setenv("MEDIA_HOOK_NO_DETACH", "1")
+    monkeypatch.setenv("MEDIA_THREAD_LINK", "0")  # its own tests: test_context.py
     monkeypatch.setenv("TMUX_PANE", "%9")
     monkeypatch.setattr(hook_gemini, "gemini_process", lambda *a, **k: GEMINI)
     seen = {"prompts": [], "said": []}

@@ -5339,6 +5339,13 @@ which names `com.sasonica.app` and `com.sasonica.app.debug` with their
 signing keys (`MEDIA_APP_LINKS_EXTRA` adds others). Tapped inside the app,
 either form opens the thread in place (sasonica-app lib/threadLinks.ts).
 
+Agents are told their own: the context hook (`media-hook-context`,
+intake/context.py) adds "This thread's link is …" to a session's context on
+its first prompt and again after a compaction, built from
+`MEDIA_PUBLIC_URL` (an https address in `~/.config/agent-media.env`; without
+one, the `sasonica://` form), with the ask to link any session it names the
+same way. `MEDIA_THREAD_LINK=0` leaves it out.
+
 ---
 
 ## Appendix A — routes outside the app contract
