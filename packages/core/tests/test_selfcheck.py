@@ -80,6 +80,8 @@ def test_health_problems_tolerates_an_older_host():
 
 def test_selfcheck_facts_report_this_editable_checkout(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    # Not this host's own unit dir: its copies are its drift, not the test's.
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     facts = cli.selfcheck_facts()
     # The test suite runs from a git checkout with an editable install, which
     # is exactly the healthy shape.

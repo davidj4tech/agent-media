@@ -7753,6 +7753,7 @@ def selfcheck_facts() -> "dict[str, str]":
     loops = _crash_loops()
     if loops:
         facts["crashloop"] = ",".join(f"{n}:{c}" for n, c in loops)
+    facts.update(_drift_facts(root))
     facts.update(_mic_detect_facts())
     facts.update(_hold_facts())
     facts.update(_media_volume_facts())
@@ -7766,6 +7767,20 @@ def selfcheck_facts() -> "dict[str, str]":
     facts.update(_layout_facts())
     _cache_facts(facts)
     return facts
+
+
+def _drift_facts(root: "Optional[Path]") -> "dict[str, str]":
+    """Service files that are copies of this checkout's (service_drift.py):
+    `drift=` the ones that differ — a pull never reaches what the service
+    runs, as p8a's phone-jobs ran 3 Oct copies until 18 Oct 2026 — and
+    `copies=` the ones that still match (reported, not yet a problem)."""
+    if root is None:
+        return {}
+    try:
+        from . import service_drift
+        return service_drift.facts(service_drift.scan(root))
+    except Exception as e:  # noqa: BLE001 — a scan must never break selfcheck
+        return {"drift_error": str(e)[:200]}
 
 
 def _layout_facts() -> "dict[str, str]":
@@ -8158,6 +8173,10 @@ def health_problems(facts: "dict[str, str]") -> "list[str]":
                         "start (pip install -e packages/server)")
     if facts.get("crashloop"):
         problems.append(f"crash-looping: {facts['crashloop']}")
+    if facts.get("drift"):
+        problems.append(f"service files are copies that differ from the checkout, so "
+                        f"git pull won't reach them: {facts['drift']} — compare, then "
+                        "`media-setup link-services --force` (MEDIA_DRIFT_OK= to keep one)")
     vol = facts.get("media_volume")
     if vol:
         try:
@@ -8705,6 +8724,8 @@ def _scan_local() -> "list[str]":
     except Exception as e:  # noqa: BLE001
         problems = [f"selfcheck failed: {e}"]
     print(" " + "; ".join(f"[{p}]" for p in problems) if problems else " ok")
+    if facts.get("copies"):
+        print(f"  {copy_note(facts)}")
     if facts.get("layout"):
         print(f"  layout: {facts['layout']} ({facts.get('layout_why', '')})")
     return problems
@@ -8741,6 +8762,8 @@ def _scan_hosts(hosts: "list[str]", local_hashes: dict,
             host_skewed = host_skewed or is_skew
         problems = health_problems(facts)
         notes.extend(problems)
+        if facts.get("copies"):
+            notes.append(copy_note(facts))
 
         if notes:
             print(" " + " ".join(f"[{n}]" for n in notes))
@@ -8751,6 +8774,14 @@ def _scan_hosts(hosts: "list[str]", local_hashes: dict,
         if problems:
             unhealthy.append(host)
     return skewed, unhealthy, unreachable
+
+
+def copy_note(facts: "dict[str, str]") -> str:
+    """The lower-level drift: service files that are copies of the checkout's
+    and still match it. Not a problem until the next pull changes the
+    original, so it is said, not laddered into the ledger."""
+    return (f"copy, not linked: {facts['copies']} (`media-setup link-services` "
+            "links them)")
 
 
 def fix_targets(skewed: "list[str]", unhealthy: "list[str]") -> "list[str]":
