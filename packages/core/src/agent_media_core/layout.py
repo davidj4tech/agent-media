@@ -205,7 +205,7 @@ def fresh_target() -> tuple[str, str, str]:
 
 def place_host(path: str) -> str:
     """The tmux session a chat opened in directory `path` goes into: on
-    David's desk the project's (`p-sasonica-app` for
+    David's desk the project's (`spl-p-sasonica-app` for
     ~/spl/projects/sasonica/sasonica-app),
     else the folder's name, as tmux-organise-panes would file it."""
     if projects():
@@ -282,13 +282,18 @@ def encoded_project_label(tail: str) -> str:
     """The project name for a folder `<tail>` under a projects root:
     `p-<tail>` on David's desk (what his tmux session for it is called),
     `<tail>` elsewhere. A project in a group (`sasonica/sasonica-app`) is
-    named by `project_name` (`p-sasonica-app`)."""
+    named by `project_name` (`spl-p-sasonica-app`)."""
     tail = tail.strip().strip("/")
     if not tail:
         return ""
     if "/" in tail:
         group, _, kid = tail.partition("/")
-        return _grouped_name(group, kid.split("/", 1)[0], _index())
+        kid = kid.split("/", 1)[0]
+        idx = _index()
+        for name, row in idx["projects"].items():
+            if row["group"] == group and row["folder"] == kid:
+                return name
+        return _name(projects_root(), group, kid, idx)
     return f"p-{tail}" if projects() else tail
 
 
@@ -300,10 +305,11 @@ def encoded_project_label(tail: str) -> str:
 # ~/spl/projects/sasonica. Each folder in a group is a project of its own.
 # Nothing about groups is configured: the folders say.
 #
-# Names, David's desk: `p-<folder>` for every project, grouped or not
-# (`p-sasonica-app` for ~/spl/projects/sasonica/sasonica-app), so a repo
-# keeps the name its tmux session, shelf and history already have wherever
-# it moves; `p-<group>-<folder>` only when two projects share a folder name.
+# Names, David's desk: `p-<folder>` in ~/projects, `<owner>-p-<folder>` in
+# another root, grouped or not (`spl-p-sasonica-app` for
+# ~/spl/projects/sasonica/sasonica-app), `<prefix><group>-<folder>` only
+# when two projects share a folder name. The tmux session has the same name
+# (tmux-organise-panes).
 # Default layout: `<group>/<folder>`, else the folder's name.
 #
 # A link in a root or a group (~/projects/sasonica-app, left at an old
@@ -369,10 +375,24 @@ def _is_group(path: str) -> bool:
     return any(os.path.exists(os.path.join(path, k, ".git")) for k in _child_dirs(path))
 
 
-def _grouped_name(group: str, kid: str, idx: dict) -> str:
+def _prefix(root: str) -> str:
+    """`p-` for the default root; `<owner>-p-` for another, the owner being
+    the folder above it (~/spl/projects → `spl-p-`), so a business's
+    projects read as its own in tmux and sort together (David, 19 Oct 2026)."""
+    if os.path.realpath(root) == os.path.realpath(projects_root()):
+        return "p-"
+    owner = os.path.basename(os.path.dirname(root.rstrip("/"))).replace(".", "_").replace(" ", "_")
+    return f"{owner}-p-" if owner else "p-"
+
+
+def _name(root: str, group: str, folder: str, idx: dict) -> str:
+    """A project's name: `<prefix><folder>` on David's desk
+    (`spl-p-sasonica-app`), `<prefix><group>-<folder>` when two projects
+    share the folder name; `<group>/<folder>` or `<folder>` elsewhere."""
     if not projects():
-        return f"{group}/{kid}"
-    return f"p-{group}-{kid}" if idx.get("kids", {}).get(kid, 0) > 1 else f"p-{kid}"
+        return f"{group}/{folder}" if group else folder
+    clash = group and idx.get("kids", {}).get(folder, 0) > 1
+    return f"{_prefix(root)}{group}-{folder}" if clash else f"{_prefix(root)}{folder}"
 
 
 def _index() -> dict:
@@ -401,14 +421,17 @@ def _index() -> dict:
         kids[k] = kids.get(k, 0) + 1
     idx = {"kids": kids, "groups": groups, "projects": {}, "aliases": {}, "by_path": {}}
     for root, group, folder in found:
-        name = _grouped_name(group, folder, idx) if group else (
-            f"p-{folder}" if projects() else folder)
+        name = _name(root, group, folder, idx)
         path = os.path.join(root, group, folder) if group else os.path.join(root, folder)
         idx["projects"][name] = {"root": root, "rel": f"{group}/{folder}" if group else folder,
                                  "group": group, "folder": folder, "path": path}
         idx["by_path"][os.path.realpath(path)] = name
-        if group and projects():
-            idx["aliases"].setdefault(f"p-{group}-{folder}", name)   # the 18 Oct name
+        if projects():
+            # Names it went by: 18 Oct's p-<group>-<folder>, and p-<folder>
+            # from before it moved into another root.
+            for old in ([f"p-{group}-{folder}", f"p-{folder}"] if group else [f"p-{folder}"]):
+                if old != name:
+                    idx["aliases"].setdefault(old, name)
     # Links at old paths, in a root or in a folder of one that is no project
     # (a group, or one left holding only links: ~/projects/spl after the
     # move): the project they point at.
@@ -425,6 +448,8 @@ def _index() -> dict:
                               else [f"{group}/{link}", link] if group else [f"{pre}{link}"]):
                     if alias != target and alias not in idx["projects"]:
                         idx["aliases"].setdefault(alias, target)
+    for name in idx["projects"]:
+        idx["aliases"].pop(name, None)      # a real project is never another's old name
     _index_seen = (time.monotonic(), key, idx)
     return idx
 
@@ -466,15 +491,13 @@ def project_rel(path: str) -> str:
 
 
 def project_name(path: str) -> str:
-    """The name of the project `path` is in (`p-sasonica-app` on David's
+    """The name of the project `path` is in (`spl-p-sasonica-app` on David's
     desk), or "" outside the roots."""
     hit = _locate(path)
     if not hit:
         return ""
-    _root, group, folder = hit
-    if group:
-        return _grouped_name(group, folder, _index())
-    return f"p-{folder}" if projects() else folder
+    root, group, folder = hit
+    return _name(root, group, folder, _index())
 
 
 def project_parts(project: str) -> tuple[str, str]:

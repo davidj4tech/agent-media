@@ -450,29 +450,30 @@ def _two_roots(monkeypatch, tmp_path):
     return home, spl
 
 
-def test_a_project_in_a_group_keeps_its_own_name(monkeypatch, tmp_path):
-    """~/spl/projects/sasonica/sasonica-app is `p-sasonica-app`, the name it
-    had in ~/projects, and a link left at the old path is the same project
-    (David, 19 Oct 2026)."""
+def test_a_project_in_another_root_carries_its_owner(monkeypatch, tmp_path):
+    """~/spl/projects/sasonica/sasonica-app is `spl-p-sasonica-app`; the name
+    it had in ~/projects, and a link left at the old path, are the same
+    project (David, 19 Oct 2026)."""
     home, spl = _two_roots(monkeypatch, tmp_path)
     app = spl / "sasonica" / "sasonica-app"
-    assert sessions.project_of(str(app)) == "p-sasonica-app"
-    assert sessions.project_of(f"{app}/.claude/worktrees/x") == "p-sasonica-app"
-    assert sessions.project_of(f"{home}/sasonica-app") == "p-sasonica-app"
+    assert sessions.project_of(str(app)) == "spl-p-sasonica-app"
+    assert sessions.project_of(f"{app}/.claude/worktrees/x") == "spl-p-sasonica-app"
+    assert sessions.project_of(f"{home}/sasonica-app") == "spl-p-sasonica-app"
     assert sessions.project_of(f"{home}/agent-media") == "p-agent-media"
+    assert sessions.project_of("/tmp/x", "/lib/Conversations/p-sasonica-app/A title") == "spl-p-sasonica-app"
     # Filed on 18 Oct under the name it had in ~/projects/spl: listed with the new.
     assert (sessions.project_of("/tmp/x", "/lib/Conversations/p-spl-sasonica-app/A title")
-            == "p-sasonica-app")
+            == "spl-p-sasonica-app")
     assert sessions.project_groups() == {
-        "p-sasonica-app": {"group": "sasonica", "name": "sasonica-app"},
-        "p-sasonica-shell": {"group": "sasonica", "name": "sasonica-shell"}}
+        "spl-p-sasonica-app": {"group": "sasonica", "name": "sasonica-app"},
+        "spl-p-sasonica-shell": {"group": "sasonica", "name": "sasonica-shell"}}
 
 
 def test_a_grouped_projects_docs_are_found_by_its_name(monkeypatch, tmp_path):
     from agent_media_server import doc_read
 
     home, spl = _two_roots(monkeypatch, tmp_path)
-    assert doc_read.project_dir("p-sasonica-app") == (spl / "sasonica" / "sasonica-app").resolve()
+    assert doc_read.project_dir("spl-p-sasonica-app") == (spl / "sasonica" / "sasonica-app").resolve()
     assert doc_read.project_dir("p-agent-media") == (home / "agent-media").resolve()
     assert doc_read.project_dir("spl/../agent-media") is None
     assert doc_read._project_of_rel("sasonica/sasonica-app/docs/x.md") == "sasonica/sasonica-app"

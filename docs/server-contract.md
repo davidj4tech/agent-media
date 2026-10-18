@@ -302,7 +302,8 @@ Everything a message can be pointed at.
   series its shelf folder is filed under (`p-agent-media`), else `p-<name>`
   for a directory in a project root (a worktree inside one counts; one in
   a group is `p-<folder>` too, see `project_groups`, and a link left at an
-  old path names the project it points at), else
+  old path names the project it points at; `spl-p-<folder>` in another
+  root), else
   the directory's own name (`org`, `scratch`; 24 Sep 2026), `null` for home.
   The shelf's catch-all folder `conversation` (a thread with no workspace)
   is never a series. Default layout: the folder's basename (home is `sasonica`). Both
@@ -332,14 +333,16 @@ Everything a message can be pointed at.
   can't be read, and from older servers. About 50 ms cold, 10 ms warm.
 - `project_groups` (18 Oct 2026; every root 19 Oct): `{project: {"group",
   "name"}}` for every project that sits in a group, keyed like the rows'
-  `project` (`"p-sasonica-app": {"group": "sasonica", "name":
+  `project` (`"spl-p-sasonica-app": {"group": "sasonica", "name":
   "sasonica-app"}`). Projects live in the project roots (§6.24: the stored
   list, else `MEDIA_PROJECTS_DIR`, else `~/projects`). A group is a folder
   in a root with no `.git` of its own holding at least one folder that has
   one; every folder in it is then a project. Detected from the folders,
-  nothing configured (`layout._index`). On David's desk a project in a
-  group keeps its folder's name, `p-<folder>`, wherever it lives
-  (`p-<group>-<folder>` only when two projects share a folder name); a link
+  nothing configured (`layout._index`). On David's desk a project is
+  `p-<folder>` in `~/projects` and `<owner>-p-<folder>` in another root, the
+  owner being the folder above the root (`~/spl/projects` → `spl-p-`),
+  grouped or not (`<prefix><group>-<folder>` only when two projects share a
+  folder name); its tmux session has the same name; a link
   left at an old path, and a name a project went by before a move, list as
   the project they point at (`layout.canonical_project`). The app draws the
   group as a heading with its projects nested under it (By-project list,

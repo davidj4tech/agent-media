@@ -287,22 +287,25 @@ def test_a_path_names_its_project_through_its_root_group_and_links(grouped):
     assert layout.project_rel("/elsewhere/admin") == ""
 
 
-def test_on_davids_desk_a_repo_keeps_its_short_name_wherever_it_lives(grouped):
+def test_on_davids_desk_a_project_in_another_root_carries_its_owner(grouped):
+    # ~/spl/projects: `spl-p-`; ~/projects keeps `p-`.
+    assert layout.project_name(str(grouped.parent.parent / "projects" / "agent-media")) == "p-agent-media"
     app = grouped / "sasonica" / "sasonica-app"
-    assert layout.project_name(str(app)) == "p-sasonica-app"
-    assert layout.place_host(str(app)) == "p-sasonica-app"
-    assert layout.project_name(str(grouped / "tools")) == "p-tools"
+    assert layout.project_name(str(app)) == "spl-p-sasonica-app"
+    assert layout.place_host(str(app)) == "spl-p-sasonica-app"
+    assert layout.project_name(str(grouped / "tools")) == "spl-p-tools"
     # Two groups have an `admin`: the group tells them apart.
-    assert layout.project_name(str(grouped / "somahz" / "admin")) == "p-somahz-admin"
-    assert layout.project_parts("p-sasonica-app") == ("sasonica", "sasonica-app")
+    assert layout.project_name(str(grouped / "somahz" / "admin")) == "spl-p-somahz-admin"
+    assert layout.project_parts("spl-p-sasonica-app") == ("sasonica", "sasonica-app")
     assert layout.project_parts("p-agent-media") == ("", "p-agent-media")
-    assert layout.project_dir("p-sasonica-app") == str(app)
+    assert layout.project_dir("spl-p-sasonica-app") == str(app)
 
 
 def test_old_names_are_the_project_they_point_at(grouped):
-    assert layout.canonical_project("p-spl-sasonica-app") == "p-sasonica-app"   # 18 Oct's
+    assert layout.canonical_project("p-spl-sasonica-app") == "spl-p-sasonica-app"   # 18 Oct's
     assert layout.canonical_project("p-sacred-brain") == "p-agent-media"
-    assert layout.canonical_project("p-sasonica-sasonica-app") == "p-sasonica-app"
+    assert layout.canonical_project("p-sasonica-sasonica-app") == "spl-p-sasonica-app"
+    assert layout.canonical_project("p-sasonica-app") == "spl-p-sasonica-app"   # before the move
     assert layout.canonical_project("p-agent-media") == "p-agent-media"
     assert layout.canonical_project("org") == "org"
 
