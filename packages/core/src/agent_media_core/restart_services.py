@@ -67,6 +67,9 @@ BUSY_STATES = ("starting", "working", "approval")
 
 OK, FAILED, UNKNOWN, BUSY = 0, 1, 2, 3
 
+#: The detached run's waits (its delay and its busy retries); a hook for tests.
+_sleep = time.sleep
+
 
 def _env_f(name: str, default: float) -> float:
     try:
@@ -155,7 +158,8 @@ def sessiond_sessions() -> list[dict]:
         from agent_media_server.driver import headless
     except ImportError:
         return []
-    r = headless.call("list", timeout=5.0)
+    there = sessiond.use_tcp() or sessiond.socket_path().exists()
+    r = headless.call("list", timeout=5.0) if there else {"ok": False}
     if r.get("ok"):
         return [v for v in r.get("sessions") or [] if v.get("live")]
     from . import procinfo
@@ -456,7 +460,7 @@ def run(only: "Optional[list[str]]" = None, *, after: float = 0, force: bool = F
         caller = ""
         delay = _env_f("MEDIA_RESTART_DELAY_S", 0.0)
         if delay > 0:
-            time.sleep(delay)
+            _sleep(delay)
     elif caller is None:
         caller = os.environ.get("MEDIA_SESSIOND_SESSION", "")
     svcs = services()
@@ -530,7 +534,7 @@ def run(only: "Optional[list[str]]" = None, *, after: float = 0, force: bool = F
                 res.update(rc=BUSY, busy=reasons)
                 return res
             emit(f"busy, retrying in {retry_s():.0f} s: {'; '.join(reasons)}")
-            time.sleep(retry_s())
+            _sleep(retry_s())
             waited += retry_s()
     res["rc"] = restart(selected, emit)
     return res
