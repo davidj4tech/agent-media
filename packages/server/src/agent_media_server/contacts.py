@@ -15,6 +15,11 @@ read-only card is `GET /contacts/<id>` (`card`).
   optional and only once signed in: the People API (`contacts.readonly`)
   with a sync token. Where both know a person (by number, else address)
   Google's fields win; `MEDIA_CONTACTS_SOURCES` picks the sources.
+  `drupal`, optional and only once its connection is set
+  (contacts_drupal.py): the CRM's people, read whole each interval. A CRM
+  person joins the contact sharing their number (else an address, else the
+  seed's link) and only fills what the others left empty; their other
+  fields are the card's `crm` section (David, 17 Oct 2026: "Google wins").
 * **The store.** Each source's `records`, and the merged `contacts`: names,
   phones (E.164, default region AU, `MEDIA_CONTACTS_REGION`), emails,
   addresses, organisations, notes, and `sources` (`[{kind: "android", id:
@@ -77,6 +82,8 @@ LIMIT = 200
 LIMIT_MAX = 5000
 #: How long a login waits for the code before giving up.
 LOGIN_WAIT_S = 900.0
+#: The sources, in the order they merge.
+KINDS = ("android", "google", "drupal")
 #: A stable namespace for contact ids (uuid5 of "<kind>:<source id>").
 _NS = uuid.UUID("5b0e6f8c-7d0a-4c55-9a4b-2f1d0c6e1a17")
 
@@ -223,9 +230,11 @@ CREATE TABLE IF NOT EXISTS overrides (
   room TEXT NOT NULL, contact TEXT NOT NULL,
   kind TEXT NOT NULL CHECK (kind IN ('join', 'split')), at REAL,
   PRIMARY KEY (room, contact));
+CREATE TABLE IF NOT EXISTS drupal_links (
+  uuid TEXT PRIMARY KEY, contact TEXT NOT NULL, at REAL);
 """
 #: Bump when what a row holds changes: the store is emptied (but for the
-#: overrides) and read again.
+#: overrides and the seed's links) and read again.
 SCHEMA_VERSION = "2"
 
 _WRITE = threading.Lock()
@@ -246,7 +255,7 @@ def _connect(create: bool = True) -> sqlite3.Connection | None:
     have = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     if "meta" in have and conn.execute(
             "SELECT v FROM meta WHERE k='schema'").fetchone() != (SCHEMA_VERSION,):
-        for t in have - {"overrides"}:
+        for t in have - {"overrides", "drupal_links"}:
             conn.execute(f"DROP TABLE IF EXISTS {t}")
     conn.executescript(_SCHEMA)
     conn.execute("INSERT OR REPLACE INTO meta (k, v) VALUES ('schema', ?)", (SCHEMA_VERSION,))
@@ -282,6 +291,8 @@ def _source(kind: str, sid: str, meta: dict) -> dict:
     if kind == "android":
         return {"kind": "android", "id": sid, "raw": meta.get("raw") or [],
                 "accounts": meta.get("accounts") or [], "version": meta.get("version") or 0}
+    if kind == "drupal":
+        return {"kind": "drupal", "id": sid, "changed": meta.get("changed") or ""}
     return {"kind": kind, "id": sid, "etag": meta.get("etag") or ""}
 
 
@@ -323,7 +334,7 @@ def _rebuild(conn: sqlite3.Connection) -> None:
         for e in emails:
             by_email.setdefault(e, set()).add(cid)
     for kind, sid, card, meta in recs:
-        if kind == "android":
+        if kind != "google":
             continue
         c = json.loads(card)
         phones, emails = _keys(c)
@@ -342,6 +353,7 @@ def _rebuild(conn: sqlite3.Connection) -> None:
                          "sources": [src] + book[cid]["sources"]}
         else:
             book[contact_id(kind, sid)] = {"card": c, "sources": [src]}
+    _rebuild_drupal(conn, recs, book)
     old = {cid: (raw, upd) for cid, raw, upd in conn.execute(
         "SELECT id, card, updated FROM contacts")}
     for t in ("contacts", "phones", "emails"):
@@ -360,6 +372,71 @@ def _rebuild(conn: sqlite3.Connection) -> None:
         conn.executemany("INSERT INTO emails (contact, email) VALUES (?, ?)",
                          [(cid, e) for e in sorted(emails)])
     _bump(conn)
+
+
+def _rebuild_drupal(conn: sqlite3.Connection, recs: list, book: dict) -> None:
+    """The CRM's people into the book, last: one joins the contact the
+    seed linked it to, else the one sharing its number, else its address;
+    what the others have wins, and its own fields are the `crm` section."""
+    links = dict(conn.execute("SELECT uuid, contact FROM drupal_links"))
+    by_phone: dict[str, set] = {}
+    by_email: dict[str, set] = {}
+    for cid, entry in book.items():
+        phones, emails = _keys(entry["card"])
+        for p in phones:
+            by_phone.setdefault(p, set()).add(cid)
+        for e in emails:
+            by_email.setdefault(e, set()).add(cid)
+    for kind, sid, card, meta in recs:
+        if kind != "drupal":
+            continue
+        c = json.loads(card)
+        src = _source(kind, sid, json.loads(meta))
+        hits = {links[sid]} & set(book) if sid in links else set()
+        if not hits:
+            phones, emails = _keys(c)
+            for p in phones:
+                hits |= by_phone.get(p, set())
+            if not hits:
+                for e in emails:
+                    hits |= by_email.get(e, set())
+        hits = {h for h in hits if not any(s["kind"] == "drupal" for s in book[h]["sources"])}
+        if len(hits) == 1:
+            cid = next(iter(hits))
+            merged = _merge(book[cid]["card"], c)
+            merged["crm"] = c.get("crm") or {}
+            book[cid] = {"card": merged, "sources": book[cid]["sources"] + [src]}
+        else:
+            book[contact_id(kind, sid)] = {"card": c, "sources": [src]}
+
+
+def link_drupal(uuid: str, contact: str) -> None:
+    """The seed made `uuid` in the CRM for `contact`: kept, so the two are
+    one person whatever their numbers say later."""
+    with _WRITE:
+        conn = _connect()
+        try:
+            conn.execute("INSERT OR REPLACE INTO drupal_links (uuid, contact, at) VALUES (?, ?, ?)",
+                         (uuid, contact, time.time()))
+        finally:
+            conn.close()
+
+
+def drupal_uuid(cid: str) -> str | None:
+    """The CRM person that is this contact, if any."""
+    conn = _connect(create=False)
+    if conn is None:
+        return None
+    try:
+        got = conn.execute("SELECT card FROM contacts WHERE id=?", (cid,)).fetchone()
+        if got:
+            for s in json.loads(got[0]).get("sources") or []:
+                if s.get("kind") == "drupal":
+                    return s.get("id")
+        row = conn.execute("SELECT uuid FROM drupal_links WHERE contact=?", (cid,)).fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
 
 
 def set_override(room: str, contact: str, kind: str) -> None:
@@ -762,22 +839,62 @@ def sync_android() -> dict:
                 "gone": len(before - set(recs)) if not same else 0, "contacts": total}
 
 
+def sync_drupal() -> dict:
+    """Read every person in the CRM (contacts_drupal.py). Unreachable or
+    refused raises, and the last good copy stays."""
+    from . import contacts_drupal
+
+    with _SYNC_LOCK:
+        try:
+            recs = contacts_drupal.read(region())
+        except (contacts_drupal.NotConfigured, contacts_drupal.CrmError, OSError,
+                urllib.error.URLError, KeyError, ValueError) as e:
+            _failed("drupal", e)
+            raise
+        digest = hashlib.sha256(json.dumps(recs, sort_keys=True).encode()).hexdigest()
+        with _WRITE:
+            conn = _connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                same = _meta(conn, "drupal_hash") == digest
+                if not same:
+                    conn.execute("DELETE FROM records WHERE kind='drupal'")
+                    conn.executemany(
+                        "INSERT INTO records (kind, sid, card, meta) VALUES ('drupal', ?, ?, ?)",
+                        [(sid, json.dumps(r["card"]), json.dumps(r["meta"]))
+                         for sid, r in recs.items()])
+                    _rebuild(conn)
+                    _set_meta(conn, "drupal_hash", digest)
+                _set_meta(conn, "drupal_synced_at", str(round(time.time(), 3)))
+                _set_meta(conn, "drupal_last_error", None)
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+            finally:
+                total = conn.execute("SELECT COUNT(*) FROM contacts").fetchone()[0]
+                conn.close()
+        return {"source": "drupal", "unchanged": same, "read": len(recs), "contacts": total}
+
+
 def sources() -> list[str]:
     """The sources this host reads: `MEDIA_CONTACTS_SOURCES` (comma
-    separated), else the phone when this host has the adb tool, and Google
-    only when it is signed in."""
-    from . import contacts_android
+    separated), else the phone when this host has the adb tool, Google
+    only when it is signed in, and the CRM only when its connection is set."""
+    from . import contacts_android, contacts_drupal
 
     raw = (os.environ.get("MEDIA_CONTACTS_SOURCES") or "").strip()
     if raw:
         want = [s.strip() for s in raw.split(",") if s.strip()]
     else:
-        want = ["android", "google"]
+        want = ["android", "google", "drupal"]
     out = []
     for s in want:
         if s == "android" and contacts_android.available():
             out.append(s)
         elif s == "google" and signed_in():
+            out.append(s)
+        elif s == "drupal" and contacts_drupal.configured():
             out.append(s)
     return out
 
@@ -788,10 +905,14 @@ def sync(full: bool = False) -> dict:
     done, errors = [], {}
     for s in sources():
         try:
-            done.append(sync_android() if s == "android" else sync_google(full=full))
+            done.append(_SYNCS[s](full))
         except Exception as e:  # noqa: BLE001 — one source down is not all of them
             errors[s] = str(e) or type(e).__name__
     return {"synced": done, "errors": errors}
+
+
+_SYNCS = {"android": lambda full: sync_android(), "google": lambda full: sync_google(full=full),
+          "drupal": lambda full: sync_drupal()}
 
 
 # --- reading the store ----------------------------------------------------------
@@ -828,7 +949,7 @@ def _matches(q: str, name: str, card: dict) -> int:
 
 def _source_states(conn: sqlite3.Connection | None) -> list[dict]:
     out = []
-    for kind in ("android", "google"):
+    for kind in KINDS:
         synced = _meta(conn, f"{kind}_synced_at") if conn is not None else None
         err = _meta(conn, f"{kind}_last_error") if conn is not None else None
         if synced or err or kind in sources():
@@ -876,11 +997,22 @@ def card(cid: str) -> dict | None:
     if not got:
         return None
     c = json.loads(got[1])
-    return {"id": cid, "name": got[0], "names": c.get("names") or [],
+    return {"id": cid, "crm": _crm_of(c), "name": got[0], "names": c.get("names") or [],
             "phones": c.get("phones") or [], "emails": c.get("emails") or [],
             "addresses": c.get("addresses") or [], "organizations": c.get("organizations") or [],
             "notes": c.get("notes") or "", "sources": c.get("sources") or [],
             "updated": round(got[2], 3) if got[2] else None, "rooms": rooms_of(cid)}
+
+
+def _crm_of(c: dict) -> dict | None:
+    """The card's CRM section: the person there, and the fields only the
+    CRM has. None when the CRM does not know them."""
+    from . import contacts_drupal
+
+    uuid = next((s.get("id") for s in c.get("sources") or [] if s.get("kind") == "drupal"), None)
+    if not uuid:
+        return None
+    return {"id": uuid, "url": contacts_drupal.contact_url(uuid), "fields": c.get("crm") or {}}
 
 
 # --- rooms to people ------------------------------------------------------------
@@ -1106,8 +1238,9 @@ _STARTED = threading.Event()
 
 def start() -> None:
     """The canvas's sync loop, once per process: the phone every
-    `MEDIA_CONTACTS_INTERVAL_S` (900), Google too when signed in; idle on a
-    host with neither; off with `MEDIA_CONTACTS=0`."""
+    `MEDIA_CONTACTS_INTERVAL_S` (900), Google and the CRM too when set up,
+    then the timeline's rollup (timeline.py; `MEDIA_TIMELINE=0` leaves it
+    off); idle on a host with no source; off with `MEDIA_CONTACTS=0`."""
     if _STARTED.is_set() or (os.environ.get("MEDIA_CONTACTS") or "1").strip() == "0":
         return
     _STARTED.set()
@@ -1129,6 +1262,14 @@ def _run() -> None:
             for s, e in got["errors"].items():
                 # The phone off Wi-Fi is the usual one: the last copy serves.
                 print(f"contacts: {s} unread ({e})", file=sys.stderr)
+            if (os.environ.get("MEDIA_TIMELINE") or "1").strip() != "0":
+                from . import timeline
+
+                t = timeline.rollup()
+                if t["changed"] or t["errors"] or t["source_errors"]:
+                    print(f"timeline: {t['changed']} changed, {t['pushed']} pushed, "
+                          f"{t['errors']} failed {t['source_errors'] or ''}".rstrip(),
+                          file=sys.stderr)
         except Exception as e:  # noqa: BLE001 — never take the canvas down
             print(f"contacts: sync failed ({e})", file=sys.stderr)
         time.sleep(max(30.0, interval))
@@ -1237,7 +1378,7 @@ def status() -> dict:
     try:
         if conn is not None:
             count = conn.execute("SELECT COUNT(*) FROM contacts").fetchone()[0]
-            for kind in ("android", "google"):
+            for kind in KINDS:
                 n = conn.execute("SELECT COUNT(*) FROM records WHERE kind=?", (kind,)).fetchone()[0]
                 synced = _meta(conn, f"{kind}_synced_at")
                 failed = _meta(conn, f"{kind}_failed_at")
@@ -1258,7 +1399,21 @@ def status() -> dict:
                        "token": str(token_path()), "signed_in": tok is not None,
                        "signed_in_at": tok.get("obtained_at") if tok else None,
                        **per.get("google", {})},
+            "drupal": {"connection": str(_drupal_config_path()), "configured": _drupal_configured(),
+                       **per.get("drupal", {})},
             "background": (os.environ.get("MEDIA_CONTACTS") or "1").strip() != "0"}
+
+
+def _drupal_config_path():
+    from . import contacts_drupal
+
+    return "MEDIA_DRUPAL_CRM" if os.environ.get("MEDIA_DRUPAL_CRM") else contacts_drupal.config_path()
+
+
+def _drupal_configured() -> bool:
+    from . import contacts_drupal
+
+    return contacts_drupal.configured()
 
 
 def _when(v):
@@ -1269,7 +1424,7 @@ def cmd_status(_a) -> int:
     s = status()
     for k in ("store", "contacts", "sources", "background"):
         print(f"{k:13} {s[k]}")
-    for src in ("android", "google"):
+    for src in KINDS:
         for k, v in s[src].items():
             print(f"{src + '.' + k:24} {_when(v) if k.endswith('_at') else v}")
     return 0 if s["sources"] else 1
@@ -1279,21 +1434,24 @@ def cmd_sync(a) -> int:
     which = getattr(a, "source", "") or ""
     if which:
         try:
-            got = {"synced": [sync_android() if which == "android"
-                              else sync_google(full=bool(getattr(a, "full", False)))],
+            got = {"synced": [_SYNCS[which](bool(getattr(a, "full", False)))],
                    "errors": {}}
         except Exception as e:  # noqa: BLE001 — said, with its source
             got = {"synced": [], "errors": {which: str(e)}}
     else:
         got = sync(full=bool(getattr(a, "full", False)))
         if not got["synced"] and not got["errors"]:
-            print("no source to read: no phone tool here, and not signed in to Google",
+            print("no source to read: no phone tool here, not signed in to Google, "
+                  "and no CRM connection",
                   file=sys.stderr)
             return 2
     for s in got["synced"]:
         if s["source"] == "android":
             print(f"android: {'unchanged' if s['unchanged'] else 'read'} {s['read']} "
                   f"contact(s) from the phone, {s['contacts']} contacts")
+        elif s["source"] == "drupal":
+            print(f"drupal: {'unchanged' if s['unchanged'] else 'read'} {s['read']} "
+                  f"person(s) from the CRM, {s['contacts']} contacts")
         else:
             print(f"google {'full' if s['full'] else 'changes'}: {s['changed']} changed, "
                   f"{s['deleted']} gone, {s['contacts']} contacts")
@@ -1302,20 +1460,112 @@ def cmd_sync(a) -> int:
     return 1 if got["errors"] else 0
 
 
+# --- seeding the CRM ------------------------------------------------------------
+
+def _seedable(card: dict) -> bool:
+    """Worth a CRM person: a name, and a number or an address to reach them."""
+    name = card.get("name") or ""
+    return bool(name and name != "(no name)") and bool(
+        any(p.get("value") or p.get("raw") for p in card.get("phones") or [])
+        or any(e.get("value") for e in card.get("emails") or []))
+
+
+def seed(dry_run: bool = True, limit: int = 0) -> dict:
+    """Add the contacts the CRM does not hold to it (the proposal: "The CRM
+    is for everyone … seeded from Google"). Idempotent, keyed by the
+    contact's id: one with a CRM source, or linked by an earlier seed, is
+    skipped, and each person made is linked at once, before their numbers
+    are added. A real run reads the CRM first, so a person already there
+    by number is joined, not made twice. A dry run writes nothing and reads
+    only the store."""
+    from . import contacts_drupal
+
+    if not dry_run:
+        if not contacts_drupal.configured():
+            raise contacts_drupal.NotConfigured(
+                f"no CRM connection ({contacts_drupal.config_path()})")
+        sync_drupal()
+    conn = _connect(create=False)
+    todo, held, thin = [], 0, 0
+    try:
+        if conn is not None:
+            linked = {c for (c,) in conn.execute("SELECT contact FROM drupal_links")}
+            for cid, name, raw in conn.execute("SELECT id, name, card FROM contacts ORDER BY name"):
+                c = json.loads(raw)
+                if cid in linked or any(x.get("kind") == "drupal" for x in c.get("sources") or []):
+                    held += 1
+                elif not _seedable(c):
+                    thin += 1
+                else:
+                    todo.append((cid, c))
+    finally:
+        if conn is not None:
+            conn.close()
+    if limit and limit > 0:
+        todo = todo[:limit]
+    made, errors = [], []
+    if not dry_run:
+        for cid, c in todo:
+            try:
+                uuid = contacts_drupal.create_person(c)
+                link_drupal(uuid, cid)
+                contacts_drupal.add_methods(uuid, c)
+                made.append({"contact": cid, "uuid": uuid, "name": c.get("name")})
+            except Exception as e:  # noqa: BLE001 — one refused is said; the rest go on
+                errors.append({"contact": cid, "name": c.get("name"), "error": str(e)})
+        if made:
+            sync_drupal()
+    return {"dry_run": dry_run, "would_add" if dry_run else "added":
+            [c.get("name") for _, c in todo] if dry_run else made,
+            "already": held, "skipped_no_way_to_reach": thin, "errors": errors}
+
+
+def cmd_seed(a) -> int:
+    from . import contacts_drupal
+
+    try:
+        got = seed(dry_run=not a.go, limit=a.limit)
+    except (contacts_drupal.NotConfigured, contacts_drupal.CrmError, OSError) as e:
+        print(f"seed: {e}", file=sys.stderr)
+        return 1
+    if got["dry_run"]:
+        names = got["would_add"]
+        print(f"would add {len(names)} person(s) to the CRM; {got['already']} already there, "
+              f"{got['skipped_no_way_to_reach']} without a number or address left out")
+        for n in names[:20]:
+            print(f"  {n}")
+        if len(names) > 20:
+            print(f"  … and {len(names) - 20} more")
+        print("nothing written: --go to add them (--limit 1 to try one first)")
+        return 0
+    print(f"added {len(got['added'])} person(s) to the CRM; {got['already']} already there")
+    for e in got["errors"]:
+        print(f"  {e['name']}: {e['error']}", file=sys.stderr)
+    return 1 if got["errors"] else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m agent_media_server.contacts",
-                                 description="Contacts for agent-media (read-only): the "
-                                             "phone's over adb, and Google's if signed in.")
+                                 description="Contacts for agent-media: the phone's over "
+                                             "adb, Google's if signed in, the Drupal CRM's "
+                                             "if connected, and their timeline.")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("login", help="sign in to Google (works from a phone)")
     p.add_argument("--port", type=int, default=0, help="loopback port (default: any free one)")
     p.set_defaults(fn=cmd_login)
     sub.add_parser("status", help="what is read, and when it last was").set_defaults(fn=cmd_status)
     p = sub.add_parser("sync", help="sync now")
-    p.add_argument("--source", choices=("android", "google"), default="",
+    p.add_argument("--source", choices=KINDS, default="",
                    help="only this one (default: every source this host reads)")
     p.add_argument("--full", action="store_true", help="Google: everything, not the changes")
     p.set_defaults(fn=cmd_sync)
+    p = sub.add_parser("seed", help="add the people the CRM lacks to it (a dry run unless --go)")
+    p.add_argument("--go", action="store_true", help="write to the CRM (default: say what would be)")
+    p.add_argument("--limit", type=int, default=0, help="at most this many (0: all)")
+    p.set_defaults(fn=cmd_seed)
+    from . import timeline
+
+    timeline.add_commands(sub)
     a = ap.parse_args(argv)
     return a.fn(a)
 

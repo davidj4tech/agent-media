@@ -499,7 +499,9 @@ def test_routes_shape_and_auth(server, signed_in, rooms):
     res, obj = call(server, "GET", f"/contacts/{mel}", headers=AUTH)
     assert res.status == 200 and set(obj) == {"ok", "contact"}
     assert set(obj["contact"]) == {"id", "name", "names", "phones", "emails", "addresses",
-                                   "organizations", "notes", "sources", "updated", "rooms"}
+                                   "organizations", "notes", "sources", "updated", "rooms",
+                                   "crm"}
+    assert obj["contact"]["crm"] is None             # no CRM connection here
     assert [x["room"] for x in obj["contact"]["rooms"]] == ["!b:ryer.org"]
     res, obj = call(server, "GET", "/contacts/00000000-0000-0000-0000-000000000000", headers=AUTH)
     assert res.status == 404 and obj == {"ok": False, "error": "no such contact"}

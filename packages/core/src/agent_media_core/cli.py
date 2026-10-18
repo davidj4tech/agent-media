@@ -8554,6 +8554,16 @@ def _server_module(name: str):
         return None
 
 
+def cmd_contacts(a) -> int:
+    """`media contacts …`: the server's contacts and their timeline
+    (agent_media_server.contacts): status, sync, seed, note, timeline,
+    rollup."""
+    contacts = _server_module("contacts")
+    if contacts is None:
+        return 1
+    return contacts.main(a.args or ["--help"])
+
+
 def cmd_session_reap(a) -> int:
     """Close agent sessions idle past the threshold (agent_media_server.reap)."""
     reap = _server_module("reap")
@@ -9525,6 +9535,13 @@ def _build_parser() -> argparse.ArgumentParser:
     st.add_argument("--json", action="store_true", help="machine-readable")
     st.set_defaults(func=cmd_speech_target)
 
+    contacts = sub.add_parser(
+        "contacts", add_help=False,
+        help="contacts and their timeline: status, sync, seed, note <who> <text>, "
+             "timeline <who>, rollup")
+    contacts.add_argument("args", nargs=argparse.REMAINDER)
+    contacts.set_defaults(func=cmd_contacts)
+
     search = sub.add_parser("search", help="unified search (music/book library)")
     search.add_argument("--lines", action="store_true",
                         help="print title<TAB>uri rows for an external picker")
@@ -10222,6 +10239,9 @@ def main(argv=None) -> int:
     load_env_file("media-cli")
     if argv is None:
         argv = sys.argv[1:]
+    if argv[:1] == ["contacts"]:
+        # Its own parser takes every option (--help, --go), not media's.
+        return cmd_contacts(argparse.Namespace(args=list(argv[1:])))
     args = _build_parser().parse_args(_end_opts_before_time(argv))
     try:
         return args.func(args)

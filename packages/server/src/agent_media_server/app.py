@@ -186,6 +186,9 @@ device gets its token):
                   name, number or email being typed matches (contacts.py, §6.25)
   GET  /contacts/<id> → one person's card: names, phones, emails,
                   addresses, notes, sources, and the rooms that are theirs
+  GET  /contacts/<id>/timeline[?limit=] → their texts, calls, mail and
+                  notes by day, from the CRM's daily rollups (timeline.py)
+  POST /contacts/<id>/notes {"text"} → a note on them, today, kept in the CRM
   POST /alerts    {"id", "level", "kind"?, "title"?, "detail"?, "fix"?,
                    "host"?, "step"?, "confirm"?, "every_s"?} → a watcher
                   says what is true now; the store answers what changed and
@@ -321,6 +324,9 @@ AGENT_LOG = re.compile(r"/threads/([^/]+)/agents/([^/]+)/log")
 AGENT_ACT = re.compile(r"/threads/([^/]+)/agents/([^/]+)/(stop|message)")
 # One contact's card (contacts.py, §6.25).
 CONTACT = re.compile(r"/contacts/([0-9a-f-]{36})")
+# Their timeline, and a note on it (timeline.py, §6.25a).
+CONTACT_TIMELINE = re.compile(r"/contacts/([0-9a-f-]{36})/timeline")
+CONTACT_NOTES = re.compile(r"/contacts/([0-9a-f-]{36})/notes")
 
 
 def cors_path(path: str) -> bool:
@@ -328,7 +334,8 @@ def cors_path(path: str) -> bool:
     (any method): `CORS_PATHS`, a thread's event stream, or its agents."""
     return path in CORS_PATHS or any(r.fullmatch(path)
                                      for r in (THREAD_EVENTS, THREAD_AGENTS, AGENT_LOG,
-                                                        AGENT_ACT, CONTACT))
+                                                        AGENT_ACT, CONTACT,
+                                                        CONTACT_TIMELINE, CONTACT_NOTES))
 
 
 # Long enough that a chat page's polling is not preceded by a preflight every
@@ -540,6 +547,45 @@ def _contacts(h: BaseHTTPRequestHandler, path: str, query: str) -> None:
     _json_z(h, 200, {"ok": True, **contacts.listing(arg("q"), arg("limit"))})
 
 
+def _contact_timeline(h: BaseHTTPRequestHandler, cid: str, query: str) -> None:
+    """`GET /contacts/<id>/timeline` (§6.25a): gated as the card is."""
+    from . import contacts, timeline
+
+    user, err = auth.gate(_bearer(h))
+    if not user:
+        _json(h, err.pop("status", 403), {"ok": False, **err})
+        return
+    if contacts.card(cid) is None:
+        _json(h, 404, {"ok": False, "error": "no such contact"})
+        return
+    limit = (parse_qs(query).get("limit") or [""])[0]
+    _json_z(h, 200, {"ok": True, **timeline.timeline(cid, limit or None)})
+
+
+def _contact_note(h: BaseHTTPRequestHandler, cid: str) -> None:
+    """`POST /contacts/<id>/notes {"text"}` (§6.25a)."""
+    from . import contacts, timeline
+
+    user, err = auth.gate(_bearer(h))
+    if not user:
+        _json(h, err.pop("status", 403), {"ok": False, **err})
+        return
+    body = _read_json(h)
+    text = str((body or {}).get("text") or "").strip() if isinstance(body, dict) else ""
+    if not text:
+        _json(h, 400, {"ok": False, "error": "expected {\"text\"}"})
+        return
+    if contacts.card(cid) is None:
+        _json(h, 404, {"ok": False, "error": "no such contact"})
+        return
+    try:
+        got = timeline.add_note(cid, text)
+    except PermissionError as e:
+        _json(h, 403, {"ok": False, "error": str(e)})
+        return
+    _json(h, 200, {"ok": True, "note": got})
+
+
 def _sealed(h: BaseHTTPRequestHandler, session: str) -> bool:
     """Answer 423 for a sealed thread's content: there is none to read until
     it is unsealed (seal.py). True when it answered."""
@@ -702,6 +748,8 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
             _json_z(h, 200, {"ok": True, **detail})
         else:
             _json(h, detail.pop("status", 400), {"ok": False, **detail})
+    elif CONTACT_TIMELINE.fullmatch(path):
+        _contact_timeline(h, CONTACT_TIMELINE.fullmatch(path).group(1), query)
     elif path == "/contacts" or CONTACT.fullmatch(path):
         # People, from the phone's contacts (contacts.py, §6.25): the list or
         # matches as you type, and one person's card with their rooms.
@@ -1392,6 +1440,8 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         _devices_code(h)
     elif path == "/devices/revoke":
         _devices_revoke(h)
+    elif CONTACT_NOTES.fullmatch(path):
+        _contact_note(h, CONTACT_NOTES.fullmatch(path).group(1))
     elif path == "/me/account":
         body = _read_json(h)
         if not isinstance(body, dict):
