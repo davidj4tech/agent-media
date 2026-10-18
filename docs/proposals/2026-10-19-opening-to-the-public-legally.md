@@ -191,10 +191,11 @@ build every piece as part of the product, keep the IP (see "In the
 contract"), and turn what worked into the fixed-price package for the
 next venue.
 
-## Bath houses and spas as a market
+## Wellness venues as a market: bath houses, spas, retreat centres, yoga studios
 
 David, 19 Oct 2026: "I'd probably want to do the same for other bath
-houses and spas." That makes the hot springs the **first customer of a
+houses and spas." And: "I'd also like to include retreat centres and
+yoga studios in that." That makes the hot springs the **first customer of a
 product for one industry**, not a one-off client. It points the blend
 above toward the fixed-price package, and then the subscription.
 
@@ -203,14 +204,21 @@ above toward the fixed-price package, and then the subscription.
 - **No exclusivity.** They may ask for it. Refuse, or limit it narrowly:
   a short period, their region only, never the product itself. The IP
   clause above keeps everything reusable ours.
-- **Build for the industry, configure per venue.** Bath houses and spas
-  share workflows: bookings and cancellations, gift vouchers, guest
-  enquiries (opening hours, what to bring, accessibility, pregnancy and
-  health questions), memberships, staff rosters, reviews. Build each as a
-  feature that every venue switches on and fills with its own policies,
-  prices and tone, never as code written for one venue.
+- **Build for the industry, configure per venue.** These venues share
+  a core: bookings and cancellations, gift vouchers, guest enquiries
+  (opening hours, what to bring, accessibility, pregnancy and health
+  questions), memberships, staff rosters, reviews. Each kind adds its own:
+  - *Bath houses and spas*: session times, capacity, treatments.
+  - *Yoga studios*: class timetables, class packs, waitlists, instructor
+    cover and substitutes.
+  - *Retreat centres*: multi-day stays with accommodation, deposits and
+    balances, dietary and intake forms, pre-arrival information.
+  Build each as a feature that every venue switches on and fills with its
+  own policies, prices and tone, never as code written for one venue.
 - **Integrations are the moat.** The booking platforms these venues run
-  (e.g. Mindbody, Fresha, Zenoti, Book4Time, Rezdy for experiences) decide
+  (e.g. Mindbody, Fresha, Zenoti, Book4Time and Rezdy for spas and
+  experiences; Mindbody, Momence, Eversports and Teamup for studios;
+  Retreat Guru, Checkfront and Cloudbeds for retreats) decide
   what the AI can do: check availability, change a booking, sell a
   voucher. In discovery, find out which ones the hot springs uses. The
   first integration should be the one most venues share. Check each
@@ -221,12 +229,12 @@ above toward the fixed-price package, and then the subscription.
   hosted venues, decide whether each venue gets its own server or they
   share one with strict separation. Separate servers are simpler for
   privacy and the "on their servers" option; shared is cheaper to run.
-- **Health information.** Spa guests disclose pregnancy, conditions and
+- **Health information.** Spa, yoga and retreat guests disclose pregnancy, conditions and
   medications, which is sensitive information under the Privacy Act.
   The product needs one consistent rule, the same at every venue: such
   details never reach an AI prompt unless the venue chooses otherwise.
 - **Pricing per venue.** A setup fee plus a monthly fee per venue, tiered
-  by size (visitors or staff), with AI usage in an allowance. After two
+  by size (visitors, members or staff), with AI usage in an allowance. After two
   or three venues, the package becomes the published price.
 
 ## Open questions for David
