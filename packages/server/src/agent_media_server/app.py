@@ -193,6 +193,9 @@ device gets its token):
                   notes by day, from the CRM's daily rollups (timeline.py)
   POST /contacts/<id>/notes {"text"} → a note on them, today, kept in the CRM
   GET  /contacts/labels → every label on someone, with counts (§6.25)
+  POST /contacts/import[?name=] <a Facebook or Instagram export: .zip or
+                  JSON, raw or multipart> → its friends / followers / following
+                  into the caller's book, the counts (contacts_import.py, §6.25)
   POST /contacts/<id>/same|different {"other"} → "Same person?" answered:
                   the bridged one joins the other, or the suggestion goes
   GET  /contacts/google → the caller's book's Google: signed in as whom,
@@ -293,7 +296,7 @@ CORS_PATHS = frozenset({
     "/share", "/upload", "/dashboard",
     "/sessions/events", "/search", "/contacts",
     "/contacts/google", "/contacts/google/login", "/contacts/google/finish",
-    "/contacts/google/signout", "/contacts/labels", "/bridges",
+    "/contacts/google/signout", "/contacts/labels", "/contacts/import", "/bridges",
     "/mic/ask", "/mic/cancel",
     "/phone/ask", "/phone/answer", "/phone/cancel",
     "/notes", "/notes/clear",
@@ -389,6 +392,10 @@ def body_limit(path: str) -> int:
     (/upload), which is streamed to disk after the bearer is checked."""
     if path == "/upload":
         return uploads.max_bytes()
+    if path == "/contacts/import":
+        from . import contacts
+
+        return contacts.IMPORT_MAX
     # A Termux job's output (phone_jobs.py): up to 1 MiB each of out and
     # err, which JSON may escape to several times that.
     return 8 * MAX_BODY * 16 if path == "/jobs/result" else MAX_BODY
@@ -629,6 +636,64 @@ def _contact_same(h: BaseHTTPRequestHandler, cid: str, act: str) -> None:
         return
     except contacts.NotBridged as e:
         _json(h, 400, {"ok": False, "error": str(e)})
+        return
+    _json(h, 200, {"ok": True, **got})
+
+
+def _multipart_file(ctype: str, body: bytes) -> tuple[bytes, str] | None:
+    """The first file of a multipart/form-data body: `(bytes, filename)`."""
+    from email.parser import BytesParser
+    from email.policy import HTTP
+
+    msg = BytesParser(policy=HTTP).parsebytes(
+        b"Content-Type: " + ctype.encode("latin-1", "replace") + b"\r\n\r\n" + body)
+    if not msg.is_multipart():
+        return None
+    for part in msg.iter_parts():
+        if part.get_filename() is not None or part.get_content_type() != "text/plain":
+            return part.get_payload(decode=True) or b"", part.get_filename() or ""
+    return None
+
+
+def _contacts_import(h: BaseHTTPRequestHandler) -> None:
+    """`POST /contacts/import[?name=]` (§6.25): a Facebook or Instagram data
+    export, raw (`application/zip`, `application/json`) or as a form's file,
+    into the caller's own book. Gated as the other contacts routes; the
+    body's size was checked against contacts.IMPORT_MAX before this."""
+    from . import contacts, contacts_import
+
+    user, err = auth.gate(_bearer(h))
+    if not user:
+        h.close_connection = True      # the body is left unread
+        _json(h, err.pop("status", 403), {"ok": False, **err})
+        return
+    try:
+        n = min(int(h.headers.get("Content-Length", "0")), contacts.IMPORT_MAX)
+    except ValueError:
+        n = 0
+    chunks, left = [], n
+    while left > 0:
+        got = h.rfile.read(min(left, 1 << 20))
+        if not got:
+            break
+        chunks.append(got)
+        left -= len(got)
+    data = b"".join(chunks)
+    name = (parse_qs(h.path.partition("?")[2]).get("name") or [""])[0]
+    ctype = h.headers.get("Content-Type") or ""
+    if ctype.lower().startswith("multipart/"):
+        part = _multipart_file(ctype, data)
+        if part is None:
+            _json(h, 400, {"ok": False, "error": "no file in that form"})
+            return
+        data, name = part[0], name or part[1]
+    if not data:
+        _json(h, 400, {"ok": False, "error": "expected an export (.zip or .json) as the body"})
+        return
+    try:
+        got = contacts.import_export(data, name)
+    except contacts_import.NotAnExport as e:
+        _json(h, 400, {"ok": False, "code": "not_an_export", "error": str(e)})
         return
     _json(h, 200, {"ok": True, **got})
 
@@ -1649,6 +1714,8 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         _devices_revoke(h)
     elif CONTACT_NOTES.fullmatch(path):
         _contact_note(h, CONTACT_NOTES.fullmatch(path).group(1))
+    elif path == "/contacts/import":
+        _contacts_import(h)
     elif CONTACT_SAME.fullmatch(path):
         m = CONTACT_SAME.fullmatch(path)
         _contact_same(h, m.group(1), m.group(2))

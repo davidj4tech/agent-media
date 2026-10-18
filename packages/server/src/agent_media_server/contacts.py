@@ -53,14 +53,22 @@ read-only card is `GET /contacts/<id>` (`card`).
 * **The bridged networks** (David, 19 Oct 2026: "draw in contacts from the
   other providers we have bridges for"). `bridges`, the owner's book only:
   the other party of each one-to-one bridged room this process holds
-  (`matrix._ROOMS`; groups add no one, David's own ghosts are left out),
-  one record per ghost with its `handles` (`[{network, network_name,
-  id}]`). One joins a contact by a kept Join (`merges`), else a shared
+  (`matrix._ROOMS`), and every ghost in its group rooms (David, 19 Oct
+  2026: "a full list of my bridged contacts"; someone met only in groups
+  is labelled "Messenger groups" / "Instagram groups", Teams people
+  "Teams"); David's own ghosts and the bots are left out. One record per
+  ghost with its `handles` (`[{network, network_name, id}]`). One joins a
+  contact by a kept Join (`merges`), else a shared
   number, else a shared address, else — only on a network whose names are
   the phone's own (`gmessages`, `MEDIA_CONTACTS_TRUSTED_NAMES`) — a name no
   other contact has; else it is a person of its own, and a same name is a
   suggestion on the card ("Same person?", `same` / `different`). A process
   with no rooms loaded (the CLI) keeps the last copy.
+* **Exports** (`import`, per book): the friends list of a Facebook data
+  download and the followers / following of an Instagram one
+  (contacts_import.py; `POST /contacts/import`, `contacts import`), each
+  export replacing its last import. They join as a bridge's people do,
+  and an Instagram username joins the bridged Instagram ghost it names.
 * **Labels**: the phone's contact groups (Google's labels, synced by
   Android) and, for a book signed in to Google, its `contactGroups`, as
   `labels` on each person; `GET /contacts?label=` and `GET
@@ -124,7 +132,11 @@ LIMIT_MAX = 5000
 #: How long a login waits for the code before giving up.
 LOGIN_WAIT_S = 900.0
 #: The sources, in the order they merge.
-KINDS = ("android", "google", "bridges", "drupal")
+KINDS = ("android", "google", "bridges", "import", "drupal")
+#: The sources whose people are only names and handles (a bridge's ghost,
+#: an export's friend): they join by number, address, handle or a kept
+#: Join, and a same name is only "Same person?".
+WEAK = ("bridges", "import")
 #: The networks whose names for people are the phone's own contact names
 #: (mautrix-gmessages' `{{or .FullName .PhoneNumber}}`): a name there may
 #: join a contact by itself. Elsewhere a same name is only a suggestion.
@@ -132,6 +144,8 @@ TRUSTED_NAMES = ("gmessages",)
 #: The bridges whose ghosts are named by the person's number
 #: (`@signal_=2b61…`, `@whatsapp_61412…`).
 NUMBER_GHOSTS = ("signal", "whatsapp")
+#: Instagram's network ids (mautrix-meta's and the older bridge's).
+INSTAGRAM = ("instagramgo", "instagram")
 #: A stable namespace for contact ids (uuid5 of "<kind>:<source id>").
 _NS = uuid.UUID("5b0e6f8c-7d0a-4c55-9a4b-2f1d0c6e1a17")
 
@@ -441,6 +455,9 @@ def _source(kind: str, sid: str, meta: dict) -> dict:
     if kind == "bridges":
         return {"kind": "bridges", "id": sid, "network": meta.get("network") or "",
                 "network_name": meta.get("network_name") or ""}
+    if kind == "import":
+        return {"kind": "import", "id": sid, "export": meta.get("export") or "",
+                "lists": meta.get("lists") or []}
     return {"kind": kind, "id": sid, "etag": meta.get("etag") or ""}
 
 
@@ -554,35 +571,45 @@ def _rebuild_bridges(conn: sqlite3.Connection, recs: list, book: dict) -> None:
         merges.setdefault(source, []).append((cid, kind))
     trusted = trusted_names()
     pending = []
-    for kind, sid, card, meta in recs:
-        if kind == "bridges":
-            pending.append((sid, json.loads(card), json.loads(meta)))
+    for want in WEAK:                  # the bridges first: an export may join them
+        for kind, sid, card, meta in recs:
+            if kind == want:
+                pending.append((kind, sid, json.loads(card), json.loads(meta)))
 
     by_phone: dict[str, set] = {}
     by_email: dict[str, set] = {}
     by_name: dict[str, set] = {}
+    by_username: dict[str, set] = {}   # an Instagram person's username, or name
 
     def index(cid: str) -> None:
-        phones, emails = _keys(book[cid]["card"])
+        card = book[cid]["card"]
+        phones, emails = _keys(card)
         for p in phones:
             by_phone.setdefault(p, set()).add(cid)
         for e in emails:
             by_email.setdefault(e, set()).add(cid)
-        for n in _names_of(book[cid]["card"]):
+        for n in _names_of(card):
             by_name.setdefault(n, set()).add(cid)
+        # A bridged Instagram ghost is named `{{or .DisplayName .Username}}`:
+        # an export's username may be its handle's username, or its name.
+        for h in card.get("handles") or []:
+            if h.get("network") in INSTAGRAM and not h.get("id", "").startswith("instagram:"):
+                for u in {fold(h.get("username") or "")} | _names_of(card):
+                    if u:
+                        by_username.setdefault(u, set()).add(cid)
 
     for cid in book:
         index(cid)
 
-    def place(sid: str, c: dict, meta: dict, joined_to: str | None) -> None:
-        src = _source("bridges", sid, meta)
+    def place(kind: str, sid: str, c: dict, meta: dict, joined_to: str | None) -> None:
+        src = _source(kind, sid, meta)
         if joined_to:
             entry = book[joined_to]
             book[joined_to] = {"card": _merge(entry["card"], c),
                                "sources": entry["sources"] + [src]}
             index(joined_to)
         else:
-            cid = contact_id("bridges", sid)
+            cid = contact_id(kind, sid)
             book[cid] = {"card": c, "sources": [src]}
             bridged.add(cid)
             index(cid)
@@ -594,10 +621,10 @@ def _rebuild_bridges(conn: sqlite3.Connection, recs: list, book: dict) -> None:
     # A kept Join may name another bridged person (Messenger and Instagram,
     # neither in the phone): those wait until the one they join is placed.
     later = []
-    for sid, c, meta in pending:
+    for kind, sid, c, meta in pending:
         joins = [cid for cid, k in merges.get(sid, []) if k == "join"]
         if joins:
-            later.append((sid, c, meta, joins[-1]))
+            later.append((kind, sid, c, meta, joins[-1]))
             continue
         dismissed = {cid for cid, k in merges.get(sid, []) if k == "dismiss"}
         phones, emails = _keys(c)
@@ -607,25 +634,29 @@ def _rebuild_bridges(conn: sqlite3.Connection, recs: list, book: dict) -> None:
         if not hits:
             for e in emails:
                 hits |= by_email.get(e, set())
-        if not hits and meta.get("network") in trusted:
+        if not hits and kind == "import":
+            for h in c.get("handles") or []:
+                if h.get("network") in INSTAGRAM and h.get("username"):
+                    hits |= by_username.get(fold(h["username"]), set())
+        if not hits and kind == "bridges" and meta.get("network") in trusted:
             for n in _names_of(c):
                 hits |= by_name.get(n, set()) - bridged
         hits -= dismissed
-        place(sid, c, meta, next(iter(hits)) if len(hits) == 1 else None)
+        place(kind, sid, c, meta, next(iter(hits)) if len(hits) == 1 else None)
     for _round in range(len(later) + 1):
         if not later:
             break
         waiting = []
-        for sid, c, meta, cid in later:
+        for kind, sid, c, meta, cid in later:
             if cid in book:
-                place(sid, c, meta, cid)
+                place(kind, sid, c, meta, cid)
             else:
-                waiting.append((sid, c, meta, cid))
+                waiting.append((kind, sid, c, meta, cid))
         if len(waiting) == len(later):
             break                      # what they joined is gone: their own again
         later = waiting
-    for sid, c, meta, _cid in later:
-        place(sid, c, meta, None)
+    for kind, sid, c, meta, _cid in later:
+        place(kind, sid, c, meta, None)
 
 
 def _rebuild_drupal(conn: sqlite3.Connection, recs: list, book: dict) -> None:
@@ -1254,40 +1285,68 @@ def own_ghosts(rooms: list | None = None) -> set[str]:
     return out
 
 
+#: The label a person met only in a bridged group chat carries, by network
+#: id, so People can show them apart (David, 19 Oct 2026: a full list).
+GROUP_LABELS = {"facebookgo": "Messenger groups", "facebook": "Messenger groups",
+                "meta": "Messenger groups", "instagramgo": "Instagram groups",
+                "instagram": "Instagram groups"}
+#: Networks whose people all carry one label, whether met one to one or in
+#: a group: Teams is work.
+NETWORK_LABELS = {"msteams": "Teams", "teams": "Teams"}
+
+
+def _is_ghost(uid: str) -> bool:
+    """A bridge's puppet (`@facebook_1000…`, `@msteams_8=3a…`): a group's
+    member that is not one is a Matrix account of its own, not a contact."""
+    return "_" in (uid or "").lstrip("@").partition(":")[0]
+
+
 def bridge_records(rooms: list | None = None) -> dict[str, dict]:
-    """One record per person David has a one-to-one bridged chat with: the
-    room's one other party, once his own ghosts and the bots are left out.
-    A group adds no one."""
+    """One record per person David chats with on a bridged network: the one
+    other party of a one-to-one room, and — since 19 Oct 2026 ("a full list
+    of my bridged contacts") — every ghost in a group room too, once his own
+    ghosts and the bots are left out. Someone met only in groups carries
+    their network's `GROUP_LABELS` label; Teams people carry "Teams"."""
     rooms = _bridged_rooms() if rooms is None else rooms
     mine = own_ghosts(rooms)
     reg = region()
     out: dict[str, dict] = {}
+    direct: set[str] = set()
     for r in rooms:
         with r.lock:
             members = dict(r.members)
         skip = _skip_of(r) | mine
         others = [u for u in members if u not in skip]
-        if len(others) != 1:
-            continue
-        uid = others[0]
-        dn = (members.get(uid) or "").strip()
+        if len(others) == 1:
+            direct.add(others[0])
+        else:
+            others = [u for u in others if _is_ghost(u)]
         net = r.network
-        who = identities(uid, dn, reg)
-        name = dn if dn and dn != uid else uid.lstrip("@").partition(":")[0]
-        rec = out.get(uid)
-        if rec is None:
-            rec = out[uid] = {
-                "card": {"name": name, "names": [{"display": name, "given": "", "family": ""}],
-                         "phones": [{"value": p, "raw": p, "type": net.get("name") or net["id"]}
-                                    for p in sorted(who["phones"])],
-                         "emails": [{"value": e, "type": net.get("name") or net["id"]}
-                                    for e in sorted(who["emails"])],
-                         "addresses": [], "organizations": [], "notes": "",
-                         "handles": [{"network": net["id"], "network_name": net.get("name") or "",
-                                      "id": uid}]},
-                "meta": {"network": net["id"], "network_name": net.get("name") or "",
-                         "rooms": []}}
-        rec["meta"]["rooms"] = sorted(set(rec["meta"]["rooms"]) | {r.id})
+        for uid in others:
+            dn = (members.get(uid) or "").strip()
+            rec = out.get(uid)
+            if rec is None:
+                who = identities(uid, dn, reg)
+                name = dn if dn and dn != uid else uid.lstrip("@").partition(":")[0]
+                rec = out[uid] = {
+                    "card": {"name": name, "names": [{"display": name, "given": "", "family": ""}],
+                             "phones": [{"value": p, "raw": p, "type": net.get("name") or net["id"]}
+                                        for p in sorted(who["phones"])],
+                             "emails": [{"value": e, "type": net.get("name") or net["id"]}
+                                        for e in sorted(who["emails"])],
+                             "addresses": [], "organizations": [], "notes": "",
+                             "handles": [{"network": net["id"],
+                                          "network_name": net.get("name") or "", "id": uid}]},
+                    "meta": {"network": net["id"], "network_name": net.get("name") or "",
+                             "rooms": []}}
+            rec["meta"]["rooms"] = sorted(set(rec["meta"]["rooms"]) | {r.id})
+    for uid, rec in out.items():
+        net = rec["meta"]["network"]
+        label = NETWORK_LABELS.get(net) or (GROUP_LABELS.get(net) if uid not in direct else None)
+        if label:
+            rec["card"]["labels"] = [label]
+        if uid not in direct:
+            rec["meta"]["groups_only"] = True
     return out
 
 
@@ -1332,6 +1391,53 @@ def sync_bridges() -> dict:
                 conn.close()
         return {"source": "bridges", "unchanged": same, "rooms": len(rooms), "read": len(recs),
                 "contacts": total}
+
+
+#: The largest export `POST /contacts/import` takes (the friends and
+#: followers sections alone are well under this; a whole export is not).
+IMPORT_MAX = 64 * 1024 * 1024
+
+
+def import_export(data: bytes, name: str = "") -> dict:
+    """A Facebook or Instagram data export (contacts_import.py) into this
+    book, as the `import` source: each export's people replace that
+    export's last import (a Join or a "Not the same" holds, being kept by
+    the person's stable id). Answers the counts, never a name.
+    contacts_import.NotAnExport when the file holds no list."""
+    from . import contacts_import
+
+    found, counts = contacts_import.parse(data, name)
+    with _SYNC_LOCK, _WRITE:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            for export, recs in found.items():
+                conn.execute("DELETE FROM records WHERE kind='import' AND sid LIKE ?",
+                             (export + ":%",))
+                conn.executemany(
+                    "INSERT INTO records (kind, sid, card, meta) VALUES ('import', ?, ?, ?)",
+                    [(sid, json.dumps(r["card"]), json.dumps(r["meta"]))
+                     for sid, r in recs.items()])
+            _rebuild(conn)
+            _set_meta(conn, "import_synced_at", str(round(time.time(), 3)))
+            _set_meta(conn, "import_last_error", None)
+            people = joined = 0
+            for (raw,) in conn.execute("SELECT card FROM contacts"):
+                kinds = [s.get("kind") for s in json.loads(raw).get("sources") or []]
+                if "import" in kinds:
+                    people += 1
+                    joined += any(k != "import" for k in kinds)
+            total = conn.execute("SELECT COUNT(*) FROM contacts").fetchone()[0]
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+    _fresh()
+    log.info("contacts[%s]: imported %s", account() or "owner",
+             ", ".join(f"{k} {v}" for k, v in sorted(counts.items())))
+    return {"imported": counts, "people": people, "joined": joined, "contacts": total}
 
 
 def sources() -> list[str]:
@@ -1495,12 +1601,15 @@ def labels() -> dict:
 # --- "Same person?" -------------------------------------------------------------
 
 def _bridge_sids(card: dict) -> list[str]:
-    return [s["id"] for s in card.get("sources") or [] if s.get("kind") == "bridges"]
+    """The card's weak records (a bridge's ghost, an export's person): what
+    a Join or a "Not the same" is kept against."""
+    return [s["id"] for s in card.get("sources") or [] if s.get("kind") in WEAK]
 
 
 def _bridge_only(card: dict) -> bool:
+    """Known only from a bridge or an export: a name joins nobody here."""
     srcs = card.get("sources") or []
-    return bool(srcs) and all(s.get("kind") == "bridges" for s in srcs)
+    return bool(srcs) and all(s.get("kind") in WEAK for s in srcs)
 
 
 def suggestions(cid: str) -> list[dict]:
@@ -2183,6 +2292,7 @@ def status() -> dict:
                        "signed_in_at": tok.get("obtained_at") if tok else None,
                        **per.get("google", {})},
             "bridges": {"owner_bridges": sorted(_owner_bridges()), **per.get("bridges", {})},
+            "import": {**per.get("import", {})},
             "drupal": {"connection": str(_drupal_config_path()), "configured": _drupal_configured(),
                        **per.get("drupal", {})},
             "background": (os.environ.get("MEDIA_CONTACTS") or "1").strip() != "0"}
@@ -2255,6 +2365,30 @@ def cmd_sync(a) -> int:
     for src, e in got["errors"].items():
         print(f"{src}: sync failed: {e}", file=sys.stderr)
     return 1 if got["errors"] else 0
+
+
+def cmd_import(a) -> int:
+    from . import contacts_import
+
+    path = Path(a.file).expanduser()
+    try:
+        if path.stat().st_size > IMPORT_MAX:
+            print(f"contacts: {path.name} is over {IMPORT_MAX // 2**20} MB: download only "
+                  "the friends / followers section", file=sys.stderr)
+            return 2
+        data = path.read_bytes()
+    except OSError as e:
+        print(f"contacts: {e}", file=sys.stderr)
+        return 2
+    try:
+        got = import_export(data, path.name)
+    except contacts_import.NotAnExport as e:
+        print(f"contacts: {e}", file=sys.stderr)
+        return 2
+    lists = ", ".join(f"{n} {k.replace('_', ' ')}" for k, n in sorted(got["imported"].items()))
+    print(f"imported {lists}: {got['people']} people from exports, {got['joined']} of them "
+          f"joined someone already here, {got['contacts']} contacts")
+    return 0
 
 
 # --- seeding the CRM ------------------------------------------------------------
@@ -2357,10 +2491,15 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(fn=cmd_login)
     sub.add_parser("status", help="what is read, and when it last was").set_defaults(fn=cmd_status)
     p = sub.add_parser("sync", help="sync now")
-    p.add_argument("--source", choices=KINDS, default="",
+    p.add_argument("--source", choices=[k for k in KINDS if k in _SYNCS], default="",
                    help="only this one (default: every source this host reads)")
     p.add_argument("--full", action="store_true", help="Google: everything, not the changes")
     p.set_defaults(fn=cmd_sync)
+    p = sub.add_parser("import", help="people from a Facebook or Instagram data export "
+                                      "(the .zip, or its friends/followers JSON)")
+    p.add_argument("file", help="the export's .zip, your_friends.json, followers_1.json "
+                                "or following.json")
+    p.set_defaults(fn=cmd_import)
     p = sub.add_parser("seed", help="add the people the CRM lacks to it (a dry run unless --go)")
     p.add_argument("--go", action="store_true", help="write to the CRM (default: say what would be)")
     p.add_argument("--limit", type=int, default=0, help="at most this many (0: all)")

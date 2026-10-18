@@ -130,12 +130,18 @@ def _people():
 
 # --- who comes in --------------------------------------------------------------
 
-def test_one_to_one_chats_bring_their_person_and_nothing_else(rooms):
+def test_chats_bring_their_people_groups_with_a_label(rooms):
     got = contacts.sync_bridges()
     assert got["source"] == "bridges" and got["rooms"] == 9 and not got["unchanged"]
     people = _people()
-    # Messenger's Ana is new; the group's Third Person is not anyone's.
-    assert "Ana Stranger" in people and "Third Person" not in people
+    # Messenger's Ana is new; the group's Third Person comes in too (David,
+    # 19 Oct 2026: a full list), labelled where David met them.
+    assert "Ana Stranger" in people and "Third Person" in people
+    third = contacts.card(people["Third Person"])
+    assert third["labels"] == ["Messenger groups"]
+    assert contacts.card(people["Ana Stranger"])["labels"] == []     # met one to one too
+    assert contacts.card(JO)["labels"] == ["Teams"]                  # Teams is work
+    assert contacts.for_room(rooms["fb_group"]) is None              # a group is no one's
     ana = contacts.card(people["Ana Stranger"])
     assert ana["handles"] == [{"network": "facebookgo", "network_name": "Facebook Messenger",
                                "id": FB_ANA}]
