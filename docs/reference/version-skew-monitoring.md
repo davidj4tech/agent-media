@@ -139,6 +139,46 @@ copy of the package, and `call-guard` runs out of that venv — so `git pull`
 deployed nothing to it and it ran whatever the code was on install day. Nothing
 was broken enough to notice; it was simply the wrong code, indefinitely.
 
+The same trap one level down: **service files that are copies.** p8a's
+`phone-jobs` ran copies of its `run` and `phone-jobs.py` made on 3 Oct; every
+pull since updated the checkout and nothing the service ran (found 18 Oct
+2026). selfcheck now compares (`agent_media_core/service_drift.py`):
+
+- **runit**: each service dir named like a template in the checkout
+  (`packages/*/services/<name>`, `deploy/*/service/<name>`), file by file
+  (`run`, `log/run`, `finish`, a worker script). A dir or file that links
+  into the checkout is fine; `supervise/` is runit's and skipped.
+- **systemd --user**: each unit in `~/.config/systemd/user` named like one
+  in the checkout (`packages/*/systemd`, `packages/*/deploy`,
+  `deploy/systemd`) that is a regular file. A unit `media-setup
+  install-services` generated (`ExecStart=/bin/sh <checkout>/…/run`) is not
+  a copy: the code it runs is the checkout's.
+- **Windows**: its Task Scheduler tasks name a program and hold no copy of a
+  file, so there is nothing to compare.
+
+`drift=` lists the copies that **differ**: a problem, so the host goes `!`
+in the ledger (a pull cannot fix it, which is what `!` means). `copies=`
+lists the ones that still match: doctor prints them as "copy, not linked",
+not a problem until the next pull changes the original. A deliberate local
+copy is kept out with `MEDIA_DRIFT_OK="<unit> <service>/<file>"` in the
+environment selfcheck runs in.
+
+The fix is a link:
+
+```
+media-setup link-services --dry-run
+media-setup link-services            # identical copies → links (copy kept as <file>.bak-<date>)
+media-setup link-services --force    # also the ones that differ (compare first)
+```
+
+`media-setup install-services` installs runit services as links only: a real
+service dir that matches its template becomes a link, one that differs is
+reported and left alone unless `--force` (then moved to
+`~/.local/share/agent-media/service-backups/<name>.bak-<date>` first). The
+phone's own services (`deploy/phone/service`: `phone-jobs`, `say-http`,
+`music-files`) install the same way when named:
+`media-setup install-services phone-jobs`.
+
 Hosts too old to have the subcommand answer `selfcheck=unsupported` and are
 reported as skewed (which they are), never as broken. A host whose install is
 genuinely dead cannot run `media selfcheck` to say so, so the remote probe falls

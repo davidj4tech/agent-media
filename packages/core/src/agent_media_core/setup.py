@@ -649,7 +649,10 @@ def _service_dir_matches_template(dest: Path, src: Path) -> bool:
     only care that nothing the repo manages was hand-edited locally.
     """
     for tpl in src.rglob("*"):
-        if not tpl.is_file():
+        # runit's own state (a host that links the template dir writes its
+        # supervise/ into the checkout) and caches are no template's.
+        if not tpl.is_file() or {"supervise", "__pycache__"} & set(
+                tpl.relative_to(src).parts):
             continue
         live = dest / tpl.relative_to(src)
         if not live.is_file() or live.read_bytes() != tpl.read_bytes():
@@ -675,19 +678,44 @@ def _backup_aside(path: Path, category: str, name: str) -> Path:
     return dest
 
 
+def phone_service_templates_dir() -> "Path | None":
+    """The phone's own runit services in a checkout (`deploy/phone/service`:
+    phone-jobs, say-http, music-files). Not in a wheel, and never installed
+    unless named: they are Termux-only (their `run` names Termux's sh)."""
+    from .cli import _checkout_root
+
+    root = _checkout_root()
+    d = root / "deploy" / "phone" / "service" if root else None
+    return d if d and d.is_dir() else None
+
+
+def service_template(name: str) -> Path:
+    """A service's template dir: packages/core/services/<name>, else the
+    phone's deploy/phone/service/<name> (`install-services phone-jobs`)."""
+    src = service_templates_dir() / name
+    phone = phone_service_templates_dir()
+    if not src.is_dir() and phone is not None and (phone / name).is_dir():
+        return phone / name
+    return src
+
+
 def _install_one_service(name: str, *, dry_run: bool,
-                         root: Path) -> bool:
-    """Symlink/copy the template tree into the runit service root.
+                         root: Path, force: bool = False) -> bool:
+    """Symlink the template tree into the runit service root.
 
     Termux's runsvdir scans `service_dir/*` for `run` files. We use
     symlinks so a `git pull` on the repo picks up service edits without
-    a re-install.
+    a re-install — a copy is drift that no pull reaches (p8a's phone-jobs ran
+    3 Oct copies until 18 Oct 2026; `media doctor` reports such copies).
 
     A pre-existing *real* directory (typically a stale copy-based install)
-    is auto-converted to a symlink: if its tracked files match the template
-    we just drop it, otherwise we back it up first so no local edit is lost.
+    is converted to a symlink when its tracked files match the template
+    (links into the checkout count as matching). One that differs is
+    reported and left alone, unless `force`: then it is backed up first
+    (outside the service root, as `<name>.bak-<date>`), so no local edit is
+    lost. Idempotent.
     """
-    src = service_templates_dir() / name
+    src = service_template(name)
     if not src.is_dir():
         print(f"media-setup: template missing: {src}", file=sys.stderr)
         return False
@@ -715,10 +743,16 @@ def _install_one_service(name: str, *, dry_run: bool,
             shutil.rmtree(dest)
             print(f"media-setup: {name}: replaced identical real dir "
                   f"with symlink")
+        elif not force:
+            print(f"media-setup: {name}: {dest} is a real dir that differs from "
+                  f"{src}; left alone (compare them, then --force to back it up "
+                  "and link it)", file=sys.stderr)
+            return False
         else:
-            backup = _backup_aside(dest, "service-backups", name)
+            backup = _backup_aside(dest, "service-backups",
+                                   f"{name}.bak-{time.strftime('%Y%m%d')}")
             print(f"media-setup: {name}: real dir differed from template; "
-                  f"backed up to {backup} before relinking", file=sys.stderr)
+                  f"backed up to {backup} before relinking (--force)", file=sys.stderr)
     elif dest.exists():
         # A real non-directory file sitting at the service path — not ours.
         print(f"media-setup: {dest} exists and is not our symlink; leaving it",
@@ -954,9 +988,22 @@ def cmd_install_services(args: argparse.Namespace) -> int:
         return 2
     ok = True
     for name in names:
-        ok = _install_one_service(name, dry_run=args.dry_run, root=root) and ok
+        ok = _install_one_service(name, dry_run=args.dry_run, root=root,
+                                  force=getattr(args, "force", False)) and ok
     ok = _link_entrypoints(dry_run=args.dry_run) and ok
     return 0 if ok else 1
+
+
+def cmd_link_services(args: argparse.Namespace) -> int:
+    """Turn every installed service file that is a copy of this checkout's
+    into a link to it (service_drift.py): runit service files (`run`,
+    `log/run`, a worker script) and systemd --user units. An identical copy
+    is linked, the copy kept beside it as `<file>.bak-<date>`; one that
+    differs is reported and left alone unless --force. Idempotent."""
+    from . import service_drift
+
+    return service_drift.relink(service_drift.scan(), force=args.force,
+                                dry_run=args.dry_run)
 
 
 def entrypoint_link_dir() -> Path:
@@ -2077,9 +2124,26 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--now", action="store_true",
                     help="systemd: enable --now the units after writing")
     sp.add_argument("--dry-run", action="store_true")
+    sp.add_argument("--force", action="store_true",
+                    help="runit: replace a real service dir that differs from "
+                         "its template (backed up first); without it, reported "
+                         "and left alone")
     sp.add_argument("services", nargs="*",
-                    help="Specific service names (default: all in repo)")
+                    help="Specific service names (default: all in repo). The "
+                         "phone's deploy/phone/service ones (phone-jobs, "
+                         "say-http, music-files) only when named")
     sp.set_defaults(func=cmd_install_services)
+
+    sp = sub.add_parser("link-services",
+                        help="replace service files that are copies of this "
+                             "checkout's (runit run/log/run/worker scripts, "
+                             "systemd --user units) with links, so a pull "
+                             "reaches them; a copy that differs only with --force")
+    sp.add_argument("--force", action="store_true",
+                    help="also link copies that differ (each kept as "
+                         "<file>.bak-<date>)")
+    sp.add_argument("--dry-run", action="store_true")
+    sp.set_defaults(func=cmd_link_services)
 
     sp = sub.add_parser("server",
                         help="Wire this host as a Snapcast rooms render hub "
@@ -2400,8 +2464,8 @@ def cmd_layout(args: argparse.Namespace) -> int:
     return 0
 
 
-def main() -> int:
-    args = _build_parser().parse_args()
+def main(argv: "Optional[list[str]]" = None) -> int:
+    args = _build_parser().parse_args(argv)
     return args.func(args)
 
 

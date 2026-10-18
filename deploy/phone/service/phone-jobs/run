@@ -1,8 +1,9 @@
 #!/data/data/com.termux/files/usr/bin/sh
 # The phone's Termux, taking the jobs red5 used to run over `ssh p8a`
 # (agent-media roadmap item 15): it dials out to red5 through the tunnel, so
-# nothing has to reach in. The script lives beside this file, so installing
-# is copying (or linking) this directory into $PREFIX/var/service.
+# nothing has to reach in. The script lives beside this file. Install by
+# LINKING, never copying (a copy is drift no pull reaches: p8a ran 3 Oct
+# copies until 18 Oct 2026): `media-setup install-services phone-jobs`.
 # Needs MEDIA_PHONE_JOBS_SERVER (https://red5.sasonica.com) and
 # MEDIA_PHONE_JOBS_TOKEN (a device token: media-visual-canvas pair --device
 # "p8a Termux jobs", redeemed with phone-jobs.py --pair <code>).

@@ -109,7 +109,9 @@ The canvas runs as a systemd user service (see `systemd/`), bound to the
 Tailscale IP only — same privacy posture as the clip server on 8780:
 
 ```sh
-cp systemd/agent-media-visual-canvas.service ~/.config/systemd/user/
+# Linked, not copied: a copy is drift that no `git pull` reaches (media doctor
+# reports it; `media-setup link-services` turns a copy into a link).
+ln -sf "$PWD/systemd/agent-media-visual-canvas.service" ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now agent-media-visual-canvas
 # phone/TV browser → http://red5:8781/ (MagicDNS name of the host)

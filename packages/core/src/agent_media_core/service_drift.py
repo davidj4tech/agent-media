@@ -191,3 +191,82 @@ def facts(found: "Optional[list[Drift]]" = None) -> "dict[str, str]":
         out["copies"] = ",".join(same)
     return out
 
+# --- the fix: links in place of copies ---------------------------------------------
+
+
+def _daemon_reload() -> None:
+    if shutil.which("systemctl"):
+        subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True,
+                       timeout=30)
+
+
+def backup_path(path: Path) -> Path:
+    """`<path>.bak-<YYYYMMDD>`, numbered when that is taken. Beside the file:
+    runsv only runs `run`/`finish`/`log/run`, and systemd only loads unit
+    suffixes, so a backup there is inert."""
+    base = path.with_name(f"{path.name}.bak-{time.strftime('%Y%m%d')}")
+    cand, n = base, 1
+    while cand.exists() or cand.is_symlink():
+        cand = base.with_name(f"{base.name}.{n}")
+        n += 1
+    return cand
+
+
+def relink(found: "list[Drift]", *, force: bool = False, dry_run: bool = False,
+           echo: "Callable[[str], None]" = print) -> int:
+    """Replace each copy with a symlink to its checkout file, the copy kept as
+    `<file>.bak-<date>`. A copy that differs is only reported unless `force`:
+    it may hold a local edit someone meant. Exit code: 0 all linked (or
+    nothing to do), 1 a differing copy left alone or a link that failed."""
+    rc = 0
+    reload_ = False
+    for d in found:
+        if not d.same and not force:
+            echo(f"{d.label}: differs from {d.source} — left alone (compare them; "
+                 "--force links it, keeping the copy as .bak-<date>)")
+            rc = 1
+            continue
+        bak = backup_path(d.path)
+        if dry_run:
+            echo(f"# would link {d.path} -> {d.source} (copy kept as {bak.name})")
+            continue
+        try:
+            mode = d.path.stat().st_mode
+            os.replace(d.path, bak)
+            try:
+                d.path.symlink_to(d.source)
+            except OSError:
+                os.replace(bak, d.path)
+                raise
+        except OSError as e:
+            echo(f"{d.label}: could not link: {e}")
+            rc = 1
+            continue
+        if mode & 0o111 and not os.access(d.source, os.X_OK):
+            echo(f"{d.label}: note: {d.source} is not executable")
+        echo(f"{d.label}: linked to {d.source} ({'identical' if d.same else 'differed'};"
+             f" copy kept as {bak.name})")
+        reload_ = reload_ or d.kind == "systemd"
+    if reload_:
+        try:
+            _daemon_reload()
+        except (OSError, subprocess.SubprocessError) as e:
+            echo(f"systemctl --user daemon-reload failed: {e}")
+    if not found:
+        echo("no service file here is a copy of this checkout's: nothing to link")
+    return rc
+
+
+def main(argv: "Optional[list[str]]" = None) -> int:
+    """`media-setup link-services [--force] [--dry-run]`."""
+    import argparse
+
+    ap = argparse.ArgumentParser(prog="media-setup link-services")
+    ap.add_argument("--force", action="store_true")
+    ap.add_argument("--dry-run", action="store_true")
+    a = ap.parse_args(argv)
+    return relink(scan(), force=a.force, dry_run=a.dry_run)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
