@@ -14,6 +14,7 @@ out. 404 for anything else. server-contract.md §6.10.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from pathlib import Path
@@ -217,9 +218,76 @@ def _row(p: Path, root: Path) -> dict:
             "area": area, "state": _state(d.kind, status)}
 
 
-def project_docs(project: str, path: str, bearer: str) -> tuple[bool, dict]:
+#: The tools that write a file, by the name the transcript gives them.
+_WRITERS = frozenset({"Write", "Edit", "MultiEdit", "NotebookEdit"})
+
+
+def _written(transcript: Path) -> list[str]:
+    """The files a Claude Code transcript wrote or edited, last touched
+    first. Only lines naming a writing tool are parsed."""
+    order: dict[str, int] = {}
+    try:
+        with transcript.open("rb") as f:
+            for n, raw in enumerate(f):
+                if b'"tool_use"' not in raw or b'"file_path"' not in raw:
+                    continue
+                try:
+                    content = json.loads(raw).get("message", {}).get("content")
+                except ValueError:
+                    continue
+                for part in content if isinstance(content, list) else []:
+                    if (isinstance(part, dict) and part.get("type") == "tool_use"
+                            and part.get("name") in _WRITERS):
+                        fp = (part.get("input") or {}).get("file_path")
+                        if isinstance(fp, str) and fp:
+                            order[fp] = n
+    except OSError:
+        return []
+    return sorted(order, key=lambda k: -order[k])
+
+
+def thread_docs(session: str, listed: list[str]) -> list[str]:
+    """Which of `listed` (a project's document paths) the thread `session`
+    made or edited, its subagents included, or was started about from the
+    reader (doc_chat). Last touched first; reads do not count, since nearly
+    every thread reads the contract."""
+    from . import org_chat, recaps
+
+    by_real: dict[str, str] = {}
+    for p in listed:
+        try:
+            by_real[str(Path(p).resolve())] = p
+        except OSError:
+            continue
+    out: list[str] = []
+
+    def take(fp: str) -> None:
+        try:
+            hit = by_real.get(str(Path(os.path.expanduser(fp)).resolve()))
+        except OSError:
+            return
+        if hit and hit not in out:
+            out.append(hit)
+
+    tp = recaps.transcript_path(session)
+    if tp:
+        t = Path(tp)
+        files = _written(t)
+        for sub in sorted((t.parent / t.stem / "subagents").glob("*.jsonl")):
+            files += _written(sub)
+        for fp in files:
+            take(fp)
+    for key, rows in org_chat._load().items():
+        if any(r.get("session") == session for r in rows if isinstance(r, dict)):
+            take(key.split("\t", 1)[0])
+    return out
+
+
+def project_docs(project: str, path: str, bearer: str,
+                 session: str = "") -> tuple[bool, dict]:
     """A project's documents: its README first, then the dated ones newest
-    first, then the rest by title."""
+    first, then the rest by title. With `session`, `thread` names the ones
+    that thread made or edited."""
     user, err = auth.gate(bearer)
     if not user:
         return False, err
@@ -241,7 +309,10 @@ def project_docs(project: str, path: str, bearer: str) -> tuple[bool, dict]:
     readme = lambda r: Path(r["path"]).parent == root and Path(r["path"]).name.lower() == "readme.md"  # noqa: E731
     rows.sort(key=lambda r: (not readme(r), r["date"] == "",
                              "".join(chr(0x10FFFF - ord(c)) for c in r["date"]), r["title"].lower()))
-    return True, {"project": project or root.name, "root": str(root), "docs": rows}
+    out = {"project": project or root.name, "root": str(root), "docs": rows}
+    if session:
+        out["thread"] = thread_docs(session, [r["path"] for r in rows])
+    return True, out
 
 
 def _rg(args: list[str], cwd: Path) -> list[str] | None:

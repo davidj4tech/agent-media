@@ -2473,6 +2473,12 @@ kind, status, date}]}`: the app's project page.
   is `"settled"`, and any other kind has `""`.
 - 404 for a folder outside the reader's roots, a hidden one, or the projects
   folder itself.
+- `&session=<id>` (the thread the page was opened from) adds `thread`: the
+  listed paths that thread created or edited (its Write/Edit tool calls,
+  its subagents' too) or was started about from the reader (`POST
+  /doc/ask`), last touched first; `[]` when none. Reads do not count: nearly
+  every thread reads this contract. The app pins them above the list as
+  "From this thread" (David, 19 Oct 2026).
 
 `GET /search` answers a `docs` section too, on the first page only:
 `[{path, title, project, kind, snippet}]`, at most 8. These are documents

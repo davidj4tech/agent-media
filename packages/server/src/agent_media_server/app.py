@@ -2493,7 +2493,8 @@ def _org(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
         ok, detail = org.say(str(body.get("path") or ""), at, bearer)
     elif method == "GET" and path == "/docs":
         # A project's documents (doc_read.py): the project page's list.
-        ok, detail = doc_read.project_docs(arg("project"), arg("path"), bearer)
+        ok, detail = doc_read.project_docs(arg("project"), arg("path"), bearer,
+                                              arg("session"))
     elif method == "GET" and path == "/doc/read":
         # A project's document in the reader (doc_read.py).
         try:
