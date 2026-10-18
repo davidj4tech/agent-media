@@ -291,6 +291,44 @@ media restart-services --only sessiond --after 10
 The turn ends, and ten seconds later sessiond restarts. The chat resumes on
 its next message.
 
+### Restarting another host, through its own server
+
+`--host NAME` does the same on another host without ssh (David, 18 Oct
+2026). It calls that host's `POST /services/restart` (server contract §6.6),
+which runs `restart_services.run()` there with the same options, busy checks
+and health check, and prints its lines. `--dry-run` shows that host's busy
+checks. The exit codes are the remote run's; 1 also covers not paired, not
+reachable, a refused token, and a server too old to have the route.
+
+```
+media restart-services --host p8a --only canvas
+media restart-services --host p8a --only sessiond --dry-run
+```
+
+A server that restarts itself (the phone's canvas, under runit) always does
+it detached, 10 s later by default, so its answer gets out before it is
+killed.
+
+The credential is a device token for the other host's server, the same kind
+the Sasonica app and the phone's Termux worker hold (contract §9). Pair once
+per pair of hosts. On the host to be reached:
+
+```
+media-visual-canvas pair --device "red5 media"
+```
+
+Then on the asking host, with the `sasonica://pair?…` link it printed:
+
+```
+media peer pair phone 'sasonica://pair?server=…&code=…'
+```
+
+NAME is a `[peers.*]` alias in config.toml, a peer's `host`, or a role. The
+token and the URL it reached are kept in
+`~/.config/agent-media/peers/<alias>.json` (0600). `media peer list` shows
+which peers are paired. With a bare code instead of a link, pass `--server
+URL`; the default is `http://<peer host>:8781`.
+
 ## Applying to Other Packages
 
 To drop this into `agent-sessions`, `agent-workspace`, or `pi-workspace`:

@@ -8262,10 +8262,43 @@ def cmd_restart_services(a) -> int:
     """
     from . import restart_services
 
+    if getattr(a, "host", None):
+        # Another host, through its own server (POST /services/restart), as a
+        # paired device of it: `media peer pair`. Never ssh.
+        res = restart_services.run_remote(a.host, a.only or None,
+                                          after=float(a.after or 0), force=a.force,
+                                          dry_run=a.dry_run,
+                                          echo=lambda line: print(line, flush=True))
+        return int(res["rc"])
     res = restart_services.run(a.only or None, after=float(a.after or 0),
                                force=a.force, dry_run=a.dry_run,
                                echo=lambda line: print(line, flush=True))
     return int(res["rc"])
+
+
+def cmd_peer(a) -> int:
+    """`media peer pair NAME LINK` and `media peer list`: this host's device
+    tokens for other hosts' servers (peer_link.py), which `restart-services
+    --host` uses."""
+    from . import peer_link
+
+    if a.peer_cmd == "pair":
+        try:
+            rec = peer_link.pair(a.name, a.link, server=a.server or "")
+        except peer_link.PeerError as e:
+            print(f"peer pair: {e}", file=sys.stderr)
+            return 1
+        print(f"paired with {rec['alias']} at {rec['url']} as {rec.get('name')!r} "
+              f"(device {rec.get('device_id')}); kept in "
+              f"{peer_link._file(rec['alias'])}")
+        return 0
+    rows = peer_link.links()
+    if not rows:
+        print("no peers: none configured ([peers.*] in config.toml) and none paired")
+    for r in rows:
+        print(f"{r['alias']:<12} {r['host'] or '-':<10} {r['url'] or '-':<36} "
+              f"{'paired' if r['paired'] else 'not paired'}")
+    return 0
 
 
 def cmd_recent(a) -> int:
@@ -9371,7 +9404,31 @@ def _build_parser() -> argparse.ArgumentParser:
     rs.add_argument("--dry-run", action="store_true",
                     help="name what would be restarted and show the busy "
                          "checks, touch nothing (exit 3 if busy)")
+    rs.add_argument("--host", metavar="NAME", default=None,
+                    help="do it on another host, through its server's POST "
+                         "/services/restart as a paired device of it (a peer "
+                         "alias, its host name or a role; pair once with "
+                         "`media peer pair`). No ssh. Its own server restarts "
+                         "detached, after 10 s")
     rs.set_defaults(func=cmd_restart_services)
+
+    pe = sub.add_parser(
+        "peer",
+        help="this host's links to other hosts' servers (a device token each)",
+        description="Another host's server is reached as a paired device of "
+                    "it, like the Sasonica app. On that host mint a code: "
+                    "media-visual-canvas pair --device \"<this host> media\"; "
+                    "here: media peer pair NAME '<sasonica://pair link>'.")
+    pe_sub = pe.add_subparsers(dest="peer_cmd", required=True)
+    pp = pe_sub.add_parser("pair", help="trade a device pairing code from NAME's "
+                                        "server for a token, and keep it (0600)")
+    pp.add_argument("name", help="a peer alias ([peers.NAME]), its host, or any name")
+    pp.add_argument("link", help="the sasonica://pair?server=…&code=… link, or the code")
+    pp.add_argument("--server", metavar="URL", default="",
+                    help="the server's base URL, when the link names none (default: "
+                         "http://<peer host>:8781)")
+    pe_sub.add_parser("list", help="configured peers and which are paired")
+    pe.set_defaults(func=cmd_peer)
 
     sg = sub.add_parser("state-gc",
                         help="apply the state DB's retention policy "

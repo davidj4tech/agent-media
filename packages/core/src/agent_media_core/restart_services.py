@@ -3,8 +3,10 @@
 `media restart-services` is a thin wrapper over `run()`. A server route on any
 host (the phone's runit, a Windows box) can call `run()` too and answer its
 result dict as JSON; `POST /services/restart` does (server app.py), with
-`detach_own` so a server restarting itself answers first. Nothing here
-names a host or a path of one machine.
+`detach_own` so a server restarting itself answers first, and
+`run_remote()` is the other end of it (`media restart-services --host NAME`,
+as a paired device of that host's server: peer_link.py). Nothing here names
+a host or a path of one machine.
 
 What makes it safe to run unattended (David, 18 Oct 2026):
 
@@ -620,6 +622,54 @@ def run(only: "Optional[list[str]]" = None, *, after: float = 0, force: bool = F
             waited += retry_s()
     res["rc"] = restart(selected, emit)
     return res
+
+
+def run_remote(name: str, only: "Optional[list[str]]" = None, *, after: float = 0,
+               force: bool = False, dry_run: bool = False,
+               echo: "Optional[Callable[[str], None]]" = None) -> dict:
+    """`run()` on another host, through its server's `POST /services/restart`
+    as a paired device of it (peer_link.py). No ssh.
+
+    Returns the remote run's dict (its `rc` the exit code), or one with
+    `rc` FAILED and a line saying why there is no answer: not paired, not
+    reachable, refused, or a server too old to have the route."""
+    from . import peer_link
+
+    def say(line: str) -> None:
+        if echo:
+            echo(line)
+
+    body: dict = {"force": force, "dry_run": dry_run}
+    if only:
+        body["only"] = list(only)
+    if after > 0:
+        body["after"] = after
+    fail = {"rc": FAILED, "lines": [], "selected": [], "busy": [], "unknown": [],
+            "scheduled": None, "own": [], "after": after}
+    try:
+        status, ans, link = peer_link.request(name, "/services/restart", body,
+                                              timeout=180.0)
+    except peer_link.PeerError as e:
+        fail["lines"].append(str(e))
+        say(str(e))
+        return fail
+    where = f"{ans.get('host') or link['alias']} ({link['url']})"
+    if "rc" not in ans:
+        if status in (401, 403):
+            why = (f"{where} refused this host's token ({status}: {ans.get('error') or ''}); "
+                   f"pair again: `media peer pair {link['alias']} '<link>'`")
+        elif status == 404:
+            why = (f"{where} has no /services/restart ({status}): it runs older code. "
+                   "Pull it first (`media doctor --fix`)")
+        else:
+            why = f"{where} answered {status}: {ans.get('error') or ans}"
+        fail["lines"].append(why)
+        say(why)
+        return fail
+    say(f"on {where}:")
+    for line in ans.get("lines") or []:
+        say(f"  {line}")
+    return {**fail, **ans, "rc": int(ans.get("rc", FAILED))}
 
 
 def main(argv: "Optional[list[str]]" = None) -> int:
