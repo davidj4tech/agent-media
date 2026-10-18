@@ -1242,9 +1242,13 @@ ahead.
     `crm_activity` module; texts, Signal and agent notes on by default,
     calls and email off; after step 3. **Server and module built 18 Oct
     2026** (§6.25a: `GET /contacts/<id>/timeline`, `POST
-    /contacts/<id>/notes`); live steps in the proposal. **App, to do:** the
-    card's timeline (newest day first, a service badge per channel, "not in
-    the CRM yet" when `synced` is false) and a note box. **Google per
+    /contacts/<id>/notes`); live steps in the proposal. **App built 19 Oct
+    2026** (sasonica-app `1692432`): Messages one row per person, a room's
+    person chip (their card, the switch between their rooms), People
+    (`/people`) and the card (`/people/<id>`: phones, emails, address,
+    notes, the CRM's fields, their rooms, the timeline by day, a note box).
+    Still to do: edits (step 4), texting someone new (step 5), and "not in
+    the CRM yet" on an entry whose `synced` is false. **Google per
     account, built 18 Oct 2026** (§6.25 "Google, per book"; sasonica-app
     `1a509de`): Settings → Contacts signs this account's own book in to
     Google (a loopback listener on the phone, the browser for consent),
