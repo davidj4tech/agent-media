@@ -189,6 +189,13 @@ device gets its token):
   GET  /contacts/<id>/timeline[?limit=] → their texts, calls, mail and
                   notes by day, from the CRM's daily rollups (timeline.py)
   POST /contacts/<id>/notes {"text"} → a note on them, today, kept in the CRM
+  GET  /contacts/google → the caller's book's Google: signed in as whom,
+                  expired (sign in again), last sync (contacts.py, §6.25)
+  POST /contacts/google/login {"port"} → {url, state}: a sign-in redirecting
+                  to the app's own loopback listener on 127.0.0.1:<port>
+  POST /contacts/google/finish {"state", "code" | "url"} → the token kept
+                  in the caller's book, and a sync of it
+  POST /contacts/google/signout → the book forgets Google
   POST /alerts    {"id", "level", "kind"?, "title"?, "detail"?, "fix"?,
                    "host"?, "step"?, "confirm"?, "every_s"?} → a watcher
                   says what is true now; the store answers what changed and
@@ -268,6 +275,8 @@ CORS_PATHS = frozenset({
     "/setup", "/setup/run", "/services/restart", "/shell", "/shell/signins", "/shell/signin", "/enrol", "/me", "/me/signout", "/me/account",
     "/share", "/upload", "/dashboard",
     "/sessions/events", "/search", "/contacts",
+    "/contacts/google", "/contacts/google/login", "/contacts/google/finish",
+    "/contacts/google/signout",
     "/mic/ask", "/mic/cancel",
     "/phone/ask", "/phone/answer", "/phone/cancel",
     "/notes", "/notes/clear",
@@ -588,6 +597,45 @@ def _contact_note(h: BaseHTTPRequestHandler, cid: str) -> None:
     _json(h, 200, {"ok": True, "note": got})
 
 
+def _contacts_google(h: BaseHTTPRequestHandler, act: str) -> None:
+    """The caller's book's Google sign-in (§6.25 "Google, per book"):
+    `state` (GET), `login`, `finish` and `signout` (POST). Gated as the
+    other contacts routes; each acts on the caller's own book only."""
+    from . import contacts
+
+    user, err = auth.gate(_bearer(h))
+    if not user:
+        _json(h, err.pop("status", 403), {"ok": False, **err})
+        return
+    try:
+        if act == "state":
+            _json(h, 200, {"ok": True, "google": contacts.google_state()})
+        elif act == "signout":
+            _json(h, 200, {"ok": True, "google": contacts.sign_out()})
+        else:
+            body = _read_json(h)
+            body = body if isinstance(body, dict) else {}
+            if act == "login":
+                _json(h, 200, {"ok": True, **contacts.start_login(body.get("port"))})
+            else:
+                got = contacts.finish_login(str(body.get("state") or ""),
+                                            str(body.get("code") or ""),
+                                            str(body.get("url") or ""))
+                _json(h, 200, {"ok": True, "google": got})
+    except PermissionError as e:
+        _json(h, 403, {"ok": False, "error": str(e)})
+    except ValueError as e:
+        _json(h, 400, {"ok": False, "error": str(e)})
+    except contacts.NotSignedIn as e:
+        # No client on this server (503: nothing the app can fix), or Google
+        # refusing the code (502).
+        no_client = contacts.load_client() is None
+        _json(h, 503 if no_client else 502,
+              {"ok": False, "error": str(e), **({"no_client": True} if no_client else {})})
+    except (OSError, contacts.SyncError) as e:
+        _json(h, 502, {"ok": False, "error": f"could not reach Google ({e})"})
+
+
 def _sealed(h: BaseHTTPRequestHandler, session: str) -> bool:
     """Answer 423 for a sealed thread's content: there is none to read until
     it is unsealed (seal.py). True when it answered."""
@@ -752,6 +800,8 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
             _json(h, detail.pop("status", 400), {"ok": False, **detail})
     elif CONTACT_TIMELINE.fullmatch(path):
         _contact_timeline(h, CONTACT_TIMELINE.fullmatch(path).group(1), query)
+    elif path == "/contacts/google":
+        _contacts_google(h, "state")
     elif path == "/contacts" or CONTACT.fullmatch(path):
         # People, from the phone's contacts (contacts.py, §6.25): the list or
         # matches as you type, and one person's card with their rooms.
@@ -1444,6 +1494,9 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         _devices_revoke(h)
     elif CONTACT_NOTES.fullmatch(path):
         _contact_note(h, CONTACT_NOTES.fullmatch(path).group(1))
+    elif path in ("/contacts/google/login", "/contacts/google/finish",
+                  "/contacts/google/signout"):
+        _contacts_google(h, path.rsplit("/", 1)[1])
     elif path == "/me/account":
         body = _read_json(h)
         if not isinstance(body, dict):

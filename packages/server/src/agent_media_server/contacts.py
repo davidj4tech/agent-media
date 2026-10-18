@@ -83,6 +83,10 @@ from pathlib import Path
 log = logging.getLogger("agent-media.server.contacts")
 
 SCOPE = "https://www.googleapis.com/auth/contacts.readonly"
+#: What a sign-in asks for: the contacts, and the address it is (`email` is
+#: not a sensitive scope, so it adds nothing to Google's review), so a book
+#: can say whose Google it reads.
+LOGIN_SCOPE = "openid email " + SCOPE
 PEOPLE = "https://people.googleapis.com/v1"
 PERSON_FIELDS = "names,phoneNumbers,emailAddresses,addresses,biographies,metadata"
 AUTH_URI = "https://accounts.google.com/o/oauth2/auth"
@@ -643,6 +647,12 @@ class NotSignedIn(Exception):
     """No client, no refresh token, or Google no longer takes it."""
 
 
+class SignInExpired(NotSignedIn):
+    """Google refused the refresh token (`invalid_grant`): revoked, or — while
+    the Google project is in testing mode — the 7 days a test user's refresh
+    token lasts are up. The book keeps its last copy and says "sign in again"."""
+
+
 class SyncError(Exception):
     pass
 
@@ -699,7 +709,22 @@ def _save_token(data: dict) -> None:
 
 
 def signed_in() -> bool:
-    return load_client() is not None and load_token() is not None
+    """A client and a refresh token Google still takes (an expired one is
+    not tried again until the next sign-in)."""
+    tok = load_token()
+    return load_client() is not None and tok is not None and not tok.get("expired_at")
+
+
+def _email_of(body: dict) -> str:
+    """The address in a token answer's `id_token` (straight from Google's
+    token endpoint over TLS, so read, not verified), else ""."""
+    raw = str(body.get("id_token") or "")
+    try:
+        part = raw.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+    except (IndexError, ValueError):
+        return ""
+    return str(claims.get("email") or "") if isinstance(claims, dict) else ""
 
 
 def pkce() -> tuple[str, str]:
@@ -712,7 +737,7 @@ def pkce() -> tuple[str, str]:
 def consent_url(client: dict, redirect_uri: str, state: str, challenge: str) -> str:
     return client["auth_uri"] + "?" + urllib.parse.urlencode({
         "client_id": client["client_id"], "redirect_uri": redirect_uri,
-        "response_type": "code", "scope": SCOPE, "state": state,
+        "response_type": "code", "scope": LOGIN_SCOPE, "state": state,
         "code_challenge": challenge, "code_challenge_method": "S256",
         # A refresh token, every time: a second login must get one too.
         "access_type": "offline", "prompt": "consent"})
@@ -770,6 +795,8 @@ def exchange(client: dict, code: str, verifier: str, redirect_uri: str) -> dict:
                           "(remove the app's access at myaccount.google.com first)")
     kept = {"refresh_token": body["refresh_token"], "scope": body.get("scope") or SCOPE,
             "client_id": client["client_id"], "obtained_at": round(time.time(), 3)}
+    if _email_of(body):
+        kept["email"] = _email_of(body)
     _save_token(kept)
     _store_access(body)
     return kept
@@ -785,6 +812,8 @@ def access_token() -> str:
         raise NotSignedIn(f"no OAuth client ({client_path()})")
     if tok is None:
         raise NotSignedIn("not signed in (python -m agent_media_server.contacts login)")
+    if tok.get("expired_at"):
+        raise SignInExpired("Google's sign-in has expired; sign in again")
     status, body = _request("POST", client["token_uri"], form={
         "grant_type": "refresh_token", "refresh_token": tok["refresh_token"],
         "client_id": client["client_id"],
@@ -792,8 +821,11 @@ def access_token() -> str:
     if status != 200 or not body.get("access_token"):
         err = body.get("error") or status
         if err == "invalid_grant":
-            raise NotSignedIn("Google no longer takes the sign-in (revoked or expired); "
-                              "run login again")
+            # Kept as expired, not deleted: the book says "sign in again"
+            # and the sync stops trying until it is.
+            _save_token({**tok, "expired_at": round(time.time(), 3)})
+            raise SignInExpired("Google no longer takes the sign-in (revoked, or the "
+                                "7 days a testing-mode sign-in lasts are up); sign in again")
         raise SyncError(f"token refresh failed ({err})")
     if body.get("refresh_token") and body["refresh_token"] != tok["refresh_token"]:
         _save_token({**tok, "refresh_token": body["refresh_token"]})
@@ -1358,6 +1390,7 @@ def _reset_for_tests() -> None:
     _ACCESS.clear()
     _ACCESSES.clear()
     _ACCESSES[""] = _ACCESS
+    _PENDING.clear()
 
 
 # --- the background sync --------------------------------------------------------
@@ -1507,6 +1540,138 @@ def cmd_login(a) -> int:
     return cmd_sync(argparse.Namespace(full=True, source="google"))
 
 
+# --- the sign-in, from the app (§6.25 "Google, per book") ----------------------
+#
+# The app on the phone runs the loopback listener (Google's Desktop client
+# allows any `http://127.0.0.1:<port>`) and opens the consent page in a
+# Custom Tab; the server keeps the PKCE verifier, so it never leaves here,
+# and the token lands in the caller's book.
+
+#: How long a started sign-in waits for its finish.
+APP_LOGIN_TTL_S = 900.0
+#: Started sign-ins, by state: `{account, verifier, redirect_uri, expires}`.
+_PENDING: dict[str, dict] = {}
+_PENDING_LOCK = threading.Lock()
+
+
+def start_login(port) -> dict:
+    """`POST /contacts/google/login {port}`: the consent URL for this book,
+    redirecting to the app's loopback listener on `port`."""
+    client = load_client()
+    if client is None:
+        raise NotSignedIn("this server has no Google OAuth client")
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        raise ValueError('expected {"port"}: the app\'s loopback port') from None
+    if not 1024 <= port <= 65535:
+        raise ValueError("port must be 1024-65535")
+    state = secrets.token_urlsafe(24)
+    verifier, challenge = pkce()
+    redirect = f"http://127.0.0.1:{port}"
+    now = time.time()
+    with _PENDING_LOCK:
+        for k in [k for k, v in _PENDING.items() if v["expires"] < now]:
+            del _PENDING[k]
+        _PENDING[state] = {"account": account(), "verifier": verifier,
+                           "redirect_uri": redirect, "expires": now + APP_LOGIN_TTL_S}
+    return {"url": consent_url(client, redirect, state, challenge), "state": state,
+            "redirect_uri": redirect, "expires_in": int(APP_LOGIN_TTL_S)}
+
+
+def finish_login(state: str, code: str = "", url: str = "") -> dict:
+    """`POST /contacts/google/finish {state, code | url}`: the code (or the
+    whole redirect address) for a token in this book, then a sync of it.
+    ValueError for an unknown, spent or expired state, or an address that is
+    not this sign-in's; PermissionError for another account's state."""
+    state = str(state or "")
+    with _PENDING_LOCK:
+        p = _PENDING.get(state)
+        if p is None or p["expires"] < time.time():
+            _PENDING.pop(state, None)
+            raise ValueError("that sign-in has expired or was never started; start again")
+        if p["account"] != account():
+            raise PermissionError("that sign-in is not this account's")
+        got = code_from(url or code, state)
+        del _PENDING[state]                    # one use, before Google sees it
+    client = load_client()
+    if client is None:
+        raise NotSignedIn("this server has no Google OAuth client")
+    exchange(client, got, p["verifier"], p["redirect_uri"])
+    _kick_sync(account())
+    return google_state()
+
+
+def _kick_sync(key: str) -> None:
+    """A full Google sync of `key`'s book, off the request's thread."""
+    def run():
+        with as_account(key):
+            try:
+                sync_google(full=True)
+            except Exception as e:  # noqa: BLE001 — said in the book's state
+                log.info("contacts[%s]: google sync after sign-in: %s", key or "owner", e)
+    threading.Thread(target=run, name="contacts-google-signin", daemon=True).start()
+
+
+def google_state() -> dict:
+    """`GET /contacts/google`: this book's Google — `{available, signed_in,
+    email, expired, signed_in_at, last_sync, last_error, contacts}`."""
+    tok = load_token()
+    conn = _connect(create=False)
+    synced = err = None
+    n = 0
+    try:
+        if conn is not None:
+            synced = _meta(conn, "google_synced_at")
+            err = _meta(conn, "google_last_error")
+            n = conn.execute("SELECT COUNT(*) FROM records WHERE kind='google'").fetchone()[0]
+    finally:
+        if conn is not None:
+            conn.close()
+    expired = bool(tok and tok.get("expired_at"))
+    return {"available": load_client() is not None,
+            "signed_in": bool(tok) and not expired, "expired": expired,
+            "email": (tok or {}).get("email") or None,
+            "signed_in_at": (tok or {}).get("obtained_at"),
+            "last_sync": float(synced) if synced else None,
+            "last_error": err, "contacts": n}
+
+
+def sign_out() -> dict:
+    """`POST /contacts/google/signout`: this book forgets Google — the token
+    (revoked at Google when it can be), and Google's records in the book."""
+    tok = load_token()
+    if tok:
+        try:
+            _request("POST", "https://oauth2.googleapis.com/revoke",
+                     form={"token": tok["refresh_token"]}, timeout=10.0)
+        except (OSError, urllib.error.URLError):
+            pass                               # forgotten here either way
+    try:
+        token_path().unlink()
+    except FileNotFoundError:
+        pass
+    _access().clear()
+    with _WRITE:
+        conn = _connect(create=False)
+        if conn is not None:
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                gone = conn.execute("DELETE FROM records WHERE kind='google'").rowcount
+                for k in ("google_sync_token", "google_synced_at", "google_last_error",
+                          "google_failed_at"):
+                    _set_meta(conn, k, None)
+                if gone:
+                    _rebuild(conn)
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+            finally:
+                conn.close()
+    return google_state()
+
+
 def status() -> dict:
     from . import contacts_android
 
@@ -1534,7 +1699,10 @@ def status() -> dict:
             "google": {"client": str(client_path()) if not os.environ.get("MEDIA_GOOGLE_OAUTH_CLIENT")
                        else "MEDIA_GOOGLE_OAUTH_CLIENT",
                        "client_found": load_client() is not None,
-                       "token": str(token_path()), "signed_in": tok is not None,
+                       "token": str(token_path()),
+                       "signed_in": tok is not None and not tok.get("expired_at"),
+                       "expired": bool(tok and tok.get("expired_at")),
+                       "email": (tok or {}).get("email") or None,
                        "signed_in_at": tok.get("obtained_at") if tok else None,
                        **per.get("google", {})},
             "drupal": {"connection": str(_drupal_config_path()), "configured": _drupal_configured(),

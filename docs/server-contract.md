@@ -4110,6 +4110,64 @@ lacks (a name and a number or address each), **a dry run unless `--go`**
 their numbers are added, so a second run adds nobody. Addresses are not
 seeded: the card holds them as text, the CRM's address field wants parts.
 
+**Google, per book** (18 Oct 2026; David: "let's do it but keep it in
+testing mode for now"). Each account signs its own book in to Google from
+the app; the token lands in the caller's book (§ "Whose book") and nowhere
+else. The OAuth client is the host's one Desktop client (above), so the app
+runs the loopback listener: it listens on `127.0.0.1:<port>` on the phone,
+opens the consent page in a Custom Tab (Google refuses sign-in inside a
+WebView), and hands back what the redirect carried. The PKCE verifier stays
+on the server. A sign-in asks for `openid email contacts.readonly` (`email`
+is not a sensitive scope), so the book can say whose Google it reads.
+Pinned by `packages/server/tests/test_contacts_google_signin.py`.
+
+**Testing mode.** The Google project stays in testing: only the test users
+added on its OAuth consent screen (at most 100) can sign in, and Google
+ends a test user's refresh token after **7 days**. A refresh Google refuses
+(`invalid_grant`) marks the book's Google **expired**: the token is kept
+with `expired_at`, the sync stops trying it, the last good copy of the
+contacts stays, and `GET /contacts/google` says `"expired": true` so the
+app offers "Sign in again". A new sign-in clears it.
+
+#### `GET /contacts/google` — gated (`auth.gate`)
+
+```json
+{"ok": true,
+ "google": {"available": true, "signed_in": true, "expired": false,
+            "email": "kat@gmail.com", "signed_in_at": 1792300000.1,
+            "last_sync": 1792300004.2, "last_error": null, "contacts": 412}}
+```
+
+`available` is whether this server has an OAuth client at all (false: the
+app hides the row's Sign in). `email` is `null` for a sign-in made before
+the `email` scope was asked. `contacts` counts Google's records in the book.
+
+#### `POST /contacts/google/login {"port"}` — gated (`auth.gate`)
+
+→ `{"ok": true, "url", "state", "redirect_uri": "http://127.0.0.1:<port>",
+"expires_in": 900}`. Open `url`; Google redirects to `redirect_uri` with
+`?state=…&code=…` (or `error=…`). The state is good for 15 minutes, once,
+and only for the account that started it. 400 for a missing or privileged
+port (1024–65535); 503 `"no_client": true` when the server has no OAuth
+client.
+
+#### `POST /contacts/google/finish {"state", "code" | "url"}` — gated
+
+`url` is the whole redirect address (its `state` must match), `code` the
+bare code. → `{"ok": true, "google": <as GET>}` once the token is kept; a
+full sync of the book's Google then runs in the background (`last_sync`
+moves when it is done). 400 for an unknown, spent or expired state, or an
+address from another sign-in or carrying Google's `error`; **403 for a
+state another account started** (it stays that account's to finish); 502
+when Google refuses the code or cannot be reached.
+
+#### `POST /contacts/google/signout` — gated
+
+The book forgets Google: the refresh token is revoked at Google (best
+effort) and deleted, and Google's records leave the book (the phone's, for
+the owner, stay). → `{"ok": true, "google": <as GET>}`. A POST rather than
+a DELETE, as `/me/signout` is.
+
 ### 6.25a A contact's timeline — gated (18 Oct 2026)
 
 "When did I last talk to them?" (proposal, "Timeline"). Daily rollups —

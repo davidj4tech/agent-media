@@ -242,9 +242,12 @@ def test_an_access_token_google_ended_early_is_refreshed_once(google):
 
 def test_a_revoked_sign_in_says_so(google):
     google.token = "rt-other"                   # Google no longer takes ours
-    with pytest.raises(contacts.NotSignedIn, match="login again|run login"):
+    with pytest.raises(contacts.SignInExpired, match="sign in again"):
         contacts.sync_google()
-    assert "no longer takes" in contacts.status()["google"]["last_error"]
+    st = contacts.status()["google"]
+    assert "no longer takes" in st["last_error"]
+    # Kept as expired: said, and not tried again until the next sign-in.
+    assert st["expired"] and not st["signed_in"] and "google" not in contacts.sources()
 
 
 def test_card_of_reads_googles_fields():
@@ -313,7 +316,7 @@ def test_pkce_and_the_consent_url():
         "client_id": "cid", "auth_uri": contacts.AUTH_URI}, "http://127.0.0.1:5555", "st", ch)
     q = {k: v[0] for k, v in urllib.parse.parse_qs(urllib.parse.urlsplit(url).query).items()}
     assert q == {"client_id": "cid", "redirect_uri": "http://127.0.0.1:5555",
-                 "response_type": "code", "scope": contacts.SCOPE, "state": "st",
+                 "response_type": "code", "scope": contacts.LOGIN_SCOPE, "state": "st",
                  "code_challenge": ch, "code_challenge_method": "S256",
                  "access_type": "offline", "prompt": "consent"}
 
