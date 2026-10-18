@@ -18,6 +18,10 @@ interface ActivityInterface extends ContentEntityInterface, EntityChangedInterfa
   public const CHANNELS = [
     'sms' => 'Text',
     'signal' => 'Signal',
+    'messenger' => 'Messenger',
+    'instagram' => 'Instagram',
+    'teams' => 'Teams',
+    'whatsapp' => 'WhatsApp',
     'call' => 'Call',
     'email' => 'Email',
     'note' => 'Note',

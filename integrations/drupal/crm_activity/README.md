@@ -13,7 +13,7 @@ module, though: it is a plain content entity.
 
 - **`crm_activity`**, a content entity with these fields:
   - `contact` → `crm_contact` (required)
-  - `channel`: `sms`, `signal`, `call`, `email` or `note`
+  - `channel`: `sms`, `signal`, `messenger`, `instagram`, `teams`, `whatsapp`, `call`, `email` or `note`
   - `day`: a date
   - `count_in`, `count_out`, `duration` (seconds on calls)
   - `summary`
