@@ -24,16 +24,21 @@ than maintained by hand.
 ## Reference
 
 - [channel-architecture](reference/channel-architecture.md) — how the channels fit together
-- [channels](reference/channels.md) — the channels in detail
+- [channels](reference/channels.md) — the channels in detail; mpv speed and MPRIS notes
+- [claude-code-hooks](reference/claude-code-hooks.md) — what `media-setup profile` registers in Claude Code, and how asks, answers and slash commands reach a thread
 - [control-surface](reference/control-surface.md) — the control layer
 - [extensions](reference/extensions.md) — extending agent-media
+- [follow-along](reference/follow-along.md) — the highlight that follows speech, in tmux and in the app
+- [harnesses](reference/harnesses.md) — finding, reading and opening Claude Code, Codex, pi and the other agents' sessions
 - [hermes-voice](reference/hermes-voice.md)
 - [music-local-and-snapcast](reference/music-local-and-snapcast.md)
 - [input-claim](reference/input-claim.md) — who owns David's next utterance when the owner is off-host (cece live)
 - [restructure](reference/restructure.md) — the package layout and how it got there
 - [rooms-unit-ownership](reference/rooms-unit-ownership.md)
 - [sillytavern](reference/sillytavern.md)
+- [speech-phone-lane](reference/speech-phone-lane.md) — speech to the phone as frames or through the relay; "speaking but silent"
 - [speech-phone-render-grade-b](reference/speech-phone-render-grade-b.md) — the phone lane
+- [speech-queue](reference/speech-queue.md) — playback order, priority, barge-in, and diagnosing late speech
 - [version-skew-monitoring](reference/version-skew-monitoring.md)
 
 ## Decisions

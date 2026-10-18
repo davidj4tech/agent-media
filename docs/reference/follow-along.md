@@ -103,6 +103,77 @@ playlist; `cmd_replay_track` drives it from the row exactly as the live follower
 does, and goes through the same highlight scheduler, so a replay of something
 scrolled out of view takes the status rows as a live reply would.
 
+## The app's clock
+
+The Sasonica app's bold, and the speech bar's sentence, follow a timeline
+on the clock rather than the player. `book_tracks._live_turn` hands them
+`elapsed` and `offsets` from the speech now-playing row:
+
+- **`elapsed`** is wall time since `play_started_at`, frozen at `paused_at`
+  (`elapsed_from_row`). `play_started_at` is stamped when the first sentence
+  starts playing (`_stamp_start`). Falling back to `started_at`, which is
+  stamped at submit, put the bold ~10 s ahead on a measured reply
+  (19 Sep 2026).
+- **`offsets`** are `clip_offsets_s` (positions inside one combined clip),
+  else the measured `clip_starts_s` with the sentences still to come
+  predicted from the last measured start plus clip lengths, else summed
+  `clip_durations_s`. Summed durations leave out the gaps between clips;
+  measured starts include them. Before a reply has measured its own gap,
+  `CLIP_GAP_S` (0.3 s) is assumed.
+
+Claude Code replies to the phone go through the per-clip lane (`_mark` and
+`_stamp_start` in `intake/submit.py`), not `submit_stream`. Never write
+`clip_offsets_s` for a per-clip lane: `media skip` reads it as positions
+inside one clip.
+
+### Two clocks
+
+`/speech/now`'s `pos` on the phone lane is built from summed clip durations
+plus `time-pos` (`cli._remote_snapshot`, `_as_response_timeline`): no
+gaps. The live frame's `elapsed` is wall time. The app corrects one against
+the other (`useElapsedSkew`) and reads `elapsed - pos` as lag, so anything
+that puts wall time into `clip_starts_s` that the durations lack shows up
+as skew. A large positive `delay` in the trace means skipped time, a
+re-stamp or a wait became a hole in the starts; a forward skip makes the
+opposite gap. (16 Oct 2026: presses of previous re-stamped the sentence at
+"now", and the bold held back 54 s. A backward move now keeps the old start
+and moves the origin on.) `wall_position` writes `live_pos_s` on the wall
+clock for the same reason.
+
+### Follow on the clock, check with an answer-only read
+
+A phone read costs seconds and trips the shared breaker when polled (see
+[speech-phone-lane.md](speech-phone-lane.md)). Code that follows phone
+playback must use the row's clock (`play_started_at`, `elapsed_from_row`),
+and must never treat a refused read as "ended": that cleared now_playing
+while the phone kept talking, and the app lost its mini player and bold.
+
+The clock alone cannot see the player go away (an app install kills it, and
+the bold read on in silence). So the replay follower asks the player in a
+side thread every `_REPLAY_ALIVE_EVERY_S` (1.5 s, faster when the read is
+cheap): no answer is ignored, and only idle answers spanning that interval
+end the follow and stamp where it stopped. Anything new that follows on the
+clock needs the same answer-only check.
+
+## Diagnosing
+
+The server's side leaves a record: the now-playing row, and the replay
+follower's `replay-anchor.log`. The app's corrections (transit, skew, its
+per-device lead) do not, so the app posts each move of the bold to
+`POST /follow/trace` (`agent_media_server/follow_trace.py`). Each batch is
+written beside the row as it stood when the batch arrived, one JSON line per
+batch, to `$XDG_STATE_HOME/agent-media/follow-trace.log` (newest
+`KEEP_LINES` kept).
+
+When someone says the bold is off, read that reply's lines first. Per event:
+`idx`, `elapsed`, `delay`, `skew`, `lead`, `off`, `next_off`, `paused`, `src`;
+per row: `play_started_at`, `paused_at`, `current_sentence_idx`,
+`clip_offsets_s`, `clip_starts_s`, `clip_durations_s`, `live_pos_s`,
+`live_pos_at`. To put the phone's times on the server's clock, join each
+move to the row's `play_started_at` plus offsets.
+
+To check the server side alone, sample the `now_playing` row during a reply.
+
 ## The transcript dump, removed 2026-08-11
 
 There used to be a fourth answer to the fullscreen problem, opt-in behind

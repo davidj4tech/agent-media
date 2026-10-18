@@ -34,6 +34,23 @@ players are NOT rivals, they're control surfaces landing on different channels.
 - transport keybindings in tmux.conf -> playerctl / mpc
 - Works regardless of chosen player, as long as it speaks MPRIS or MPD.
 
+## YouTube is fetched by the phone, not the server
+
+YouTube blocks downloads from data-centre IP ranges, so a server on a VPS
+cannot fetch a clip for itself (David, 3 Oct 2026). The `sasonica` music
+target (`sinks/music_sasonica.py`) therefore has the phone download it
+(`play-local --fetch-only`, skipped when the phone already has it) and hands
+the app a loopback URL on the phone's music-files service
+(`MEDIA_MUSIC_SASONICA_FILES`, default `http://localhost:6616`). Downloading
+on the server and serving it over a tunnel is not an option however fast the
+tunnel is. The server-side route the `abs` target uses (`music_app.resolve`)
+is only the fallback when the phone has no copy, and it is slow over a
+mobile link (~8 KB/s measured, 28 Sep 2026).
+
+Any new YouTube feature has the same constraint. Only *how* the server asks
+the phone to fetch may change (today over ssh to the phone; off the tailnet,
+the phone would take the job over its own outbound connection).
+
 ## Open / parked ideas
 
 - Public / venue listening channels via **Shoutcast** (spas, bath houses) —

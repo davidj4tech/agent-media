@@ -368,3 +368,54 @@ CLI dispatch is unit-tested (`tests/test_cli.py`, fake server) and verified
 end-to-end against a real mpv broker (isolated state dir, `ao=null`): playlist
 new/add/ls/play, cross-process `status`/`now`/`channels`, next/prev, speed,
 bed, focus, stop. Full suite 130 pass.
+
+## mpv notes (current)
+
+Two mpv behaviours that cost a fortnight between them (measured on mpv 0.40,
+Aug 2026). Both live in the sink run scripts
+(`packages/core/services/sink-speech/run`, `sink-book/run`) and
+`entrypoints/sink_speech.py`.
+
+- **Keep `--audio-pitch-correction=yes`.** `no` does not just suppress a
+  duplicate filter: mpv then applies speed by *resampling* and never hands it
+  to any scaletempo2, so 200 Hz at 1.5× becomes 300 Hz. Pitch correction is
+  what makes mpv insert scaletempo2 at all. (`MEDIA_SPEECH_PITCH_CORRECTION`
+  overrides it; leave it alone.)
+- **A scaletempo2 pinned in `--af` never receives a speed change.** Setting
+  `speed 1.6` on a pinned chain plays at 1.18×; auto-inserted it plays at
+  1.64×. The property reads back 1.6 either way, and the real rate arrives
+  with the next file, when the graph is rebuilt: "the speed control only
+  changes the next sentence". The pin exists because on **openal / opensles**
+  (Android, device opened directly) each graph rebuild re-inits the output
+  and is heard as an underrun. So both sinks pin it only on those outputs and
+  leave it to mpv on a mixing server (pulse).
+
+To measure speed without listening: mute, then compare `time-pos` deltas over
+6-8 s against wall time.
+
+## MPRIS
+
+The speech, book and music mpv instances expose MPRIS (via mpv-mpris), so
+`playerctl -l` lists them beside Mopidy. MPRIS is published for outside
+consumers only: nothing in agent-media reads its own state back through it
+(the status path reads the mpv sockets directly).
+
+- **Debian's mpv-mpris autoloads** from `/etc/mpv/scripts` for any mpv
+  started without `--no-config`. The book broker runs `--no-config`, so it
+  loads the plugin explicitly (`--script=/usr/lib/mpv-mpris/mpris.so`, in its
+  unit and in `sinks/book.py`'s autospawn).
+- **An mpv's bus name is not its identity.** mpv-mpris takes
+  `org.mpris.MediaPlayer2.mpv`, and when that is taken appends a random
+  suffix (`mpv.instance-sLDnmIKJ`); nothing in the name says which mpv it is.
+  `route/_mpris.py` (`is_own_player`) goes from bus name to owner PID to
+  `/proc/<pid>/cmdline` and matches the socket paths and audio-client-names
+  the sinks are launched with (`_OWN_MPV_MARKERS`).
+- **It fails closed.** An mpv that cannot be identified is treated as ours
+  and not paused before speech. Mistaking our own broker for a stranger
+  pauses speech mid-sentence; the other mistake only leaves some audio
+  playing under a clip.
+- **Mopidy-MPRIS hardcodes `org.mpris.MediaPlayer2.mopidy`**, lowercase, not
+  configurable. Two Mopidy instances cannot both expose it, so only one
+  should load `[mpris]`. Matching is case-insensitive (`_EXCLUDE_PREFIX`).
+- `MEDIA_MPRIS_PAUSE=0` turns the pause-for-speech off;
+  `MEDIA_MPRIS_SSH_HOSTS` also pauses players on other hosts.
