@@ -1400,8 +1400,6 @@ ahead.
   in that test); it passes on its own.
 - The About page shows the server host but no server version (no route).
 - The Windows install test leaves stray PATH entries.
-- A stale saved question for a session may not clear after it's answered
-  (the PostToolUse clear may not fire).
 - Sasonica's speech service starts after a reboot or an update as `specialUse`
   (Android 15 will not start `mediaPlayback` from `BOOT_COMPLETED`), since
   26 Sep 2026 — not yet seen through a real reboot.

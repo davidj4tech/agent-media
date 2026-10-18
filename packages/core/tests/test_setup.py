@@ -821,7 +821,7 @@ def test_the_speech_hook_goes_where_it_works(tmp_path, monkeypatch):
     got = {ev: [h for g in settings["hooks"][ev] for h in g["hooks"]]
            for ev in settings["hooks"]}
     assert set(got) == {"Stop", "Notification", "PreToolUse", "PostToolUse",
-                        "UserPromptSubmit"}
+                        "PostToolUseFailure", "UserPromptSubmit"}
     assert got["Stop"][0] == {"type": "command", "command": "media-hook-claude-code",
                               "timeout": 120, "async": True}
     assert got["Notification"][0]["timeout"] == 30
@@ -837,7 +837,7 @@ def test_the_ask_hooks_are_matched_to_the_ask(tmp_path):
     it is answered, so the options are still being read to someone who has
     already chosen. Unmatched, these two would spawn a process per tool call."""
     settings, _ = setup._merge_hooks({}, "media-hook-claude-code")
-    for event in ("PreToolUse", "PostToolUse"):
+    for event in ("PreToolUse", "PostToolUse", "PostToolUseFailure"):
         groups = settings["hooks"][event]
         assert [g.get("matcher") for g in groups] == ["AskUserQuestion"]
     assert [g.get("matcher") for g in settings["hooks"]["Stop"]] == [None]

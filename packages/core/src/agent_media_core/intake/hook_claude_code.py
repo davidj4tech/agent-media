@@ -1209,10 +1209,17 @@ def _handle_posttooluse(payload: dict) -> int:
     nobody can see. It goes down the same path as a typed prompt, so it is
     rendered in the listener's voice and lands in the conversation exactly
     like one.
+
+    PostToolUseFailure comes here too: a question answered by typing a
+    message instead of choosing ends as a failed tool call, so PostToolUse
+    never fires, and its read-out stayed waiting until the thread was next
+    opened and played it (18 Oct 2026). It is cleared the same way; the
+    typed words are recorded by the path that sent them, not here.
     """
     if payload.get("tool_name") != "AskUserQuestion":
         return 0
-    text = answers_from_response(payload.get("tool_response"))
+    failed = payload.get("hook_event_name") == "PostToolUseFailure"
+    text = "" if failed else answers_from_response(payload.get("tool_response"))
     session = payload.get("session_id") or ""
     try:
         from agent_media_core import pending_asks
@@ -1380,7 +1387,7 @@ def main() -> int:
     try:
         if event_name == "PreToolUse":
             return _handle_pretooluse(payload)
-        if event_name == "PostToolUse":
+        if event_name in ("PostToolUse", "PostToolUseFailure"):
             return _handle_posttooluse(payload)
         if event_name == "Notification":
             return _handle_notification(payload)

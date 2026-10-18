@@ -89,6 +89,7 @@ CLAUDE_HOOK_TIMEOUT = 30
 CLAUDE_HOOK_SPEC = (("Stop", 120, True, None), ("Notification", 30, True, None),
                     ("PreToolUse", 30, True, "AskUserQuestion"),
                     ("PostToolUse", 30, True, "AskUserQuestion"),
+                    ("PostToolUseFailure", 30, True, "AskUserQuestion"),
                     ("UserPromptSubmit", 10, True, None))
 CLAUDE_HOOK_EVENTS = tuple(event for event, _, _, _ in CLAUDE_HOOK_SPEC)
 

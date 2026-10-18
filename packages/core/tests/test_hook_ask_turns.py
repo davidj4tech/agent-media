@@ -109,6 +109,33 @@ def test_the_answer_is_recorded_as_a_listener_turn(monkeypatch):
     assert not recorded
 
 
+
+def test_a_question_answered_by_typing_is_cleared_and_records_nothing(monkeypatch):
+    """Typing instead of choosing fails the tool call: PostToolUseFailure,
+    not PostToolUse. The read-out must still be cut and dropped (it played
+    six minutes later when the thread was opened, 18 Oct 2026), and the
+    error text is not the listener's words."""
+    recorded, cut, dropped, cleared = [], [], [], []
+    monkeypatch.setattr(H, "_record_listener_text",
+                        lambda s, t: recorded.append((s, t)) or 0)
+    monkeypatch.setattr(H, "_stop_playing_ask", lambda s: None)
+    monkeypatch.setattr(H, "load_env_file", lambda *a: None)
+    from agent_media_core import pending_asks
+    from agent_media_core.intake import submit, toast
+    monkeypatch.setattr(pending_asks, "clear", lambda s, t="": cleared.append((s, t)))
+    monkeypatch.setattr(submit, "request_session_speech_cut",
+                        lambda s, why: cut.append((s, why)))
+    monkeypatch.setattr(toast, "drop_asks", lambda s: dropped.append(s))
+    monkeypatch.setattr("sys.stdin", __import__("io").StringIO(__import__("json").dumps({
+        "hook_event_name": "PostToolUseFailure", "tool_name": "AskUserQuestion",
+        "session_id": "s1", "tool_use_id": "t1",
+        "error": "The user answered by typing a message instead of choosing"})))
+    assert H.main() == 0
+    assert cleared == [("s1", "t1")]
+    assert cut == [("s1", "ask")]
+    assert dropped == ["s1"]
+    assert not recorded
+
 # --- slash commands ----------------------------------------------------------
 
 def test_a_work_command_becomes_a_turn_and_a_settings_one_does_not(monkeypatch):
