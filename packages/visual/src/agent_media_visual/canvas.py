@@ -1581,52 +1581,112 @@ def ctl_argv(channel: str, action: str, arg: int,
 
 
 # The page ships as three real files (static/canvas.{html,css,js} — lintable,
-# highlightable, no double-escaped regexes) and is assembled once at import
-# into the same single self-contained response as before: one request, no
-# asset-version skew on a wall page that reconnects across deploys.
-def _page() -> str:
-    from importlib import resources
-    static = resources.files(__package__) / "static"
+# highlightable, no double-escaped regexes) assembled into the same single
+# self-contained response as before: one request, no asset-version skew on a
+# wall page that reconnects across deploys.
+#
+# Assembled when its files change, not once at import. It used to be read at
+# import, so every page change — a pull, a reinstall — needed a canvas restart
+# on every host that runs one (red5, the phone, any other install), and a
+# missed restart looked like a deploy that did nothing. Now each request costs
+# one stat per file and the bytes are re-read only when a file's mtime or size
+# moves; a file touched in the last second is left until it settles, so a
+# deploy caught half-written is never served (or reloaded onto) mid-copy.
+_STATIC = Path(__file__).resolve().parent / "static"
+_SETTLE_S = 1.0
 
-    def read(name: str) -> str:
-        return (static / name).read_text(encoding="utf-8")
 
-    return (read("canvas.html")
-            .replace("/*__CANVAS_CSS__*/", read("canvas.css"))
-            .replace("//__CANVAS_JS__", read("canvas.js")))
+class _Assembled:
+    """Text built from files under static/, rebuilt when any of them changes."""
+
+    def __init__(self, names: tuple[str, ...], build) -> None:
+        self.names = names
+        self.build = build
+        self.lock = threading.Lock()
+        self.sig: Optional[tuple] = None
+        self.text = ""
+        self.id = ""
+
+    def _stat(self) -> tuple:
+        out = []
+        for n in self.names:
+            st = (_STATIC / n).stat()
+            out.append((st.st_mtime_ns, st.st_size))
+        return tuple(out)
+
+    def get(self) -> tuple[str, str]:
+        """(text, id) — the id a digest of the text, so same bytes, same id."""
+        try:
+            sig = self._stat()
+        except OSError:
+            sig = None                      # a file mid-replace: keep what we have
+        with self.lock:
+            if sig is None or sig == self.sig:
+                return self.text, self.id
+            newest = max(m for m, _ in sig) / 1e9
+            if self.sig is not None and time.time() - newest < _SETTLE_S:
+                return self.text, self.id   # still being written: next request
+            try:
+                text = self.build(lambda n: (_STATIC / n).read_text(encoding="utf-8"))
+            except OSError:
+                return self.text, self.id
+            self.sig, self.text = sig, text
+            self.id = hashlib.sha256(text.encode()).hexdigest()[:12]
+            return self.text, self.id
 
 
-PAGE = _page()
+_PAGE = _Assembled(("canvas.html", "canvas.css", "canvas.js"),
+                   lambda read: (read("canvas.html")
+                                 .replace("/*__CANVAS_CSS__*/", read("canvas.css"))
+                                 .replace("//__CANVAS_JS__", read("canvas.js"))))
 
 # The picture on its own, for when one is tapped rather than watched: full
 # screen, and landscape with it. Small enough to stay one file — it has no SSE,
 # no state and no channel, and splitting three files off a single <img> and one
 # button would be filing for its own sake.
-def _view_page() -> str:
-    from importlib import resources
-    return ((resources.files(__package__) / "static" / "view.html")
-            .read_text(encoding="utf-8"))
+_VIEW = _Assembled(("view.html",), lambda read: read("view.html"))
 
 
-VIEW_PAGE = _view_page()
+def page() -> str:
+    """The canvas page as it is on disk now (cached while unchanged)."""
+    global PAGE, PAGE_ID
+    PAGE, PAGE_ID = _PAGE.get()
+    return PAGE
+
+
+def page_id() -> str:
+    page()
+    return PAGE_ID
+
+
+def view_page() -> str:
+    global VIEW_PAGE
+    VIEW_PAGE = _VIEW.get()[0]
+    return VIEW_PAGE
+
 
 # What THIS page is, so a screen can tell it is holding an old one.
 #
-# The page is assembled once at import, which is the right trade for serving it
-# — but it means a canvas restarted behind a screen serves something that
-# screen will never ask for. Nothing in the client ever reloaded the document:
-# the SSE watchdog reconnects the stream, and the stream is not the page. So a
-# wall left open across a deploy, a phone browser tab, and the app's WebView
-# all keep whatever they loaded, for as long as they stay open. Reported, twice
-# and reasonably, as "the canvas keeps reverting to the old version" — it never
-# reverted, it never moved.
+# A page loaded once stays loaded: nothing in the client ever reloaded the
+# document on its own — the SSE watchdog reconnects the stream, and the stream
+# is not the page. So a wall left open across a deploy, a phone browser tab,
+# and the app's WebView all kept whatever they loaded, for as long as they
+# stayed open. Reported, twice and reasonably, as "the canvas keeps reverting
+# to the old version" — it never reverted, it never moved. The stream opens
+# with a hello naming the page, and sends another when the page on disk
+# changes under an open stream (see _sse); a page told of a different one
+# reloads itself, once, between replies.
 #
 # A digest of the page rather than a boot id or a timestamp: canvases get
 # restarted for reasons that have nothing to do with the page (a bind address
 # changing, a crash, a machine rebooting), and blanking every screen in the
 # house for those would be a worse fault than the one being fixed. Same bytes,
-# same id, nobody reloads.
-PAGE_ID = hashlib.sha256(PAGE.encode()).hexdigest()[:12]
+# same id, nobody reloads — a touched file with the same content included.
+PAGE = PAGE_ID = VIEW_PAGE = ""
+page()
+view_page()
+#: How often an open stream looks for a new page (a few stats, no read).
+_PAGE_CHECK_S = 2.0
 
 
 # The routes a browser on another origin may reach, the app's speech verbs and
@@ -1687,7 +1747,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         path, _, query = self.path.partition("?")
         if path == "/":
-            self._send(200, PAGE.encode(), "text/html; charset=utf-8")
+            self._send(200, page().encode(), "text/html; charset=utf-8")
         elif path == "/pageid":
             # Which page this canvas would serve, for a client that cannot ask
             # the page itself. The SSE hello tells a RUNNING page it has gone
@@ -1695,7 +1755,7 @@ class Handler(BaseHTTPRequestHandler):
             # existed — and none at all to the app, whose WebView is a
             # container the page's own JS cannot reload out from under. So the
             # digest is also readable from outside, cheaply, with no stream.
-            self._send(200, (PAGE_ID + "\n").encode(), "text/plain")
+            self._send(200, (page_id() + "\n").encode(), "text/plain")
         elif path == "/healthz":
             self._send(200, b"ok\n", "text/plain")
         elif path == "/seen":
@@ -1851,16 +1911,17 @@ class Handler(BaseHTTPRequestHandler):
         if self._wants_viewer(query):
             # The viewer reads the picture off its own address, so there is
             # nothing to substitute into it and nothing to escape.
+            body = view_page().encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(VIEW_PAGE.encode())))
+            self.send_header("Content-Length", str(len(body)))
             self.send_header("Vary", "Accept, Sec-Fetch-Dest")
             # Never cached: the page is small, and a cached viewer at an
             # address that also has to serve bytes is the same trap as above
             # pointing the other way.
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
-            self.wfile.write(VIEW_PAGE.encode())
+            self.wfile.write(body)
             return
         data = f.read_bytes()
         ctype = "image/webp" if name.endswith(".webp") else \
@@ -1894,17 +1955,34 @@ class Handler(BaseHTTPRequestHandler):
             # is the page you should be running. A client holding another one
             # reloads itself. Reconnects are exactly when a restart has
             # happened, so this costs one small frame and needs no polling.
-            self._event({"kind": "hello", "page": PAGE_ID})
+            sent = page_id()
+            self._event({"kind": "hello", "page": sent})
             if HUB.last is not None:
                 self._event(HUB.last)
             if HUB.last_state is not None:
                 self._event(HUB.last_state)
             if HUB.last_video is not None:
                 self._event(HUB.last_video)
+            checked = framed = time.monotonic()
             while True:
+                # The page changed on disk under this open stream (a pull, a
+                # reinstall — no restart any more, so no reconnect either):
+                # say so with another hello, once per change. The page waits
+                # out a reply before it reloads, and the reload fetches the
+                # page this id names, so it does not loop.
+                if time.monotonic() - checked >= _PAGE_CHECK_S:
+                    checked = time.monotonic()
+                    now = page_id()
+                    if now != sent:
+                        sent = now
+                        self._event({"kind": "hello", "page": sent})
                 try:
-                    self._event(q.get(timeout=15))
+                    self._event(q.get(timeout=_PAGE_CHECK_S))
+                    framed = time.monotonic()
                 except queue.Empty:
+                    if time.monotonic() - framed < 15:
+                        continue
+                    framed = time.monotonic()
                     # A real data frame, not an SSE `: comment` — EventSource
                     # ignores comments, so a comment heartbeat can't drive the
                     # client's stall watchdog. onmessage fires on this (#137).

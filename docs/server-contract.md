@@ -3952,7 +3952,7 @@ per-thread stream copies its conventions.
 
 | Frame | Payload |
 | --- | --- |
-| `hello` | `{"kind": "hello", "page": "<12-hex digest of the page>"}` — a client holding a different page reloads |
+| `hello` | `{"kind": "hello", "page": "<12-hex digest of the page>"}` — first frame of every connection, and sent again (within ~2 s) when the page's files change on disk; the canvas re-reads them on change, so a page change needs no restart. A client holding a different page reloads, once, after the current reply |
 | `state` | `{"kind": "state", "speaking", "paused"?, "pos"?, "dur"?, "sentence"?, "visual"?, "speed"?, "muted"?, "session"?, "lines"?: [...], "lidx"?, "wake"?}` — ~1 Hz while speaking, on change otherwise |
 | show | `{"image": "/img/…"}` or `{"sequence": [{"image", "at": 0..1}], "estdur", "gen_secs"}`, plus `caption`, `prompt`, `purpose`, `session`, `t`, `wake`? |
 | `video` | `{"kind": "video", "vid": null \| "<yt id>", "chan", "ts"?, "t"?, "paused"?, "rate"?}` |

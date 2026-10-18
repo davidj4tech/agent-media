@@ -501,8 +501,9 @@
         // The first one is the page we are running: we loaded it from this
         // server moments ago, so whatever it says is by definition ours. A
         // later one that disagrees means the server's page changed under us —
-        // the canvas was restarted with new assets — and this document is now
-        // the old version. Nothing else in the client ever noticed that: the
+        // its files changed on disk (no restart needed) or the canvas came
+        // back with new ones — and this document is now the old version.
+        // Nothing else in the client ever noticed that: the
         // watchdog reconnects the STREAM, and the stream is not the page.
         if (!pageId) pageId = d.page;
         else if (d.page && d.page !== pageId) wantReload();

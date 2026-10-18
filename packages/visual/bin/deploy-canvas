@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Roll the canvas onto every screen that serves one.
 #
-# The page is assembled at import and served from memory, so a commit changes
-# nothing anywhere until each canvas is restarted -- and there is more than one
-# canvas. red5 runs the wall's (systemd user unit); the phone runs its own
+# The page (static/) is re-read when its files change and open screens are
+# told to reload, so a page-only change needs no restart (18 Oct 2026). Python
+# changes still do: a commit to the canvas's code changes nothing anywhere
+# until each canvas is restarted -- and there is more than one canvas. red5 runs the wall's (systemd user unit); the phone runs its own
 # local control surface (runit, loopback-bound) out of its own checkout.
 #
 # This exists because doing it by hand is doing it from memory, and memory is
