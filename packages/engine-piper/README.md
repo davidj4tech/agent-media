@@ -41,7 +41,8 @@ any other named voice the first time it's requested.
 
 ## Licence
 
-Piper is GPL-3.0. This package is MIT and stdlib-only: it talks to Piper over
+Piper is GPL-3.0. This package is Apache-2.0, like the rest of agent-media
+(docs/decisions/2026-09-22-licensing.md), and stdlib-only: it talks to Piper over
 HTTP and never imports or ships it, so Piper stays a separate program. Keep it
 that way. An `import piper` here would bring the package under the GPL.
 

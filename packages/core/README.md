@@ -31,8 +31,23 @@ intake/  ─►  route/  ─►  render/  ─►  sinks/
 ## Configuration
 
 All settings are read from environment variables. Put them in
-`~/.config/agent-audio-relay.env` (sourced by every hook and the `media`
-CLI on startup).
+`~/.config/agent-media.env` (read by every hook and the `media` CLI on
+startup; the legacy `~/.config/agent-audio-relay.env` is still read after
+it, and the package's own `defaults.env` last).
+
+The loader (`intake/_env.py:load_env_file`) only fills variables that are
+**unset**: anything already exported wins. A long-lived tmux server is the
+usual culprit when an edit to the file seems to change nothing. It keeps the
+global environment it started with and hands it to every pane, popup and
+hook, so a value exported before the edit stays in force, and a new session
+in the same server does not help. Compare
+`tmux show-environment -g | grep -E '^(MEDIA|TTS)_'` and your shell's
+`env | grep MEDIA_` with the file, and clear a stale one with
+`tmux set-environment -gr <VAR>` (no restart needed). An empty variable
+counts as unset; one set to `-` switches a setting off for that process.
+
+Host roles and peers live in `~/.config/agent-media/config.toml`
+(`media-setup init` writes a starter one); see *Host roles* under Services.
 
 ### TTS / render
 
@@ -202,6 +217,48 @@ order: explicit pin → stable hash of the session name → `MEDIA_RENDER_VOICE`
 `media-setup` (bundled CLI) installs and wires up all services. It
 auto-detects the init system (runit on Termux / host-runit, systemd
 `--user` on regular Linux).
+
+### Host roles
+
+Which services a host gets is chosen by its roles, read from `MEDIA_ROLES`,
+then `[host] roles` in `~/.config/agent-media/config.toml`, then the older
+`~/.config/agent-media-roles` file:
+
+- `observe`: a mic or dialer worth watching (gets `call-guard`)
+- `render`: audio sinks that can be silenced (gets `call-hold-consumer`,
+  `speech-state`)
+- `origin`: produces the text to be spoken (gets `media-sessiond`, the feed)
+
+Each `services/<name>/roles` file says `requires:`, `conflicts:`,
+`requires-env:` or `requires-config:`. `call-hold-consumer` **conflicts**
+with `observe` rather than only requiring `render`: it is `call-guard` with
+detection off, and two of them on one speech socket read each other's pause
+as "already paused" and break barge-in intermittently. Peers go in a
+`[peers.<alias>]` table (`host`, `roles`); code asks for `peer("origin")` or
+`peers_with("render")` and never names a machine. A standalone host is just
+an empty peers table.
+
+**Packaging trap.** `services/`, `tmux/`, `bin/`, `opencode/` and `pi/` sit
+beside the package in the repo and are copied into the wheel by
+`hatch_build.py` (`TEMPLATE_DIRS`), file by file so runit's named pipes
+under `supervise/` are skipped. An editable install finds them anyway, so a
+missing one only shows on a real install: `install-services` then finds no
+templates and reports success. A new data directory under `packages/core/`
+must be added to `TEMPLATE_DIRS`.
+
+### Termux services
+
+A runit service starts without `XDG_RUNTIME_DIR`, so `pactl` cannot find
+PulseAudio and reports "Connection refused" while it runs fine. The speech
+and book sinks choose their audio output from that probe, so a failed probe
+meant `--ao=openal`, which on Android opens a device that is already held and
+then reports every clip as played with no sound. The `sink-speech` and
+`sink-book` run scripts set `: "${XDG_RUNTIME_DIR:=$HOME/tmp}"` before
+probing. Any other runit service that plays audio or probes a
+session-scoped daemon (a hand-written mpv service, say) needs the same two
+lines. To check: `ps aux | grep sink-speech.sock | grep -o 'ao=[a-z]*'`
+should say `pulse`, not `openal`; for a running process,
+`tr '\0' '\n' < /proc/<pid>/environ | grep XDG`.
 
 Manually, the key services are:
 

@@ -135,6 +135,7 @@ decoupled from this package.
 |---|---|---|
 | `MEDIA_SPEECH_VISUAL` | off | `1` = Stop hook illustrates spoken replies |
 | `MEDIA_VISUAL_MIN_CHARS` | `320` | only illustrate replies at least this long |
+| `MEDIA_VISUAL_AMBIENT` | `1` | `0` = a reply gets a picture only when it asks for one with a `[[visual:]]` or `[[reveal:]]` marker; the rest get none (read by the Stop hook, `intake/_visual.py`). See docs/decisions/2026-09-21-canvas-carries-words.md |
 | `MEDIA_VISUAL_PORT` / `MEDIA_VISUAL_BIND` | `8781` / `0.0.0.0` | canvas listen (the service passes `--bind <tailscale-ip>`) |
 | `MEDIA_VISUAL_URL` | `http://127.0.0.1:8781` | canvas(es) to push to — space/comma-separated for several; with multiple, images are referenced via the FIRST target's absolute `/img/` URL, so make it the tailnet URL, reachable from every screen |
 | `MEDIA_VISUAL_ENGINE` | `pattern` | image backend (entry-point group `agent_media.visual_engines`) |
@@ -188,6 +189,21 @@ It is an allow-list and never built from anything the caller sends: their token
 is forwarded to whatever is on it. Use the address the *canvas host* can reach
 — a container published on a tailnet IP is not on loopback, and the symptom of
 getting that wrong is a canvas that still answers 401.
+
+## Gotchas
+
+- **Plain http sends no `Sec-Fetch-*`.** Browsers attach `Sec-Fetch-Dest`,
+  `-Mode` and `-Site` only to potentially trustworthy origins: https or
+  localhost. A canvas on plain http at a LAN or tailnet hostname gets none
+  of them, while the same page on `http://127.0.0.1` does. `/img/<name>`
+  once told a tap from an `<img>` by `Sec-Fetch-Dest`, and every tap on a
+  real screen got the bare image. Gate on `Accept` (a navigation names
+  `text/html`, an `<img>` never does, curl's `*/*` is not a page request) or
+  an explicit query flag (`?view=1`, `?raw=1`). Unit tests that set headers
+  by hand and the browser harness on 127.0.0.1 are both the case that works:
+  anything relying on the browser's judgement of the origin (service
+  workers, `navigator.clipboard`, `getUserMedia`, wake lock) has to be
+  checked against a real hostname.
 
 ## TODO
 
