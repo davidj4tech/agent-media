@@ -4623,6 +4623,20 @@ gets none of this):
   `MEDIA_CONTACTS_DRIVE_DIR=<folder>` in the unit
   (`systemctl --user edit agent-media-contacts-drive-import.service`), or
   try it first with `… contacts drive-import --root 'gdrive:<folder>'`.
+  **Meta's folders.** "Export to external service → Google Drive" writes no
+  zip: it writes a `meta-<date>/` folder at the remote root (or under
+  `MEDIA_CONTACTS_DRIVE_DIR`), `facebook-<user>-<date>-<id>/…/*.json` beside
+  the media, filled over hours with the messages last. Each `meta-*` folder
+  is listed (`rclone lsjson -R`) and kept as a hash of its file list. It is
+  read once ready: no file newer than 2 hours, or Meta's "ready" mail raised
+  (`contacts.export.ready.*`) since its newest file. Reading copies its JSON
+  only (`rclone copy --include '*.json'`, never the media) into
+  `drive-import/`, zipped there and imported as an unpacked export, then
+  removed. Unchanged on a later run, it is not read again; grown (the
+  messages landing late), it is read again, which is safe since lists
+  replace and history merges by the larger count. It is `rclone purge`d from
+  Drive only once settled (nothing new for 2 hours), on that run or a later
+  one. A settled folder with no JSON (an HTML export) is left and said once.
 
 State: `exports.json` in the book's state dir (last import per network,
 the files and mails seen, the Drive files taken under `drive`, what is

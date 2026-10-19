@@ -669,7 +669,153 @@ def drive_import(*, root: str | None = None) -> dict:
         save(state)
         got["imported"].append({"name": name, "imported": res.get("imported") or {},
                                 "history_days": (res.get("history") or {}).get("days", 0)})
+    for d in drive_folders(root):
+        _folder_import(d, root, state, tmp, got)
     return got
+
+
+# --- Meta's folders on Drive --------------------------------------------------------------
+#
+# "Export to external service → Google Drive" writes no zip: a folder
+# `meta-<date>/facebook-<user>-<date>-<id>/{connections,personal_information,
+# your_facebook_activity/messages/…}/*.json` beside the media, filled over
+# hours (the messages last). A folder is read once it is ready — no file in
+# it newer than DRIVE_SETTLE_S, or Meta's "ready" mail seen since its newest
+# file — copying its JSON only (never the media), imported as an unpacked
+# zip would be. Its file list is kept as a hash: unchanged, it is not read
+# again; grown, it is read again (lists replace, history merges by the larger
+# count). It is purged from Drive only once settled.
+
+DRIVE_FOLDER = re.compile(r"^meta-.+", re.I)
+#: How long a folder must go without a new file before it counts as whole.
+DRIVE_SETTLE_S = 2 * 3600.0
+
+
+def _mtime(s) -> int:
+    try:
+        return int(dt.datetime.fromisoformat(str(s).replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        return 0
+
+
+def drive_folders(root: str | None = None) -> list[dict]:
+    """Meta's export folders under `root`: `[{name, files, json_size, newest,
+    hash}]`, `files` the JSON paths in it (relative), newest first."""
+    import hashlib
+
+    root = drive_root() if root is None else root
+    out = []
+    for e in json.loads(_drive(["lsjson", "--dirs-only", "--no-mimetype", root],
+                               DRIVE_LIST_TIMEOUT_S) or "[]"):
+        name = str(e.get("Name") or "")
+        if not DRIVE_FOLDER.match(name):
+            continue
+        listing = json.loads(_drive(["lsjson", "-R", "--files-only", "--no-mimetype",
+                                     _join(root, name)], DRIVE_LIST_TIMEOUT_S) or "[]")
+        rows = sorted((str(f.get("Path") or ""), int(f.get("Size") or 0),
+                       _mtime(f.get("ModTime"))) for f in listing)
+        digest = hashlib.sha256("\n".join(f"{p}\t{s}" for p, s, _ in rows).encode()).hexdigest()
+        out.append({"name": name,
+                    "files": [p for p, _, _ in rows if p.lower().endswith(".json")],
+                    "json_size": sum(s for p, s, _ in rows if p.lower().endswith(".json")),
+                    "newest": max((m for _, _, m in rows), default=0),
+                    "hash": digest[:32]})
+    out.sort(key=lambda d: d["newest"], reverse=True)
+    return out
+
+
+def _folder_ready(d: dict, state: dict, now: float) -> tuple[bool, bool]:
+    """(ready to read, settled enough to purge)."""
+    settled = bool(d["newest"]) and now - d["newest"] >= DRIVE_SETTLE_S
+    mailed = any(k.startswith("contacts.export.ready.") and t >= d["newest"]
+                 for k, t in (state.get("raised") or {}).items())
+    return settled or mailed, settled
+
+
+def _zip_tree(folder: Path, dest: Path) -> None:
+    import zipfile
+
+    with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as zf:
+        for p in sorted(folder.rglob("*.json")):
+            zf.write(p, p.relative_to(folder).as_posix())
+    os.chmod(dest, 0o600)
+
+
+def _folder_import(d: dict, root: str, state: dict, tmp: Path, got: dict,
+                   *, now: float | None = None) -> None:
+    import shutil
+
+    from . import contacts, contacts_import
+
+    now = time.time() if now is None else now
+    name = d["name"]
+    seen = state.setdefault("drive", {})
+    key = "folder:" + name
+    rec = seen.get(key) or {}
+    ready, settled = _folder_ready(d, state, now)
+    remote = _join(root, name)
+    if rec.get("hash") == d["hash"]:
+        if settled and not rec.get("deleted") and not rec.get("kept"):
+            _purge(remote, rec, name, got)
+            save(state)
+        return
+    if not d["files"]:
+        if settled:
+            seen[key] = {"hash": d["hash"], "name": name, "at": now, "kept": "no JSON in it"}
+            save(state)
+            got["kept"][name] = "no JSON in it (an HTML export?): left on Drive"
+        return
+    if not ready:
+        got["skipped"][name] = "still arriving: read once nothing new lands for 2 hours"
+        return
+    if d["json_size"] > _free(tmp) - DRIVE_SPARE:
+        got["skipped"][name] = (f"{d['json_size'] // 1024 ** 2} MB of JSON will not fit: "
+                                "less than 2 GB would be left free")
+        return
+    work = tmp / ("folder-" + re.sub(r"[^A-Za-z0-9._-]", "_", name))
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(mode=0o700, parents=True)
+    zpath = tmp / (work.name + ".zip")
+    try:
+        try:
+            _drive(["copy", remote, str(work / "tree"), "--include", "*.json"],
+                   DRIVE_COPY_TIMEOUT_S)
+        except DriveError as e:
+            got["errors"][name] = f"copy failed: {e}"      # again next run
+            return
+        _zip_tree(work / "tree", zpath)
+        try:
+            res = contacts.import_path(zpath, via="Google Drive")
+        except contacts_import.NotAnExport as e:
+            seen[key] = {"hash": d["hash"], "name": name, "at": now, "kept": str(e)}
+            save(state)
+            got["kept"][name] = str(e)
+            return
+        except (OSError, RuntimeError, ValueError) as e:
+            got["errors"][name] = f"import failed: {e}"[:200]
+            return
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+        zpath.unlink(missing_ok=True)
+    rec = seen[key] = {"hash": d["hash"], "name": name, "at": now}
+    save(state)
+    entry = {"name": name, "imported": res.get("imported") or {},
+             "history_days": (res.get("history") or {}).get("days", 0), "deleted": False}
+    if settled:
+        entry["deleted"] = _purge(remote, rec, name, got)
+    save(state)
+    got["imported"].append(entry)
+
+
+def _purge(remote: str, rec: dict, name: str, got: dict) -> bool:
+    try:
+        _drive(["purge", remote], DRIVE_COPY_TIMEOUT_S)
+    except DriveError as e:
+        got["errors"][name] = f"imported, but not removed from Drive: {e}"
+        return False
+    rec["deleted"] = True
+    got.setdefault("purged", []).append(name)
+    return True
 
 
 def cmd_drive_import(a) -> int:
@@ -680,12 +826,17 @@ def cmd_drive_import(a) -> int:
         return 1
     for f in got["imported"]:
         lists = ", ".join(f"{n} {k.replace('_', ' ')}" for k, n in sorted(f["imported"].items()))
+        gone = ("deleted from Drive" if f.get("deleted", True) else
+                "left on Drive until nothing new lands for 2 hours")
         print(f"{f['name']}: imported {lists or 'no lists'}; {f['history_days']} timeline "
-              "days; deleted from Drive")
+              f"days; {gone}")
+    for name in got.get("purged") or []:
+        if not any(f["name"] == name for f in got["imported"]):
+            print(f"{name}: imported before, now settled: deleted from Drive")
     for kind, verb in (("kept", "left on Drive"), ("skipped", "skipped"), ("errors", "failed")):
         for name, why in got[kind].items():
             print(f"{name}: {verb}: {why}", file=sys.stderr if kind == "errors" else sys.stdout)
-    if not any(got[k] for k in ("imported", "kept", "skipped", "errors")):
+    if not any(got.get(k) for k in ("imported", "kept", "skipped", "errors", "purged")):
         print(f"nothing new under {a.root or drive_root()}")
     return 1 if got["errors"] else 0
 

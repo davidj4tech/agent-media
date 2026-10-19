@@ -26,7 +26,13 @@ args = sys.argv[1:]
 with open(os.environ["FAKE_DRIVE_LOG"], "a") as log:
     log.write(" ".join(args) + "\n")
 cmd = args[0]
-if cmd == "lsjson":
+if cmd == "lsjson" and "--dirs-only" in args:
+    base = local(args[-1]); out = []
+    for f in sorted(os.listdir(base)):
+        if os.path.isdir(os.path.join(base, f)):
+            out.append({"Path": f, "Name": f, "Size": -1, "IsDir": True, "ID": "dir-" + f})
+    print(json.dumps(out))
+elif cmd == "lsjson":
     base = local(args[-1]); out = []
     for d, _, files in os.walk(base):
         for f in files:
@@ -42,6 +48,18 @@ elif cmd == "copyto":
     shutil.copyfile(local(args[1]), args[2])
 elif cmd == "deletefile":
     os.remove(local(args[1]))
+elif cmd == "copy":
+    src, dest = local(args[1]), args[2]
+    pat = args[args.index("--include") + 1] if "--include" in args else "*"
+    import fnmatch
+    for d, _, files in os.walk(src):
+        for f in files:
+            if fnmatch.fnmatch(f, pat):
+                rel = os.path.relpath(os.path.join(d, f), src)
+                os.makedirs(os.path.dirname(os.path.join(dest, rel)) or dest, exist_ok=True)
+                shutil.copyfile(os.path.join(d, f), os.path.join(dest, rel))
+elif cmd == "purge":
+    shutil.rmtree(local(args[1]))
 else:
     print("unknown " + cmd, file=sys.stderr); sys.exit(2)
 '''
@@ -103,8 +121,10 @@ def _people():
 
 
 def _log(tmp_path):
+    """rclone's calls, less the listing of Meta's folders (drive_folders)."""
     p = tmp_path / "rclone.log"
-    return p.read_text().splitlines() if p.exists() else []
+    lines = p.read_text().splitlines() if p.exists() else []
+    return [x for x in lines if "--dirs-only" not in x]
 
 
 def test_an_export_is_imported_then_deleted_on_drive(drive, tmp_path):
@@ -210,3 +230,101 @@ def test_the_command(drive, capsys):
     assert "facebook-cmd.zip: imported 1 facebook friends" in out and "Gus" not in out
     assert contacts.main(["drive-import"]) == 0
     assert "nothing new under fake:Meta exports" in capsys.readouterr().out
+
+
+# --- Meta's folders ("Export to external service → Google Drive") -------------------------
+
+def _meta_folder(drive, name="meta-2026-Oct-19-17-42-41", *, friends=("Alex Chen",),
+                 media=True, age_s=3 * 3600):
+    base = drive / name / "facebook-davidj4-2026-10-18-GJWN"
+    f = base / "connections" / "friends" / "your_friends.json"
+    f.parent.mkdir(parents=True)
+    f.write_text(json.dumps({"friends_v2": [{"name": n, "timestamp": 1600000000 + i}
+                                            for i, n in enumerate(friends)]}))
+    if media:
+        m = base / "your_facebook_activity" / "messages" / "photos" / "big.jpg"
+        m.parent.mkdir(parents=True)
+        m.write_bytes(b"\xff" * 4096)
+    _age(drive / name, age_s)
+    return drive / name
+
+
+def _age(folder, age_s):
+    import time as _t
+    t = _t.time() - age_s
+    for d, _, files in os.walk(folder):
+        for x in files:
+            os.utime(os.path.join(d, x), (t, t))
+
+
+def test_a_settled_meta_folder_is_imported_from_its_json_then_purged(drive, tmp_path):
+    folder = _meta_folder(drive, friends=("Alex Chen", "Bea Ruiz"))
+    got = contacts_exports.drive_import()
+    names = [f["name"] for f in got["imported"]]
+    assert names == [folder.name], got
+    assert got["imported"][0]["imported"] == {"facebook_friends": 2}
+    assert got["imported"][0]["deleted"] is True and got["errors"] == {}
+    assert _people() == ["Alex Chen", "Bea Ruiz"]
+    assert not folder.exists()                      # purged on Drive
+    log = _log(tmp_path)
+    copies = [x for x in log if x.startswith("copy ")]
+    assert copies and all("--include *.json" in x for x in copies)   # never the media
+    # Nothing is left in the local import folder.
+    left = list((contacts.account_state_dir() / "drive-import").iterdir())
+    assert left == []
+
+
+def test_a_folder_still_arriving_is_left_alone(drive):
+    folder = _meta_folder(drive, age_s=60)
+    got = contacts_exports.drive_import()
+    assert got["imported"] == [] and folder.name in got["skipped"]
+    assert folder.exists() and _people() == []
+
+
+def test_a_ready_mail_lets_it_be_read_but_not_purged_until_settled(drive):
+    folder = _meta_folder(drive, age_s=60)
+    state = contacts_exports.load()
+    import time as _t
+    state.setdefault("raised", {})["contacts.export.ready.facebook"] = _t.time()
+    contacts_exports.save(state)
+    got = contacts_exports.drive_import()
+    assert [f["name"] for f in got["imported"]] == [folder.name]
+    assert got["imported"][0]["deleted"] is False
+    assert folder.exists()                          # growing: not purged yet
+    # Unchanged and settled on a later run: purged without reading it again.
+    _age(folder, 3 * 3600)
+    got = contacts_exports.drive_import()
+    assert got["imported"] == [] and got["purged"] == [folder.name]
+    assert not folder.exists()
+
+
+def test_a_folder_that_grows_after_import_is_read_again(drive):
+    state = contacts_exports.load()
+    import time as _t
+    state.setdefault("raised", {})["contacts.export.ready.facebook"] = _t.time()
+    contacts_exports.save(state)
+    folder = _meta_folder(drive, friends=("Alex Chen",), media=False, age_s=60)
+    contacts_exports.drive_import()
+    assert _people() == ["Alex Chen"]
+    again = contacts_exports.drive_import()          # unchanged: not read twice
+    assert again["imported"] == []
+    # The messages part lands late: the list changes, so it is read again.
+    f = folder / "facebook-davidj4-2026-10-18-GJWN" / "connections" / "friends" / "your_friends.json"
+    f.write_text(json.dumps({"friends_v2": [{"name": "Alex Chen", "timestamp": 1},
+                                            {"name": "Cy Moss", "timestamp": 2}]}))
+    _age(folder, 3 * 3600)
+    got = contacts_exports.drive_import()
+    assert [x["name"] for x in got["imported"]] == [folder.name]
+    assert got["imported"][0]["deleted"] is True
+    assert _people() == ["Alex Chen", "Cy Moss"]
+
+
+def test_a_settled_folder_with_no_json_is_kept_on_drive_and_said_once(drive):
+    folder = drive / "meta-2026-Oct-20-01-00-00" / "facebook-x"
+    folder.mkdir(parents=True)
+    (folder / "index.html").write_text("<html></html>")
+    _age(folder.parent, 3 * 3600)
+    got = contacts_exports.drive_import()
+    assert "meta-2026-Oct-20-01-00-00" in got["kept"]
+    assert folder.exists()
+    assert contacts_exports.drive_import()["kept"] == {}
