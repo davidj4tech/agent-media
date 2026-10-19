@@ -24,6 +24,7 @@ interface ActivityInterface extends ContentEntityInterface, EntityChangedInterfa
     'whatsapp' => 'WhatsApp',
     'call' => 'Call',
     'email' => 'Email',
+    'chat' => 'Chat',
     'note' => 'Note',
   ];
 
