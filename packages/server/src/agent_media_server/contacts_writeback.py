@@ -16,9 +16,15 @@ stays read-only.
   ever changed or removed; undoing a Join leaves the links (David removes
   them in Google Contacts).
 * **What becomes a link**: a Messenger ghost's Facebook id, an Instagram
-  export's username, a WhatsApp ghost's number (`wa.me`). Instagram ghosts
-  (numeric ids with no public address), Signal, Teams and Google Messages
-  (the number is already on the entry) give none.
+  export's username, a WhatsApp ghost's number (`wa.me`) — the public
+  profiles; and every bridged account, whatever its network, as a link into
+  Sasonica (David, 19 Oct 2026: "even if there's no public address, it would
+  still be good to have the handle or ID stored. even just to know that
+  there is a linked account"; chose the Sasonica link): "<network> chat",
+  the one-to-one room's thread (`/app/t/<thread>`), or for someone met only
+  in groups "<network> (groups)", their card (`/app/people/<id>`). Those
+  need `MEDIA_PUBLIC_URL`, the server's public address; without it only
+  the profiles are written.
 * **Queued.** A Join returns at once; the write runs in a thread, and one
   the phone could not take (off Wi-Fi) waits in `google-writeback.json`
   (the book's state dir) for the next sync loop. A contact with no Google
@@ -100,6 +106,35 @@ def links(card: dict) -> list[tuple[str, str]]:
     return list(out.values())
 
 
+def chat_links(cid: str, card: dict, metas: dict[str, dict], base: str) -> list[tuple[str, str]]:
+    """`[(label, url)]` into Sasonica for each bridged account on the card:
+    `metas` is each ghost's record meta (`network_name`, `rooms`,
+    `groups_only`)."""
+    from urllib.parse import quote
+
+    from . import matrix
+
+    if not base:
+        return []
+    out: dict[str, tuple[str, str]] = {}
+    for h in card.get("handles") or []:
+        meta = metas.get(h.get("id") or "")
+        if meta is None:
+            continue                   # an export's person: no room
+        net = meta.get("network_name") or h.get("network_name") or "Matrix"
+        rooms = meta.get("rooms") or []
+        if rooms and not meta.get("groups_only"):
+            label, url = f"{net} chat", f"{base}/app/t/{quote(matrix.thread_of(rooms[0]), safe='')}"
+        else:
+            label, url = f"{net} (groups)", f"{base}/app/people/{quote(cid, safe='')}"
+        out.setdefault(_norm(url), (label, url))
+    return list(out.values())
+
+
+def _base() -> str:
+    return (os.environ.get("MEDIA_PUBLIC_URL") or "").strip().rstrip("/")
+
+
 def _norm(url: str) -> str:
     u = re.sub(r"^[a-z]+://", "", (url or "").strip().lower())
     return re.sub(r"^www\.", "", u).rstrip("/")
@@ -174,12 +209,18 @@ def write(cid: str) -> dict:
         return {"status": "no-google"}
     try:
         row = conn.execute("SELECT card FROM contacts WHERE id=?", (cid,)).fetchone()
+        card = json.loads(row[0]) if row else {}
+        ids = [h["id"] for h in card.get("handles") or [] if h.get("id")]
+        metas = {sid: json.loads(meta) for sid, meta in conn.execute(
+            f"SELECT sid, meta FROM records WHERE kind='bridges' "
+            f"AND sid IN ({','.join('?' * len(ids))})", ids)} if ids else {}
     finally:
         conn.close()
     if row is None:
         return {"status": "no-google"}
-    card = json.loads(row[0])
     want = links(card)
+    seen = {_norm(u) for _, u in want}
+    want += [x for x in chat_links(cid, card, metas, _base()) if _norm(x[1]) not in seen]
     if not want:
         return {"status": "nothing"}
     raw_ids = _raw_ids(card)

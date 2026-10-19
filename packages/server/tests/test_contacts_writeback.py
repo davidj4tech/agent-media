@@ -4,6 +4,7 @@ command is a script in tmp_path that answers and logs."""
 
 import json
 import os
+import shlex
 import sys
 
 import pytest
@@ -62,7 +63,7 @@ elif s.startswith("content insert"):
     return log
 
 
-def _book(*handles, accounts=("com.google", "com.whatsapp")):
+def _book(*handles, accounts=("com.google", "com.whatsapp"), metas=None):
     person = {"name": "Peter Ryan", "names": [{"display": "Peter Ryan", "given": "Peter",
                                                "family": "Ryan"}],
               "phones": [], "emails": [], "addresses": [], "organizations": [], "notes": ""}
@@ -71,7 +72,8 @@ def _book(*handles, accounts=("com.google", "com.whatsapp")):
     for i, h in enumerate(handles):
         recs.append(("bridges", h["id"],
                      {**person, "name": f"Ghost {i}", "names": [], "handles": [h]},
-                     {"network": h["network"], "network_name": h["network_name"]}))
+                     {"network": h["network"], "network_name": h["network_name"],
+                      **((metas or {}).get(h["id"]) or {})}))
     conn = contacts._connect()
     try:
         for kind, sid, card, meta in recs:
@@ -179,3 +181,36 @@ def test_off_does_nothing(monkeypatch, tmp_path):
     monkeypatch.setenv("MEDIA_CONTACTS_WRITEBACK", "0")
     contacts.same(ids["Ghost 0"], ids["Peter Ryan"])
     assert not log.exists() and not contacts_writeback.path().exists()
+
+
+def test_every_bridged_account_gets_a_sasonica_link(monkeypatch, tmp_path):
+    from agent_media_server import matrix
+
+    sig = {"network": "signal", "network_name": "Signal", "id": "@signal_abc:ryer.org"}
+    ig = {"network": "instagramgo", "network_name": "Instagram",
+          "id": "@instagram_112243413503777:ryer.org"}
+    ids = _book(_fb(), sig, ig, metas={
+        FB: {"rooms": ["!fb:ryer.org"]},
+        sig["id"]: {"rooms": ["!sig:ryer.org"]},
+        ig["id"]: {"rooms": ["!group:ryer.org"], "groups_only": True}})
+    monkeypatch.setenv("MEDIA_PUBLIC_URL", "https://red5.example/")
+    log = phone(monkeypatch, tmp_path)
+    for g in ("Ghost 0", "Ghost 1", "Ghost 2"):
+        contacts.same(ids[g], ids["Peter Ryan"])
+    got = _state()["done"][ids["Peter Ryan"]]
+    added = set()
+    for s in log.read_text().splitlines():
+        if s.startswith("content insert"):
+            added |= {b[len("data1:s:"):] for b in shlex.split(s) if b.startswith("data1:s:")}
+    t = matrix.thread_of
+    assert added == {
+        "https://www.facebook.com/profile.php?id=100000003184761",
+        f"https://red5.example/app/t/{t('!fb:ryer.org')}",
+        f"https://red5.example/app/t/{t('!sig:ryer.org')}",
+        f"https://red5.example/app/people/{ids['Peter Ryan']}",
+    }
+    assert got["status"] in ("added", "nothing")
+    labels = {b for s in log.read_text().splitlines() for b in shlex.split(s)
+              if b.startswith("data3:s:")}
+    assert {"data3:s:Signal chat", "data3:s:Instagram (groups)",
+            "data3:s:Facebook Messenger chat", "data3:s:Facebook"} == labels
