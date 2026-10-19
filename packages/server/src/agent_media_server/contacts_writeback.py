@@ -20,11 +20,13 @@ stays read-only.
   profiles; and every bridged account, whatever its network, as a link into
   Sasonica (David, 19 Oct 2026: "even if there's no public address, it would
   still be good to have the handle or ID stored. even just to know that
-  there is a linked account"; chose the Sasonica link): "<network> chat",
-  the one-to-one room's thread (`/app/t/<thread>`), or for someone met only
-  in groups "<network> (groups)", their card (`/app/people/<id>`). Those
-  need `MEDIA_PUBLIC_URL`, the server's public address; without it only
-  the profiles are written.
+  there is a linked account"; chose the Sasonica link): one row per
+  account, labelled with its network ("Signal", "Instagram (groups)" for
+  someone met only in groups), whose address is their card with the
+  account's id in it (`/app/people/<id>?account=@signal_…:ryer.org`): the
+  card lists their chats, and the id reads off the entry (David: "I'd
+  prefer it to go to the contact card"). Those need `MEDIA_PUBLIC_URL`,
+  the server's public address; without it only the profiles are written.
 * **Queued.** A Join returns at once; the write runs in a thread, and one
   the phone could not take (off Wi-Fi) waits in `google-writeback.json`
   (the book's state dir) for the next sync loop. A contact with no Google
@@ -108,11 +110,8 @@ def links(card: dict) -> list[tuple[str, str]]:
 
 def chat_links(cid: str, card: dict, metas: dict[str, dict], base: str) -> list[tuple[str, str]]:
     """`[(label, url)]` into Sasonica for each bridged account on the card:
-    `metas` is each ghost's record meta (`network_name`, `rooms`,
-    `groups_only`)."""
+    `metas` is each ghost's record meta (`network_name`, `groups_only`)."""
     from urllib.parse import quote
-
-    from . import matrix
 
     if not base:
         return []
@@ -122,11 +121,8 @@ def chat_links(cid: str, card: dict, metas: dict[str, dict], base: str) -> list[
         if meta is None:
             continue                   # an export's person: no room
         net = meta.get("network_name") or h.get("network_name") or "Matrix"
-        rooms = meta.get("rooms") or []
-        if rooms and not meta.get("groups_only"):
-            label, url = f"{net} chat", f"{base}/app/t/{quote(matrix.thread_of(rooms[0]), safe='')}"
-        else:
-            label, url = f"{net} (groups)", f"{base}/app/people/{quote(cid, safe='')}"
+        label = f"{net} (groups)" if meta.get("groups_only") else net
+        url = f"{base}/app/people/{quote(cid, safe='')}?account={quote(h['id'], safe='@:')}"
         out.setdefault(_norm(url), (label, url))
     return list(out.values())
 

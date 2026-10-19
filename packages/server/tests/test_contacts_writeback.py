@@ -183,9 +183,7 @@ def test_off_does_nothing(monkeypatch, tmp_path):
     assert not log.exists() and not contacts_writeback.path().exists()
 
 
-def test_every_bridged_account_gets_a_sasonica_link(monkeypatch, tmp_path):
-    from agent_media_server import matrix
-
+def test_every_bridged_account_gets_a_card_link_with_its_id(monkeypatch, tmp_path):
     sig = {"network": "signal", "network_name": "Signal", "id": "@signal_abc:ryer.org"}
     ig = {"network": "instagramgo", "network_name": "Instagram",
           "id": "@instagram_112243413503777:ryer.org"}
@@ -197,20 +195,15 @@ def test_every_bridged_account_gets_a_sasonica_link(monkeypatch, tmp_path):
     log = phone(monkeypatch, tmp_path)
     for g in ("Ghost 0", "Ghost 1", "Ghost 2"):
         contacts.same(ids[g], ids["Peter Ryan"])
-    got = _state()["done"][ids["Peter Ryan"]]
-    added = set()
+    rows = set()
     for s in log.read_text().splitlines():
         if s.startswith("content insert"):
-            added |= {b[len("data1:s:"):] for b in shlex.split(s) if b.startswith("data1:s:")}
-    t = matrix.thread_of
-    assert added == {
-        "https://www.facebook.com/profile.php?id=100000003184761",
-        f"https://red5.example/app/t/{t('!fb:ryer.org')}",
-        f"https://red5.example/app/t/{t('!sig:ryer.org')}",
-        f"https://red5.example/app/people/{ids['Peter Ryan']}",
+            b = {x.split(":s:")[0]: x.split(":s:")[1] for x in shlex.split(s) if ":s:" in x}
+            rows.add((b["data3"], b["data1"]))
+    card = f"https://red5.example/app/people/{ids['Peter Ryan']}?account="
+    assert rows == {
+        ("Facebook", "https://www.facebook.com/profile.php?id=100000003184761"),
+        ("Facebook Messenger", card + FB),
+        ("Signal", card + "@signal_abc:ryer.org"),
+        ("Instagram (groups)", card + "@instagram_112243413503777:ryer.org"),
     }
-    assert got["status"] in ("added", "nothing")
-    labels = {b for s in log.read_text().splitlines() for b in shlex.split(s)
-              if b.startswith("data3:s:")}
-    assert {"data3:s:Signal chat", "data3:s:Instagram (groups)",
-            "data3:s:Facebook Messenger chat", "data3:s:Facebook"} == labels
