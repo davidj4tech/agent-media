@@ -3056,7 +3056,7 @@ data: {}
 
 ### 6.14 Search — gated (built 23 Sep 2026)
 
-#### `GET /search?q=<words>[&limit=][&before=<at>][&tools=1][&memory=0]` — gated (`auth.gate`)
+#### `GET /search?q=<words>[&limit=][&before=<at>][&tools=1][&memory=0][&sort=][&after=<at>][&offset=<n>][&since=<at>][&who=][&rooms=]` — gated (`auth.gate`)
 
 Every thread's messages — both sides; live, closed, headless and archived
 threads alike — plus thread titles, recaps and projects, plus long-term
@@ -3066,6 +3066,7 @@ memory as its own section when this host has agent-memory. Code:
 
 ```json
 {"ok": true, "q": "follow along", "terms": ["follow", "along"], "tools": false,
+ "sort": "newest",
  "threads": [
    {"session": "5f8c…", "title": "Sasonica rebuild", "project": "p-agent-media",
     "harness": "claude", "live": true, "archived": false,
@@ -3098,6 +3099,22 @@ memory as its own section when this host has agent-memory. Code:
   last hit's `at` when the page is full (ask again with `before=<next>`),
   else `null`; a `before` that is not a number is 400. With `before`,
   `threads` is `[]` and `memory` is left out: they belong to the first page.
+- **`sort`** (19 Oct 2026): `newest` (the default), `oldest`, or `best` —
+  FTS5's bm25 rank, the newest first among equals; text and tool steps are
+  merged by it. The answer says `sort`. Each sort pages by its own cursor,
+  which `next` holds: `before=<next>` for newest, `after=<next>` for oldest,
+  `offset=<next>` (a count) for best; a cursor the sort does not use is
+  ignored. A best page can come back short when a hit's thread is not
+  answered (machinery, an excluded folder); `next` still says whether there
+  is more. `threads` follow the sort too (best: the most fields matched,
+  then a title match, then the newest).
+- **Narrowing** (19 Oct 2026), applied in the index so a page is full of
+  what is asked: `since=<at>` (messages at or after it; threads whose
+  latest activity is), `who=me` (the owner's words, `role: user`) or
+  `who=agent` (everyone else's; threads are not narrowed by it), and
+  `rooms=only` (only Matrix rooms, messages and threads) or `rooms=none`
+  (none of them). A bad `sort`, `who` or `rooms`, or a `since`, `after` or
+  `offset` that is not a number, is 400.
 - **`tools=1`** (the app's Advanced setting) adds tool steps: a tool's name,
   its title, its input summary and its result summary (§6.2.2 — summaries,
   never file contents). Without it they are never searched.

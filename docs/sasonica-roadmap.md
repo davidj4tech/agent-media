@@ -1277,6 +1277,16 @@ ahead.
     Recent, Name, Most talked to; the last 30 days, 3 months or year; one
     service; each row's last talked (agent-media 908422f, sasonica-app
     aae0c58).
+30. **Search: Show and Sort** (David, 19 Oct 2026: "show and sort filters
+    for the search page"). Sort: Newest first, Oldest first, Best match
+    (bm25 on the server) or By thread (the hits under each thread, the
+    busiest first); the sort is kept per device. Show adds, beside the
+    list's status, agent and project: the sections (Threads, Messages,
+    Documents, Memory), Said by (me / others), When (today, past week,
+    month, year) and Kind (coding threads / message rooms). Who, when, kind
+    and sort are asked of the server (§6.14 `sort`, `since`, `who`,
+    `rooms`), so a page is full of what is shown. **Built 19 Oct 2026**,
+    not yet deployed (the server change needs a canvas restart).
 
 ## Loose ends
 

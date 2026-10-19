@@ -190,6 +190,68 @@ def test_recency_order_and_paging(home, gate):
     assert not ok and err["status"] == 400
 
 
+def test_oldest_first_pages_with_after(home, gate):
+    s = claude(home, SID)
+    for i in range(5):
+        s.prompt(f"otter number {i}")
+        s.end_turn()
+    page = ask("otter", limit=2, sort="oldest")
+    assert page["sort"] == "oldest"
+    assert [h["snippet"]["text"] for h in page["messages"]] == ["otter number 0", "otter number 1"]
+    assert page["next"] == page["messages"][-1]["at"]
+    page2 = ask("otter", limit=2, sort="oldest", after=page["next"])
+    assert [h["snippet"]["text"] for h in page2["messages"]] == ["otter number 2", "otter number 3"]
+    assert page2["threads"] == [] and "memory" not in page2
+    # `before` is newest's cursor: under oldest it is not a later page.
+    assert ask("otter", limit=2, sort="oldest", before=page["next"])["messages"] == page["messages"]
+    last = ask("otter", limit=2, sort="oldest", after=page2["next"])
+    assert [h["snippet"]["text"] for h in last["messages"]] == ["otter number 4"]
+    assert last["next"] is None
+
+
+def test_best_match_ranks_and_pages_with_offset(home, gate):
+    s = claude(home, SID)
+    s.prompt("heron heron heron heron")
+    s.end_turn()
+    s.prompt("a long note that mentions one heron among very many other words of no interest")
+    s.end_turn()
+    s.prompt("heron heron")
+    s.end_turn()
+    page = ask("heron", limit=2, sort="best")
+    assert [h["snippet"]["text"] for h in page["messages"]] == ["heron heron heron heron", "heron heron"]
+    assert page["next"] == 2
+    page2 = ask("heron", limit=2, sort="best", offset=page["next"])
+    assert [h["snippet"]["text"][:6] for h in page2["messages"]] == ["a long"]
+    assert page2["next"] is None and page2["threads"] == []
+
+
+def test_since_and_who_narrow_on_the_server(home, gate):
+    s = claude(home, SID)
+    for i in range(4):
+        s.prompt(f"badger question {i}")
+        s.text(f"badger answer {i}")
+        s.end_turn()
+    every = ask("badger")["messages"]
+    assert len(every) == 8
+    cut = sorted(h["at"] for h in every)[4]
+    recent = ask("badger", since=cut)["messages"]
+    assert len(recent) == 4 and all(h["at"] >= cut for h in recent)
+    mine = ask("badger", who="me", limit=3)
+    assert [h["role"] for h in mine["messages"]] == ["user"] * 3
+    # The page is full of the owner's words, so paging still works.
+    rest = ask("badger", who="me", limit=3, before=mine["next"])["messages"]
+    assert [h["snippet"]["text"] for h in rest] == ["badger question 0"]
+    assert {h["role"] for h in ask("badger", who="agent")["messages"]} == {"assistant"}
+
+
+def test_a_bad_sort_or_narrowing_is_400(home, gate):
+    claude(home, SID).prompt("otter")
+    for kw in ({"sort": "loudest"}, {"who": "them"}, {"rooms": "some"}, {"since": "today"},
+               {"after": "x", "sort": "oldest"}, {"offset": "two", "sort": "best"}):
+        ok, err = search.search("otter", "tok", **kw)
+        assert not ok and err["status"] == 400, kw
+
+
 def test_recaps_and_projects_are_thread_hits(home, gate, monkeypatch):
     s = claude(home, SID, cwd="/home/x/projects/agent-media")
     s.prompt("hello")
@@ -317,7 +379,7 @@ def test_route_shape_and_auth(server, signed_in, home):
     s.end_turn()
     res, obj = call(server, "GET", "/search?q=kestrel", headers=AUTH)
     assert res.status == 200, obj
-    assert set(obj) == {"ok", "q", "terms", "tools", "threads", "messages", "next",
+    assert set(obj) == {"ok", "q", "terms", "tools", "sort", "threads", "messages", "next",
                         "indexing", "memory", "docs"}
     [m] = obj["messages"]
     assert set(m) == {"session", "message", "role", "at", "kind", "snippet", "thread"}
@@ -325,6 +387,12 @@ def test_route_shape_and_auth(server, signed_in, home):
     assert res.getheader("Access-Control-Allow-Origin") == "*"
     res, obj = call(server, "GET", "/search?q=", headers=AUTH)
     assert res.status == 400 and obj["ok"] is False
+    # The sort and the narrowing ride in the query.
+    res, obj = call(server, "GET", "/search?q=kestrel&sort=oldest&who=agent", headers=AUTH)
+    assert res.status == 200 and obj["sort"] == "oldest" and obj["messages"] == []
+    res, obj = call(server, "GET", "/search?q=kestrel&sort=best&who=me&rooms=none&since=1",
+                    headers=AUTH)
+    assert res.status == 200 and [m["role"] for m in obj["messages"]] == ["user"]
 
 
 # --- the jump -------------------------------------------------------------------

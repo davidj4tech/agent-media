@@ -203,3 +203,31 @@ def test_a_hit_opens_around_its_message(rooms):
     assert [m["id"] for m in env["messages"]][-1] == "$120" and len(env["messages"]) == 10
     ok, env = threads.session_log(r.thread, limit=10)
     assert "around" not in env and "newer" not in env
+
+
+@pytest.fixture()
+def home_claude(tmp_path):
+    """A Claude Code thread beside the rooms, under the conftest's throwaway
+    CLAUDE_CONFIG_DIR."""
+    from test_contract import SID
+    from test_search import claude
+
+    def write(words):
+        s = claude(tmp_path, SID)
+        s.prompt(words)
+        s.end_turn()
+
+    return write
+
+
+def test_rooms_only_or_none(rooms, home_claude):
+    r, _ = rooms([_ev(1, MEL, "the marmot is back")])
+    home_claude("marmot in a coding thread")
+    assert {h["thread"]["harness"] for h in ask("marmot")["messages"]} == {"matrix", "claude"}
+    [only] = ask("marmot", rooms="only")["messages"]
+    assert only["session"] == r.thread
+    [none] = ask("marmot", rooms="none")["messages"]
+    assert none["thread"]["harness"] == "claude"
+    # Thread hits follow it too: the room's name is gone without rooms.
+    assert [t["session"] for t in ask("sam", rooms="only")["threads"]] == [r.thread]
+    assert ask("sam", rooms="none")["threads"] == []

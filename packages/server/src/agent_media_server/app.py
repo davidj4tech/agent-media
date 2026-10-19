@@ -1036,7 +1036,9 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         arg = lambda k: (qs.get(k) or [""])[0]  # noqa: E731
         ok, detail = search.search(arg("q"), _bearer(h), limit=arg("limit"),
                                    before=arg("before"), tools=arg("tools") in ("1", "true"),
-                                   memory=arg("memory") not in ("0", "false"))
+                                   memory=arg("memory") not in ("0", "false"),
+                                   sort=arg("sort"), after=arg("after"), offset=arg("offset"),
+                                   since=arg("since"), who=arg("who"), rooms=arg("rooms"))
         if ok:
             _json_z(h, 200, {"ok": True, **detail})
         else:

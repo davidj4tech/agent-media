@@ -1182,7 +1182,8 @@ def _threads_rows(conn: sqlite3.Connection) -> dict[str, dict]:
 
 
 def _thread_hits(terms: list[str], rows: dict[str, dict], listed: dict[str, dict],
-                 owned: set[str]) -> list[dict]:
+                 owned: set[str], *, sort: str = "newest", since: float | None = None,
+                 rooms: str | None = None) -> list[dict]:
     hits = []
     for sid in set(rows) | set(listed):
         t = rows.get(sid)
@@ -1196,46 +1197,117 @@ def _thread_hits(terms: list[str], rows: dict[str, dict], listed: dict[str, dict
         hay = " \n".join(fields.values())
         if not all(_mark_terms(hay, [w]) for w in terms):
             continue
+        if since is not None and (view["at"] or 0) < since:
+            continue
+        if rooms and (view["harness"] == "matrix") != (rooms == "only"):
+            continue
         view["match"] = {k: _mark_terms(v, terms) for k, v in fields.items()
                          if v and _mark_terms(v, terms)}
         hits.append(view)
-    hits.sort(key=lambda v: -(v["at"] or 0))
+    if sort == "oldest":
+        hits.sort(key=lambda v: v["at"] or 0)
+    elif sort == "best":
+        # The most fields matched, then the title, then the newest.
+        hits.sort(key=lambda v: (-len(v["match"]), "title" not in v["match"], -(v["at"] or 0)))
+    else:
+        hits.sort(key=lambda v: -(v["at"] or 0))
     return hits[:THREADS_MAX]
+
+
+#: `sort=`: newest first (the default), oldest first, or best match (FTS5's bm25).
+SORTS = ("newest", "oldest", "best")
+#: `who=`: whose words — the owner's (`user`) or anyone else's (`assistant`).
+WHO = {"me": "user", "agent": "assistant"}
+#: `rooms=`: only the Messages tab's rooms (Matrix), or none of them.
+ROOMS = ("only", "none")
+
+
+def _narrowing(fts: str, *, since: float | None, who: str | None,
+               rooms: str | None) -> tuple[str, list]:
+    """The SQL for `since`, `who` and `rooms`, after `{fts} MATCH ?`."""
+    sql, args = "", []
+    if since is not None:
+        sql += " AND d.at >= ?"
+        args.append(since)
+    if who:
+        sql += " AND d.role = ?"
+        args.append(WHO[who])
+    if rooms:
+        sql += (" AND d.session " + ("IN" if rooms == "only" else "NOT IN")
+                + " (SELECT session FROM threads WHERE harness = 'matrix')")
+    return sql, args
 
 
 def _message_hits(conn: sqlite3.Connection, query: str, *, tools: bool, before: float | None,
                   limit: int, rows: dict[str, dict], listed: dict[str, dict],
-                  owned: set[str]) -> list[dict]:
-    out: list[dict] = []
+                  owned: set[str], sort: str = "newest", after: float | None = None,
+                  offset: int = 0, since: float | None = None, who: str | None = None,
+                  rooms: str | None = None) -> tuple[list[dict], float | int | None]:
+    """A page of message hits and the cursor for the next (`None` at the end):
+    an `at` for newest (`before=`) and oldest (`after=`), a count for best
+    (`offset=`)."""
     tables = [("text_fts", "text")] + ([("tool_fts", "tool")] if tools else [])
+    select = ("SELECT d.session, d.msg, d.role, d.at, "
+              "snippet({fts}, 0, ?, ?, '…', ?), bm25({fts}) "
+              "FROM {fts} JOIN docs d ON d.id = {fts}.rowid WHERE {fts} MATCH ?")
+
+    def hit(row, kind):
+        sid, msg, role, at, snip, _ = row
+        t = rows.get(sid)
+        if t is None or _hidden(t.get("entrypoint"), sid, owned, t.get("harness")) \
+                or _excluded(t.get("cwd") or ""):
+            return None
+        view = _thread_view(sid, t, listed.get(sid))
+        return {"session": sid, "message": msg, "role": role,
+                "at": round(at, 3), "kind": kind, "snippet": _marked(snip),
+                "thread": {k: view[k] for k in
+                           ("title", "project", "harness", "live", "archived")}}
+
+    if sort == "best":
+        # Each table's best `offset + limit + 1`, merged by score (lower is
+        # better), then the newest: the same order every time, so an offset
+        # into it is a stable cursor.
+        merged = []
+        for fts, kind in tables:
+            more, args = _narrowing(fts, since=since, who=who, rooms=rooms)
+            found = conn.execute(
+                select.format(fts=fts) + more + f" ORDER BY bm25({fts}), d.at DESC LIMIT ?",
+                (_OPEN, _CLOSE, SNIPPET_TOKENS, query, *args, offset + limit + 1)).fetchall()
+            merged += [(r, kind) for r in found]
+        merged.sort(key=lambda rk: (rk[0][5], -rk[0][3]))
+        page = merged[offset:offset + limit]
+        out = [h for h in (hit(r, k) for r, k in page) if h]
+        return out, offset + limit if len(merged) > offset + limit else None
+
+    oldest = sort == "oldest"
+    out: list[dict] = []
     for fts, kind in tables:
-        cursor = before if before is not None else float("inf")
+        if oldest:
+            cursor = after if after is not None else float("-inf")
+        else:
+            cursor = before if before is not None else float("inf")
+        more, args = _narrowing(fts, since=since, who=who, rooms=rooms)
+        order = (" AND d.at > ? ORDER BY d.at ASC LIMIT ?" if oldest
+                 else " AND d.at < ? ORDER BY d.at DESC LIMIT ?")
         batch = max(limit * 2, 40)
         got = 0
         while got < limit:
             found = conn.execute(
-                f"SELECT d.session, d.msg, d.role, d.at, "
-                f"snippet({fts}, 0, ?, ?, '…', ?) FROM {fts} JOIN docs d ON d.id = {fts}.rowid "
-                f"WHERE {fts} MATCH ? AND d.at < ? ORDER BY d.at DESC LIMIT ?",
-                (_OPEN, _CLOSE, SNIPPET_TOKENS, query, cursor, batch)).fetchall()
+                select.format(fts=fts) + more + order,
+                (_OPEN, _CLOSE, SNIPPET_TOKENS, query, *args, cursor, batch)).fetchall()
             if not found:
                 break
-            for sid, msg, role, at, snip in found:
-                t = rows.get(sid)
-                if t is None or _hidden(t.get("entrypoint"), sid, owned, t.get("harness")) \
-                        or _excluded(t.get("cwd") or ""):
-                    continue
-                view = _thread_view(sid, t, listed.get(sid))
-                out.append({"session": sid, "message": msg, "role": role,
-                            "at": round(at, 3), "kind": kind, "snippet": _marked(snip),
-                            "thread": {k: view[k] for k in
-                                       ("title", "project", "harness", "live", "archived")}})
-                got += 1
+            for row in found:
+                h = hit(row, kind)
+                if h:
+                    out.append(h)
+                    got += 1
             if len(found) < batch:
                 break
             cursor = found[-1][3]
-    out.sort(key=lambda r: -r["at"])
-    return out[:limit]
+    out.sort(key=lambda r: r["at"] if oldest else -r["at"])
+    out = out[:limit]
+    return out, out[-1]["at"] if len(out) >= limit else None
 
 
 # --- memory ---------------------------------------------------------------------
@@ -1282,7 +1354,8 @@ def _memory_section(q: str, limit: int = 8) -> dict:
 
 
 def search(q: str, bearer: str, *, limit=None, before=None, tools: bool = False,
-           memory: bool = True) -> tuple[bool, dict]:
+           memory: bool = True, sort=None, after=None, offset=None, since=None,
+           who=None, rooms=None) -> tuple[bool, dict]:
     """`GET /search` (server-contract.md §6.14)."""
     user, err = auth.gate(bearer)
     if not user:
@@ -1294,10 +1367,27 @@ def search(q: str, bearer: str, *, limit=None, before=None, tools: bool = False,
         n = max(1, min(LIMIT_MAX, int(limit))) if limit not in (None, "") else LIMIT
     except (TypeError, ValueError):
         n = LIMIT
+    sort = sort or "newest"
+    if sort not in SORTS:
+        return False, {"error": f"sort is one of {', '.join(SORTS)}", "status": 400}
+    if who not in (None, "") and who not in WHO:
+        return False, {"error": "who is me or agent", "status": 400}
+    if rooms not in (None, "") and rooms not in ROOMS:
+        return False, {"error": "rooms is only or none", "status": 400}
+    who, rooms = who or None, rooms or None
+    times = {}
+    for name, v in (("before", before), ("after", after), ("since", since)):
+        try:
+            times[name] = float(v) if v not in (None, "") else None
+        except (TypeError, ValueError):
+            return False, {"error": f"{name} must be a time (a result's `at`)", "status": 400}
     try:
-        cursor = float(before) if before not in (None, "") else None
+        skip = max(0, int(offset)) if offset not in (None, "") else None
     except (TypeError, ValueError):
-        return False, {"error": "before must be a time (a result's `at`)", "status": 400}
+        return False, {"error": "offset must be a count (a best-match `next`)", "status": 400}
+    # Only the sort's own cursor counts: `before` for newest, `after` for
+    # oldest, `offset` for best. Any of them means a later page.
+    cursor = {"newest": times["before"], "oldest": times["after"], "best": skip}[sort]
     from concurrent.futures import ThreadPoolExecutor
 
     from . import doc_read
@@ -1313,14 +1403,18 @@ def search(q: str, bearer: str, *, limit=None, before=None, tools: bool = False,
         owned = _owned_headless()
         query = fts_query(terms)
         try:
-            messages = _message_hits(conn, query, tools=tools, before=cursor, limit=n,
-                                     rows=rows, listed=listed, owned=owned)
+            messages, nxt = _message_hits(
+                conn, query, tools=tools, before=times["before"], limit=n, rows=rows,
+                listed=listed, owned=owned, sort=sort, after=times["after"],
+                offset=skip or 0, since=times["since"], who=who, rooms=rooms)
         except sqlite3.OperationalError as e:
             return False, {"error": f"could not search for that ({e})", "status": 400}
-        out = {"q": q, "terms": terms, "tools": bool(tools),
-               "threads": _thread_hits(terms, rows, listed, owned) if cursor is None else [],
+        out = {"q": q, "terms": terms, "tools": bool(tools), "sort": sort,
+               "threads": (_thread_hits(terms, rows, listed, owned, sort=sort,
+                                        since=times["since"], rooms=rooms)
+                           if cursor is None else []),
                "messages": messages,
-               "next": messages[-1]["at"] if len(messages) >= n else None,
+               "next": nxt,
                "indexing": not caught["done"]}
         if found_docs is not None:
             try:
@@ -1357,8 +1451,8 @@ def main(argv: list[str] | None = None) -> int:
         conn = _connect()
         rows = _threads_rows(conn)
         terms = terms_of(" ".join(args[1:]))
-        hits = _message_hits(conn, fts_query(terms), tools="--tools" in args, before=None,
-                             limit=10, rows=rows, listed={}, owned=set())
+        hits, _ = _message_hits(conn, fts_query(terms), tools="--tools" in args, before=None,
+                                limit=10, rows=rows, listed={}, owned=set())
         for h in hits:
             print(h["at"], h["session"][:8], h["thread"]["title"][:40], "|", h["snippet"]["text"][:120])
         return 0
