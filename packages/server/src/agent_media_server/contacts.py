@@ -2939,6 +2939,9 @@ def main(argv: list[str] | None = None) -> int:
     from . import timeline_backfill
 
     timeline_backfill.add_commands(sub)
+    from . import contacts_exports
+
+    contacts_exports.add_commands(sub)
     a = ap.parse_args(argv)
     try:
         key = resolve_account(a.account)

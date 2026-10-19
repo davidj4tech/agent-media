@@ -1,0 +1,10 @@
+[Unit]
+Description=Import new Facebook/Instagram exports from Google Drive into contacts, then delete them there (media contacts drive-import)
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/projects/agent-media/.venv/bin/media contacts drive-import
+TimeoutStartSec=6h
+Nice=10

@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily: import new Meta exports from Google Drive into contacts
+
+[Timer]
+OnCalendar=*-*-* 05:00
+Persistent=true
+RandomizedDelaySec=1800
+
+[Install]
+WantedBy=timers.target

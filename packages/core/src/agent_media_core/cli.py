@@ -9660,7 +9660,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     contacts = sub.add_parser(
         "contacts", add_help=False,
-        help="contacts and their timeline: status, sync, seed, import <export>, "
+        help="contacts and their timeline: status, sync, seed, import <export>, drive-import, "
              "note <who> <text>, timeline <who>, rollup, accounts ([--account WHO] first: another "
              "account's book; default the owner's)")
     contacts.add_argument("args", nargs=argparse.REMAINDER)

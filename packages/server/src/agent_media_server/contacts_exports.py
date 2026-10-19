@@ -25,6 +25,18 @@ account's book would tell the wrong person):
   said as a `contacts.import` digest, which the phone shows.
   `MEDIA_CONTACTS_EXPORT_WATCH=0` turns this off; a phone off Wi-Fi is
   just skipped. The state is `exports.json` in the book's state dir.
+* **Google Drive** (`drive_import`, `contacts drive-import`, run daily by
+  `agent-media-contacts-drive-import.timer`). Meta's "Export to external
+  service → Google Drive" puts each scheduled export in Drive; this lists
+  the `facebook-*`, `instagram-*` and `meta-*` zips under
+  `MEDIA_CONTACTS_DRIVE_REMOTE` (an rclone remote, `gdrive:` by default)
+  and `MEDIA_CONTACTS_DRIVE_DIR` (a folder in it, the whole drive by
+  default), newest first, and takes each not seen before (by Drive id,
+  size and time) one at a time: copied to a 0700 folder in the state dir,
+  imported as it goes (contacts.import_path), and only then deleted from
+  Drive and here. One that is not an export stays on Drive, said once;
+  one that could not be copied is tried again next run; one bigger than
+  the free disk less 2 GB is skipped, said. The owner's book only.
 
 Nothing here logs a name.
 """
@@ -514,3 +526,173 @@ def run() -> dict:
         except Exception as e:  # noqa: BLE001 — never stop the sync loop
             print(f"contacts: exports {key} failed ({e})", file=sys.stderr)
     return out
+
+
+# --- Google Drive ----------------------------------------------------------------------
+
+#: The export zips Meta writes to Drive (a Takeout is not one of these).
+DRIVE_NAME = re.compile(r"^(facebook|instagram|meta)-.*\.zip$", re.I)
+DRIVE_REMOTE = "gdrive:"
+#: Left free on this host's disk after a copy.
+DRIVE_SPARE = 2 * 1024 ** 3
+DRIVE_LIST_TIMEOUT_S = 120.0
+DRIVE_COPY_TIMEOUT_S = 6 * 3600.0
+
+
+class DriveError(RuntimeError):
+    """rclone refused, or said nothing in time."""
+
+
+def _rclone() -> list[str]:
+    return [os.environ.get("MEDIA_RCLONE") or "rclone"]
+
+
+def drive_root() -> str:
+    """`remote:folder` the exports are looked for under."""
+    remote = (os.environ.get("MEDIA_CONTACTS_DRIVE_REMOTE") or DRIVE_REMOTE).strip()
+    if not remote.endswith(":"):
+        remote += ":"
+    folder = (os.environ.get("MEDIA_CONTACTS_DRIVE_DIR") or "").strip().strip("/")
+    return remote + folder
+
+
+def _drive(args: list[str], timeout: float) -> str:
+    try:
+        got = subprocess.run(_rclone() + args, capture_output=True, text=True,
+                             timeout=timeout)
+    except FileNotFoundError as e:
+        raise DriveError("rclone is not installed") from e
+    except subprocess.TimeoutExpired as e:
+        raise DriveError(f"rclone {args[0]} took longer than {int(timeout)} s") from e
+    if got.returncode != 0:
+        tail = (got.stderr or got.stdout or "no answer").strip().splitlines()
+        tail = [x for x in tail if "NOTICE" not in x] or tail
+        raise DriveError((tail[-1] if tail else "no answer")[-200:])
+    return got.stdout
+
+
+def drive_files(root: str | None = None) -> list[dict]:
+    """The export zips under `root`, newest first: `[{path, name, id, size,
+    mtime}]`, `path` relative to `root`."""
+    root = drive_root() if root is None else root
+    out = []
+    for f in json.loads(_drive(["lsjson", "-R", "--files-only", "--no-mimetype", root],
+                               DRIVE_LIST_TIMEOUT_S) or "[]"):
+        name = str(f.get("Name") or "")
+        if not DRIVE_NAME.match(name):
+            continue
+        try:
+            mtime = dt.datetime.fromisoformat(str(f.get("ModTime")).replace("Z", "+00:00"))
+            mtime = int(mtime.timestamp())
+        except ValueError:
+            mtime = 0
+        out.append({"path": str(f.get("Path") or name), "name": name,
+                    "id": str(f.get("ID") or ""), "size": int(f.get("Size") or 0),
+                    "mtime": mtime})
+    out.sort(key=lambda f: f["mtime"], reverse=True)
+    return out
+
+
+def _join(root: str, path: str) -> str:
+    return root + path if root.endswith(":") else f"{root}/{path}"
+
+
+def _free(folder: Path) -> int:
+    import shutil
+
+    return shutil.disk_usage(folder).free
+
+
+def _drive_tmp() -> Path:
+    from .contacts import account_state_dir
+
+    d = account_state_dir() / "drive-import"
+    d.mkdir(parents=True, exist_ok=True)
+    os.chmod(d, 0o700)
+    return d
+
+
+def drive_import(*, root: str | None = None) -> dict:
+    """Each new export on Drive, imported and then deleted there:
+    `{imported: [{name, imported, history_days}], kept: {name: why},
+    skipped: {name: why}, errors: {name: why}}` — counts and file names,
+    never a person's. The owner's book only."""
+    from . import contacts, contacts_import
+
+    got: dict = {"imported": [], "kept": {}, "skipped": {}, "errors": {}}
+    if not contacts.is_owner():
+        got["errors"]["book"] = "Drive exports are the owner's book's"
+        return got
+    root = drive_root() if root is None else root
+    files = drive_files(root)
+    state = load()
+    seen = state.setdefault("drive", {})
+    tmp = _drive_tmp()
+    for f in files:
+        key = f["id"] or f["path"]
+        mark = f"{f['mtime']}:{f['size']}"
+        if seen.get(key, {}).get("mark") == mark:
+            continue
+        name = f["name"]
+        if f["size"] > _free(tmp) - DRIVE_SPARE:
+            got["skipped"][name] = (f"{f['size'] // 1024 ** 2} MB will not fit: less than "
+                                    "2 GB would be left free")
+            continue
+        local = tmp / name
+        try:
+            _drive(["copyto", _join(root, f["path"]), str(local)], DRIVE_COPY_TIMEOUT_S)
+        except DriveError as e:
+            local.unlink(missing_ok=True)
+            got["errors"][name] = f"copy failed: {e}"   # tried again next run
+            continue
+        try:
+            os.chmod(local, 0o600)
+            res = contacts.import_path(local, via="Google Drive")
+        except contacts_import.NotAnExport as e:
+            seen[key] = {"mark": mark, "name": name, "at": time.time(), "kept": str(e)}
+            save(state)
+            got["kept"][name] = str(e)      # stays on Drive, said once
+            local.unlink(missing_ok=True)
+            continue
+        except (OSError, RuntimeError, ValueError) as e:
+            local.unlink(missing_ok=True)
+            got["errors"][name] = f"import failed: {e}"[:200]   # again next run
+            continue
+        seen[key] = {"mark": mark, "name": name, "at": time.time()}
+        save(state)
+        local.unlink(missing_ok=True)
+        try:
+            _drive(["deletefile", _join(root, f["path"])], DRIVE_LIST_TIMEOUT_S)
+            seen[key]["deleted"] = True
+        except DriveError as e:
+            got["errors"][name] = f"imported, but not deleted from Drive: {e}"
+        save(state)
+        got["imported"].append({"name": name, "imported": res.get("imported") or {},
+                                "history_days": (res.get("history") or {}).get("days", 0)})
+    return got
+
+
+def cmd_drive_import(a) -> int:
+    try:
+        got = drive_import(root=a.root or None)
+    except DriveError as e:
+        print(f"drive-import: {e}", file=sys.stderr)
+        return 1
+    for f in got["imported"]:
+        lists = ", ".join(f"{n} {k.replace('_', ' ')}" for k, n in sorted(f["imported"].items()))
+        print(f"{f['name']}: imported {lists or 'no lists'}; {f['history_days']} timeline "
+              "days; deleted from Drive")
+    for kind, verb in (("kept", "left on Drive"), ("skipped", "skipped"), ("errors", "failed")):
+        for name, why in got[kind].items():
+            print(f"{name}: {verb}: {why}", file=sys.stderr if kind == "errors" else sys.stdout)
+    if not any(got[k] for k in ("imported", "kept", "skipped", "errors")):
+        print(f"nothing new under {a.root or drive_root()}")
+    return 1 if got["errors"] else 0
+
+
+def add_commands(sub) -> None:
+    p = sub.add_parser("drive-import", help="import each new Facebook or Instagram export "
+                                            "from Google Drive (rclone), then delete it there")
+    p.add_argument("--root", default="", help="remote:folder to look under (default: "
+                                              "MEDIA_CONTACTS_DRIVE_REMOTE + _DIR, gdrive:)")
+    p.set_defaults(fn=cmd_drive_import)

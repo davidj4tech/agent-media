@@ -4601,10 +4601,33 @@ gets none of this):
   the mail when it is Meta's own (facebook.com, instagram.com,
   accountscenter / accountscentre, meta.com), else the Accounts Center
   page. Each mail once; the next import of that network clears it.
+- **Google Drive** (David, 19 Oct 2026: a daily "Export to external
+  service → Google Drive" of the previous week). `… contacts drive-import`,
+  run daily by `agent-media-contacts-drive-import.timer` (05:00, up to 30
+  min late, `Persistent=true`; `deploy/systemd`, installed as links), lists
+  the `facebook-*`, `instagram-*` and `meta-*` zips under
+  `MEDIA_CONTACTS_DRIVE_REMOTE` (an rclone remote, `gdrive:`) and
+  `MEDIA_CONTACTS_DRIVE_DIR` (a folder in it; the whole drive when unset)
+  with `rclone lsjson -R`, newest first, and takes each not seen before
+  (by Drive id, size and time) one at a time: `rclone copyto` into
+  `drive-import/` (0700) in the book's state dir, imported as it goes
+  (`import_path`, any size, media never read, said as the
+  `contacts.import` digest "From Google Drive"), and only then
+  `rclone deletefile` on Drive and the local copy removed. A file that is
+  not an export is left on Drive and said once; a copy or import that
+  fails is tried again next run; one bigger than the free disk less 2 GB
+  is skipped and left. `MEDIA_RCLONE` names the binary. The remote needs
+  write scope (`drive`) to delete (red5's has it, through our own Google
+  client); a read-only one imports and says each delete failed. Owner's
+  book only. Point it at Meta's folder once known:
+  `MEDIA_CONTACTS_DRIVE_DIR=<folder>` in the unit
+  (`systemctl --user edit agent-media-contacts-drive-import.service`), or
+  try it first with `… contacts drive-import --root 'gdrive:<folder>'`.
 
 State: `exports.json` in the book's state dir (last import per network,
-the files and mails seen, what is raised). Pinned by
-`packages/server/tests/test_contacts_exports.py`.
+the files and mails seen, the Drive files taken under `drive`, what is
+raised). Pinned by `packages/server/tests/test_contacts_exports.py` and
+`test_contacts_drive_import.py`.
 
 #### `POST /contacts/import[?name=<file name>]` — gated (`auth.gate`)
 
