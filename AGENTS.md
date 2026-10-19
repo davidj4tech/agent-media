@@ -101,6 +101,11 @@ real players, phones and history. These have all happened.
   `--target local` is required: without it the default target is used and
   the override is never read. A stale copy leaves `book-stage.json`
   (`sinks.book.stage_status_path()`) showing "copying" until it is deleted.
+- **The phone is someone's phone.** Drive it only with `agent-phone-adb`:
+  open an app with `agent-phone-adb launch <package>`, never `monkey`
+  (it sends a random input event and has switched auto-rotate on after
+  installs; the tool refuses it), never press keys or HOME on a phone in
+  use, and end any playback test with stop, not pause.
 - **Run tests the way CI does.** CI (`.github/workflows/ci.yml`) runs core's
   tests from `packages/core` (`pytest -q`, Python 3.11 and 3.12) and the
   server's from the repo root (`pytest -q packages/server/tests
