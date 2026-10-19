@@ -320,7 +320,10 @@ def views(bearer: str) -> tuple[bool, dict]:
     return True, {"root": str(root()), "views": out, "profile": prof.name,
                   "capture_file": prof.capture_file, "capture_kinds": kinds,
                   "states": {"open": list(kw.open), "done": list(kw.done)},
-                  "refile_targets": targets}
+                  "refile_targets": targets,
+                  # GET /calendar answers (org_calendar.py); an older app
+                  # never sees a view it cannot open.
+                  "calendar": True}
 
 
 def view(name: str, bearer: str, *, done: bool = False) -> tuple[bool, dict]:

@@ -282,7 +282,7 @@ from urllib.parse import parse_qs
 
 from . import (abs_item, archive, auth, devices, drafts, harnesses, pins, routing, send,
                sessions, share, speech, threads)
-from . import alerts, audio, doc_chat, doc_read, music, org, org_chat, org_edit, org_listen, org_setup, org_zettel, refs, uploads
+from . import alerts, audio, doc_chat, doc_read, music, org, org_calendar, org_chat, org_edit, org_listen, org_setup, org_zettel, refs, uploads
 from . import app_links, web_app
 
 # The endpoints a browser on another origin may reach. Everything here
@@ -342,7 +342,8 @@ ORG_PATHS = frozenset({"/org", "/org/view", "/org/read", "/org/search",
                          "/org/capture", "/org/setup", "/org/say",
                          "/org/state", "/org/refile", "/org/date",
                          "/org/priority", "/org/ask", "/org/zettel",
-                         "/org/listen", "/org/listen/ctl", "/doc/read", "/doc/ask", "/doc/undo", "/docs"})
+                         "/org/listen", "/org/listen/ctl", "/doc/read", "/doc/ask", "/doc/undo", "/docs",
+                         "/calendar"})
 CORS_PATHS = CORS_PATHS | ORG_PATHS
 
 # What the watchers report (alerts.py, §6.17). The same arrangement.
@@ -2729,6 +2730,8 @@ def _org(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
         ok, detail = org.views(bearer)
     elif method == "GET" and path == "/org/view":
         ok, detail = org.view(arg("name"), bearer, done=arg("done") == "1")
+    elif method == "GET" and path == "/calendar":
+        ok, detail = org_calendar.get(arg("from"), arg("to"), bearer, done=arg("done") == "1")
     elif method == "GET" and path == "/org/read":
         try:
             at = max(0, int(arg("at") or 0))

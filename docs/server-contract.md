@@ -2352,7 +2352,7 @@ All five routes use `auth.gate`. GETs are gzipped when the client accepts it.
 `{"ok", "root", "views": [{"name", "label", "kind": "agenda"|"file"|"folder",
 "path"?, "count"?, "states"?}], "profile", "capture_file", "states",
 "refile_targets": [{"name", "label", "path", "needs_date"?}], "capture_kinds":
-[{"name", "label", "path", "fields", "needs_text"}]}`. `agenda` comes
+[{"name", "label", "path", "fields", "needs_text"}], "calendar"?}`. `agenda` comes
 first. There is one `file` view per profile file that exists (`count` = open
 TODO-like headings, `states` = that file's keywords as `{"open": [...],
 "done": [...]}`): for paragtd, its core files in its order and with its
@@ -2406,6 +2406,43 @@ keywords is part of the title.
   agenda digest's items, ticked since it was sent (§6.17 `view`).
 - A folder view returns `{path, title, modified}`, newest first, at most 300.
 - An unknown view is a 404.
+
+#### `GET /calendar?from=<date>&to=<date>[&done=1]` (20 Oct 2026)
+
+The Organiser's calendar (org_calendar.py): the agenda files' dated headings
+for any range of days, for a day, 3-day, week or month view. `GET /org`
+says `"calendar": true` where this answers; an older server lacks the key
+and the app shows no calendar. Dates are `YYYY-MM-DD`; `from` defaults to
+today and `to` to six days after `from`. `to` before `from`, or a range of
+more than 92 days, is a 400.
+
+`{"ok", "from", "to", "today", "items": [...]}`, sorted by date, then time.
+Each item is one heading on one day: `{path, at, level, state, priority,
+title, tags, type, date, overdue, time?, end_time?, end_date?, repeat?,
+due?}`.
+
+- `type` is `scheduled`, `deadline`, or `event` (the first plain active
+  timestamp in the heading's title or body; one in the title is taken out
+  of `title`). A heading with both SCHEDULED and DEADLINE is two items.
+- `time` and `end_time` are `HH:MM` where the stamp has them
+  (`<2026-10-22 Thu 14:00-15:00>`). A span (`<…>--<…>`) gives `end_date`,
+  its last day (and `end_time` from that stamp); it is listed once, on its
+  first day, wherever any of its days is in the range.
+- A repeater (`+1w`, `++1m`, `.+2d`) is expanded: an item on every day it
+  falls on in the range from its date on, `repeat` the repeater as written.
+  Months and years count from the stamp's date, so the 31st falls on each
+  month's last day where it has no 31st.
+- `overdue`: a scheduled or deadline heading not done, whose date is past,
+  is listed on its own day (`overdue: false`) and again on today, when
+  today is in the range, with `overdue: true`, `due` its own date and no
+  time. Where a repeat of it already falls on today, that repeat stands
+  for it and there is no second item. Events are never overdue.
+- DONE headings are left out unless `done=1`; the profile may drop stale
+  ones (paragtd's old astro alerts), as the agenda does.
+- At most 2000 items.
+
+Calendar services and the phone's calendar are to join the same list
+(docs/proposals/2026-10-20-organiser-calendar.md).
 
 #### `GET /org/read?path=<rel>[&at=<line>]`
 
