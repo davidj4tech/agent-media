@@ -402,14 +402,35 @@ _ICONS: dict[str, tuple[bytes, str]] = {}
 _LOCK = threading.Lock()
 
 
-def _login(item: dict) -> dict:
+#: (bridge id, login id) → the account's picture (mxc), from its profile.
+_AVATAR_MXC: dict[tuple[str, str], str] = {}
+
+
+def _login(item: dict, bridge_id: str = "") -> dict:
     st = item.get("state") if isinstance(item.get("state"), dict) else {}
     event = st.get("state_event") or item.get("state_event") or None
     since = st.get("timestamp") or item.get("state_ts") or None
-    return {"id": str(item.get("id") or ""), "name": str(item.get("name") or ""),
+    lid = str(item.get("id") or "")
+    # The account as the network knows it (bridgev2 RemoteProfile): whatever
+    # the bridge fills — Telegram name, phone, username, picture; WhatsApp
+    # name and phone; Instagram name and username (David, 20 Oct 2026).
+    prof = item.get("profile") if isinstance(item.get("profile"), dict) else {}
+    profile = {k: str(prof.get(k) or "").strip() for k in ("name", "email", "phone", "username")}
+    profile = {k: v for k, v in profile.items() if v}
+    mxc = str(prof.get("avatar") or "")
+    if bridge_id and lid:
+        with _LOCK:
+            if mxc.startswith("mxc://"):
+                _AVATAR_MXC[(bridge_id, lid)] = mxc
+            else:
+                _AVATAR_MXC.pop((bridge_id, lid), None)
+    if bridge_id and lid and mxc.startswith("mxc://"):
+        profile["avatar"] = f"/bridges/{_q(bridge_id)}/avatar/{_q(lid)}"
+    return {"id": lid, "name": str(item.get("name") or ""),
             "state": event, "error": st.get("error") or None,
             "message": st.get("message") or None,
-            "since": int(since) if isinstance(since, (int, float)) else None}
+            "since": int(since) if isinstance(since, (int, float)) else None,
+            "profile": profile}
 
 
 def entry(b: Bridge) -> dict:
@@ -435,7 +456,7 @@ def entry(b: Bridge) -> dict:
     flows = [{"id": str(f.get("id") or ""), "name": str(f.get("name") or ""),
               "description": str(f.get("description") or "")}
              for f in (who.get("login_flows") or []) if isinstance(f, dict)]
-    logins = [_login(x) for x in (who.get("logins") or []) if isinstance(x, dict)]
+    logins = [_login(x, b.id) for x in (who.get("logins") or []) if isinstance(x, dict)]
     return {"id": b.id, "name": str(net.get("displayname") or b.id),
             "network": str(net.get("network_id") or net.get("beeper_bridge_type") or b.id),
             "icon": f"/bridges/{_q(b.id)}/icon" if mxc else None,
@@ -465,6 +486,26 @@ def icon(bridge_id: str) -> tuple[bytes, str] | None:
         entry(b)
         with _LOCK:
             mxc = _ICON_MXC.get(b.id)
+    return _media(b, mxc)
+
+
+def avatar(bridge_id: str, login_id: str) -> tuple[bytes, str] | None:
+    """`GET /bridges/<id>/avatar/<login id>`: that account's picture, as the
+    icon is served (fetched once, kept); None when it has none."""
+    b = find(bridge_id)
+    if b is None:
+        return None
+    with _LOCK:
+        mxc = _AVATAR_MXC.get((b.id, login_id))
+    if mxc is None:
+        entry(b)
+        with _LOCK:
+            mxc = _AVATAR_MXC.get((b.id, login_id))
+    return _media(b, mxc)
+
+
+def _media(b: Bridge, mxc: str | None) -> tuple[bytes, str] | None:
+    """An image on the homeserver by its mxc, fetched once and kept."""
     if not mxc or not mxc.startswith("mxc://") or "/" not in mxc[6:]:
         return None
     with _LOCK:
@@ -774,3 +815,4 @@ def _reset_for_tests() -> None:
     with _LOCK:
         _ICON_MXC.clear()
         _ICONS.clear()
+        _AVATAR_MXC.clear()

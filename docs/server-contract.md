@@ -5041,6 +5041,15 @@ the owner's"`. With no bridges configured, `GET /bridges` is `{"ok": true,
   `MATRIX_OWNER_TOKEN` and kept; null when it has none; 404 when it
   cannot be had). The icon route takes `?access_token=` in place of the
   bearer, for an `<img>`.
+- `logins[].profile` (20 Oct 2026, David: "can we display name, email,
+  phone number and username or whatever is available"): the account as
+  the network knows it, bridgev2's `RemoteProfile`, with only the fields
+  the bridge filled: `name`, `email`, `phone`, `username`, and `avatar`,
+  the path of its picture (`GET /bridges/<id>/avatar/<login id>`, served
+  like the icon, `?access_token=` for an `<img>`; 404 when it has none).
+  What each fills varies: Telegram all four and a picture, WhatsApp name
+  and phone, Instagram name and username, Messenger name and picture,
+  Google Messages and Teams nothing beyond `name`. `{}` when nothing.
 - `logins[].state` is the bridge state event as the bridge says it
   (`CONNECTED`, `CONNECTING`, `BACKFILLING`, `TRANSIENT_DISCONNECT`,
   `BAD_CREDENTIALS`, `UNKNOWN_ERROR`, `LOGGED_OUT`, …); `error` its error

@@ -320,8 +320,22 @@ def test_the_listing_with_an_unreachable_bridge(server, signed_in, fake):
                   {"id": "qr", "name": "QR", "description": "Scan it"}],
         "logins": [{"id": "L1", "name": "david@example.com", "state": "BAD_CREDENTIALS",
                     "error": "teams-token-expired", "message": "Sign in again",
-                    "since": 1792339271}]}
+                    "since": 1792339271, "profile": {}}]}
     assert SECRET not in json.dumps(obj)
+
+
+def test_an_accounts_details_and_picture_come_through(server, signed_in, fake):
+    # bridgev2's RemoteProfile: whatever the network gives (Telegram: all of it).
+    fake.logins[0]["profile"] = {"name": "David T", "phone": "+61400000003", "username": "davidt",
+                                 "email": "", "avatar": "mxc://ryer.test/me"}
+    res, obj = call(server, "GET", "/bridges", headers=AUTH)
+    (login,) = [b for b in obj["bridges"] if b["id"] == "msteams"][0]["logins"]
+    assert login["profile"] == {"name": "David T", "phone": "+61400000003", "username": "davidt",
+                                "avatar": "/bridges/msteams/avatar/L1"}
+    res, body = call(server, "GET", "/bridges/msteams/avatar/L1?access_token=tok")
+    assert res.status == 200 and body == PNG
+    assert any(c[1].endswith("/ryer.test/me") for c in fake.calls if "/media/" in c[1])
+    assert call(server, "GET", "/bridges/msteams/avatar/nobody", headers=AUTH)[0].status == 404
 
 
 def test_the_icon_comes_through_the_homeserver_and_is_kept(server, signed_in, fake):

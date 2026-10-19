@@ -224,6 +224,7 @@ device gets its token):
                   §6.26; the owner only, as every /bridges route)
   GET  /bridges/<id>/icon → the bridge's network icon (`?access_token=`
                   for an <img>)
+  GET  /bridges/<id>/avatar/<login id> → that account's picture, as the icon
   POST /bridges/<id>/login {"flow"} → a sign-in (a login process), its
                   first step; GET /bridges/<id>/login/<process> → it now
                   (a QR or code is waited on by the server: poll this)
@@ -386,12 +387,13 @@ CONTACT_EDIT = re.compile(r"/contacts/([0-9a-f-]{36})/edit")
 CONTACT_FIND = re.compile(r"/contacts/([0-9a-f-]{36})/find")
 # A bridge's icon, its sign-ins and signing out (bridges.py, §6.26).
 BRIDGE_ICON = re.compile(r"/bridges/([A-Za-z0-9_.-]+)/icon")
+BRIDGE_AVATAR = re.compile(r"/bridges/([A-Za-z0-9_.-]+)/avatar/([^/]+)")
 BRIDGE_LOGIN = re.compile(r"/bridges/([A-Za-z0-9_.-]+)/login")
 BRIDGE_PROC = re.compile(r"/bridges/([A-Za-z0-9_.-]+)/login/([A-Za-z0-9_.-]+)")
 BRIDGE_PROC_ACT = re.compile(r"/bridges/([A-Za-z0-9_.-]+)/login/([A-Za-z0-9_.-]+)/(step|cancel)")
 BRIDGE_LOGOUT = re.compile(r"/bridges/([A-Za-z0-9_.-]+)/logout/([^/]+)")
 BRIDGE_SETUP = re.compile(r"/bridges/([A-Za-z0-9_.-]+)/setup")
-BRIDGE_ROUTES = (BRIDGE_ICON, BRIDGE_LOGIN, BRIDGE_PROC, BRIDGE_PROC_ACT, BRIDGE_LOGOUT, BRIDGE_SETUP)
+BRIDGE_ROUTES = (BRIDGE_ICON, BRIDGE_AVATAR, BRIDGE_LOGIN, BRIDGE_PROC, BRIDGE_PROC_ACT, BRIDGE_LOGOUT, BRIDGE_SETUP)
 
 
 def cors_path(path: str) -> bool:
@@ -997,7 +999,8 @@ def _bridges(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
     query = h.path.partition("?")[2]
     bearer = _bearer(h)
     icon = BRIDGE_ICON.fullmatch(path) if method == "GET" else None
-    if icon and not bearer:
+    avatar = BRIDGE_AVATAR.fullmatch(path) if method == "GET" else None
+    if (icon or avatar) and not bearer:
         # An <img> cannot set a header.
         bearer = ((parse_qs(query).get("access_token") or [""])[0]).strip()
         auth.set_request_bearer(bearer)
@@ -1016,10 +1019,11 @@ def _bridges(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
     try:
         if method == "GET" and path == "/bridges":
             _json(h, 200, {"ok": True, "bridges": bridges.listing()})
-        elif icon:
-            got = bridges.icon(icon.group(1))
+        elif icon or avatar:
+            got = (bridges.icon(icon.group(1)) if icon
+                   else bridges.avatar(avatar.group(1), unquote(avatar.group(2))))
             if got is None:
-                _json(h, 404, {"ok": False, "error": "no icon"})
+                _json(h, 404, {"ok": False, "error": "no icon" if icon else "no picture"})
             else:
                 data, ctype = got
                 h.send_response(200)
