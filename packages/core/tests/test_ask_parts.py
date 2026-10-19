@@ -29,6 +29,11 @@ def isolated(tmp_path, monkeypatch):
     spoken = []
     monkeypatch.setattr(H, "submit_event", lambda ev, state=None: spoken.append(ev))
     monkeypatch.setattr(H, "_ask_lead_text", lambda tp: "")
+    # Someone is looking unless a test says not; a held part is a toast.
+    from agent_media_core.intake import toast
+    monkeypatch.setattr(toast, "should_hold", lambda session="": False)
+    monkeypatch.setattr(toast, "remember",
+                        lambda ev, ask=False, **kw: ev.metadata.update(held=True))
     return spoken
 
 
@@ -78,11 +83,39 @@ def test_a_later_part_is_spoken_once_in_the_kept_voice(isolated):
     assert H.speak_ask_part("nobody", 1) == "no_question"
 
 
-def test_nothing_more_is_spoken_when_the_first_part_was_held(isolated):
+def test_a_held_first_part_does_not_silence_the_next(isolated):
+    """The first part was held while nobody looked; whoever answers it is
+    looking now, so the next part is spoken (David, 19 Oct 2026)."""
     pending_asks.record("s1", "t1", CARD)
     pending_asks.update("s1", "t1", held=True)
+    assert H.speak_ask_part("s1", 1) == ""
+    (ev,) = isolated
+    assert ev.text.startswith("Question 2 of 2.") and not ev.metadata.get("held")
+
+
+def test_a_later_part_is_held_when_nobody_is_looking(isolated, monkeypatch):
+    from agent_media_core.intake import toast
+    monkeypatch.setattr(toast, "should_hold", lambda session="": True)
+    pending_asks.record("s1", "t1", CARD)
     assert H.speak_ask_part("s1", 1) == "held"
-    assert not isolated
+    (ev,) = isolated
+    assert ev.metadata["held"] is True
+
+
+def test_the_notification_leaves_a_kept_card_to_pretooluse(isolated, monkeypatch, tmp_path):
+    """A Notification would read the whole card again beside the parts."""
+    emitted = []
+    monkeypatch.setattr(H, "_latest_ask_question", lambda tp: "Question 1. Which colour?")
+    monkeypatch.setattr(H, "_emit_ask", lambda ask, payload, **kw: emitted.append(ask) or 0)
+    tp = tmp_path / "t.jsonl"
+    tp.write_text("")
+    payload = {"session_id": "s1", "transcript_path": str(tp)}
+    pending_asks.record("s1", "t1", CARD)
+    H._handle_notification(payload)
+    assert not emitted
+    pending_asks.clear("s1", "t1")
+    H._handle_notification(payload)
+    assert emitted
 
 
 def test_answering_clears_the_claims(isolated):

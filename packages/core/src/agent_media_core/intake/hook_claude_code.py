@@ -811,9 +811,9 @@ def speak_ask_part(session: str, part: int, tool_use_id: str = "") -> str:
     Called when the part before it has been answered: by the server when a
     part is picked in the app, by the watcher when the terminal moves to the
     next tab. Each part is spoken once (`pending_asks.claim_part`), never the
-    first (the PreToolUse hook read it), and none when the first was held
-    for the screen. Runs outside the hook, so the voice and the place are the
-    ones the hook kept with the question.
+    first (the PreToolUse hook read it); held for the screen ("held") when
+    nobody is looking now. Runs outside the hook, so the voice and the place
+    are the ones the hook kept with the question.
     """
     from agent_media_core import pending_asks
 
@@ -825,13 +825,21 @@ def speak_ask_part(session: str, part: int, tool_use_id: str = "") -> str:
     qs = cur.get("questions") or []
     if not isinstance(part, int) or not 0 < part < len(qs):
         return "no_such_part"
-    if cur.get("held"):
-        return "held"
     if not pending_asks.claim_part(session, str(cur.get("tool_use_id") or ""), part):
         return "already_spoken"
     text = strip_markdown(_format_ask_question({"questions": qs}, part=part).strip())
     if not text:
         return "no_such_part"
+    # Held or spoken is decided again here, as the hook decides it, not
+    # taken from the first part: that one was held while nobody was looking,
+    # but whoever answers it is looking now — the app has the thread open,
+    # the desk is on the pane — so the next part is spoken (David, 19 Oct
+    # 2026: the second question was never read after the first was played
+    # from the screen). Looked away again, it is held like the first.
+    from . import toast
+    from ..speak_priority import level_of
+
+    held = level_of(session) in ("pocket", "normal", "quiet") and toast.should_hold(session)
     # The part before is answered, so its read-out has nothing left to ask:
     # skip to this one rather than queue behind it — the one speaking stops,
     # a queued one is dropped (David, 19 Oct 2026: "once I answer one, the
@@ -843,6 +851,9 @@ def speak_ask_part(session: str, part: int, tool_use_id: str = "") -> str:
     request_session_speech_cut(session, "ask")
     try:
         _stop_playing_ask(session)
+        # A held read-out of the part before must not play when the thread
+        # is opened either.
+        toast.drop_asks(session)
     except Exception as e:  # noqa: BLE001 — the cut still ends it between clips
         log.info("hook: could not stop the part before (%s)", e)
     place = cur.get("place") if isinstance(cur.get("place"), dict) else {}
@@ -850,8 +861,10 @@ def speak_ask_part(session: str, part: int, tool_use_id: str = "") -> str:
                   voice=cur.get("voice") or None,
                   metadata={"kind": "notif", "ask": True, "ask_part": part,
                             "session": session, **place})
+    if held:
+        toast.remember(event, ask=True)
     submit_event(event, state=StateStore())
-    return ""
+    return "held" if held else ""
 
 
 def _handle_pretooluse(payload: dict) -> int:
@@ -900,6 +913,18 @@ def _handle_pretooluse(payload: dict) -> int:
                      structure=ask_structure(payload.get("tool_input") or {}))
 
 
+def _ask_kept_by_pretooluse(session: str) -> bool:
+    """Is a question on screen for `session`, kept by the PreToolUse hook?"""
+    if not session:
+        return False
+    try:
+        from agent_media_core import pending_asks
+
+        return bool(pending_asks.read(session))
+    except Exception:  # noqa: BLE001 — unknown: read it, as before
+        return False
+
+
 def _handle_notification(payload: dict) -> int:
     """Notif path: prefer Claude's `message` field, dedup-skip if a
     Stop just played or a notif fired within the cooldown windows.
@@ -918,6 +943,11 @@ def _handle_notification(payload: dict) -> int:
         if tp.is_file():
             ask = strip_markdown(_latest_ask_question(tp).strip())
 
+    if ask and _ask_kept_by_pretooluse(str(payload.get("session_id") or "")):
+        # PreToolUse has this card and reads it (a part at a time, maybe):
+        # the whole card again would be a second read-out, which the claim
+        # cannot collapse since the text differs (19 Oct 2026, held twice).
+        return 0
     if ask:
         return _emit_ask(ask, payload)
 

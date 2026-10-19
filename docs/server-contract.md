@@ -1710,8 +1710,10 @@ before the card is left alone. The same holds when the terminal reaches a
 tab.
 
 - 200 `{"ok": true, "spoken": true}`, or `{"ok": true, "spoken": false,
-  "why"}` with `why` one of `already_spoken`, `held` (the first part was
-  held for the screen, so the rest are not spoken either), `no_question`,
+  "why"}` with `why` one of `already_spoken`, `held` (nobody is looking at
+  the thread now, so the part is held for the screen like a reply — decided
+  afresh for each part, so a first part held and then played from the
+  screen does not silence the next), `no_question`,
   `not_this_question` (`tool_use_id` names another), `no_such_part` (0 —
   the hook's — or past the end).
 - 400 `"not a session id"`, `"part must be a number"`; 401 as §4.1.

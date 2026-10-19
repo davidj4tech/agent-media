@@ -47,8 +47,6 @@ def _speak(session: str, part: int, tool_use_id: str = "", daemon: bool = True) 
     qs = cur.get("questions") or []
     if not 0 < part < len(qs):
         return "no_such_part"
-    if cur.get("held"):
-        return "held"
     from agent_media_core.intake import hook_claude_code as hook
 
     done = threading.Event()
