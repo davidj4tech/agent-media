@@ -80,7 +80,7 @@ def test_pairing_hands_out_a_token_and_the_server(server):
     code, _ = devices.mint_code("Pixel 8a")
     res, obj = _pair(server, code)
     assert res.status == 200, obj
-    assert keys(obj) == {"ok", "token", "device_id", "name", "server", "enrol"}
+    assert keys(obj) == {"ok", "token", "device_id", "name", "server", "server_id", "enrol"}
     assert obj["enrol"] is False                     # not unless the desk said so
     assert obj["ok"] is True
     assert len(obj["token"]) == 43                   # token_urlsafe(32)
@@ -90,6 +90,22 @@ def test_pairing_hands_out_a_token_and_the_server(server):
     assert obj["server"]["base"] == f"http://{host}:{port}"
     (row,) = devices.list_devices()
     assert row["id"] == obj["device_id"] and row["name"] == "Pixel 8a"
+
+
+def test_the_server_says_which_it_is_and_its_name(server, monkeypatch):
+    """An app paired with several servers (roadmap item 7) tells them apart by
+    `server_id`, the same on /pair and /me and on every pairing, not by an
+    address a tunnel changes; MEDIA_SERVER_NAME names it ("Pixel")."""
+    monkeypatch.setenv("MEDIA_SERVER_NAME", "Pixel")
+    code, _ = devices.mint_code("Pixel 8a")
+    _, one = _pair(server, code)
+    code, _ = devices.mint_code("Tablet")
+    _, two = _pair(server, code)
+    assert one["server_id"] and one["server_id"] == two["server_id"]
+    assert one["server"]["name"] == "Pixel"
+    res, me = call(server, "GET", "/me", headers={"Authorization": f"Bearer {one['token']}"})
+    assert res.status == 200, me
+    assert me["server_id"] == one["server_id"] and me["server_name"] == "Pixel"
 
 
 def test_the_base_is_https_behind_a_tls_proxy(server):

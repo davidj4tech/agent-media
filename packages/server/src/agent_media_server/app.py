@@ -1518,7 +1518,11 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
                            # device paired before it existed (16 Oct 2026), or
                            # over another address, learns it here without
                            # pairing again.
-                           "lookup": _lookup_for(_base_url(h)) or None})
+                           "lookup": _lookup_for(_base_url(h)) or None,
+                           # Which server this is, for an app paired with
+                           # several (roadmap item 7): stable across
+                           # addresses, the id sasonica.com lists it by.
+                           "server_id": _server_id(), "server_name": _server_name()})
     elif path == "/enrol":
         # Where the app signs in with an account (oidc.py): open, like /pair.
         from . import oidc
@@ -1832,13 +1836,13 @@ def _pair(h: BaseHTTPRequestHandler) -> None:
     print(f"pair: paired {got['device_id']} ({got['name']!r}) from {ip}", file=sys.stderr)
     # `name` is the one the device will be known by — the name given at the
     # desk wins over the one the phone sent — so the app can say "paired as".
-    server = {"name": socket.gethostname(), "base": _base_url(h)}
+    server = {"name": _server_name(), "base": _base_url(h)}
     lookup = _lookup_for(server["base"])
     if lookup:
         server["lookup"] = lookup
     _json(h, 200, {"ok": True, "token": got["token"], "device_id": got["device_id"],
                    "name": got["name"], "enrol": bool(got.get("enrol")),
-                   "server": server,
+                   "server": server, "server_id": _server_id(),
                    # Only for a jobs-only device (`pair --jobs`): `media jobs
                    # pair` checks it; the app's answer is unchanged.
                    **({"jobs": True} if got.get("jobs") else {})})
@@ -2083,7 +2087,30 @@ def _enrol(h: BaseHTTPRequestHandler) -> None:
                    "name": got["name"], "enrol": got["enrol"],
                    "account": str(claims.get("email") or ""), "username": got["username"],
                    "picture": oidc.picture_of(claims) or None,
-                   "server": {"name": socket.gethostname(), "base": _base_url(h)}})
+                   "server": {"name": _server_name(), "base": _base_url(h)},
+                   "server_id": _server_id()})
+
+
+def _server_name() -> str:
+    """What this server calls itself to a pairing app (§9 `server.name`):
+    MEDIA_SERVER_NAME, else the host name — the name sasonica.com's list
+    gives it too (servers_report.py)."""
+    import os
+    import socket
+
+    return os.environ.get("MEDIA_SERVER_NAME", "").strip() or socket.gethostname()
+
+
+def _server_id() -> str:
+    """This server's stable id (made once into `<state_dir>/server-id`), so an
+    app paired with several servers knows one by more than its address,
+    which a quick tunnel changes (roadmap item 7; several-servers proposal)."""
+    from . import servers_report
+
+    try:
+        return servers_report.server_id()
+    except OSError:
+        return ""
 
 
 def _devices_code(h: BaseHTTPRequestHandler) -> None:
@@ -2123,7 +2150,7 @@ def _devices_code(h: BaseHTTPRequestHandler) -> None:
     _json(h, 200, {"ok": True, "code": code, "expires": round(expires, 3),
                    "name": name, "enrol": bool(body.get("enrol")),
                    "links": {"app": app_link, "browser": browser_link},
-                   "server": {"name": socket.gethostname(), "base": base}})
+                   "server": {"name": _server_name(), "base": base}})
 
 
 def _devices_revoke(h: BaseHTTPRequestHandler) -> None:
