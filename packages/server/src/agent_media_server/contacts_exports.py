@@ -43,7 +43,7 @@ import sys
 import time
 from pathlib import Path
 
-DYI_URL = "https://accountscentre.facebook.com/info_and_permissions/dyi"
+DYI_URL = "https://accountscenter.facebook.com/info_and_permissions/dyi"
 REMIND_DAYS = 90
 NETWORKS = {"facebook": "Facebook", "instagram": "Instagram"}
 CHOICES = {

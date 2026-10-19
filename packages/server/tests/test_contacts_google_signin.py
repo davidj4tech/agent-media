@@ -195,7 +195,7 @@ def test_login_needs_a_port_and_a_client(server, google):
         ("chats", "Old Google Talk chats"),
         ("facebook_uploads", "Facebook's uploaded contacts"),
         ("instagram_uploads", "Instagram's uploaded contacts")]
-    assert {x["url"] for x in ex} == {"https://accountscentre.facebook.com/info_and_permissions/dyi",
+    assert {x["url"] for x in ex} == {"https://accountscenter.facebook.com/info_and_permissions/dyi",
                                       "https://takeout.google.com/"}
     assert "Friends and followers" in ex[0]["steps"] and "JSON" in ex[0]["steps"]
     assert "Followers and following" in ex[1]["steps"] and "All time" in ex[1]["steps"]

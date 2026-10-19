@@ -4290,7 +4290,7 @@ the `email` scope was asked. `contacts` counts Google's records in the book.
 `exports` (always there, whatever Google's state) is where each network's
 export is requested, for Settings → Contacts → Import a file:
 `[{"network": "facebook", "label": "Facebook friends", "url":
-"https://accountscentre.facebook.com/info_and_permissions/dyi", "steps"},
+"https://accountscenter.facebook.com/info_and_permissions/dyi", "steps"},
 {"network": "instagram", "label": "Instagram followers and following", …}]`.
 `steps` names the same choices the export reminder does (below, "The export
 cycle"; `contacts_exports.CHOICES`): Some of your information → Connections
