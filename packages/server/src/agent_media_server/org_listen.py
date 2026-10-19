@@ -300,6 +300,52 @@ def _clip_of(uri: str) -> Path | None:
     return clip if name.endswith(".mp3") and docs.timings_path(clip).exists() else None
 
 
+def _start_before_edit(clip: Path, timings: dict | None) -> int:
+    """Where an earlier render of the same note or document was left, in ms
+    of this one: an edit makes a new render, which has no place of its own
+    yet (David, 19 Oct 2026: "when you come back to them they keep the same
+    place"). The newest earlier render with a place; its paragraph found
+    again by its opening words, else by its line. 0 when there is none, or
+    it was heard to the end."""
+    def who(t: dict | None) -> tuple:
+        t = t or {}
+        return (t.get("doc"),) if t.get("doc") else (t.get("path"), t.get("at") or 0)
+    me = who(timings)
+    if not timings or not any(me):
+        return 0
+    state = _book()._state()
+    try:
+        sides = sorted(docs.doc_cache_dir().glob("*.json"),
+                       key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return 0
+    for side in sides:
+        old = side.with_suffix(".mp3")
+        if old == clip:
+            continue
+        t = docs.read_timings(old)
+        if not t or who(t) != me:
+            continue
+        pos = state.get_resume_pos(str(old))
+        if not pos:
+            continue
+        dur = t.get("duration") or 0
+        if dur and pos >= (dur - _HEARD_S) * 1000:
+            return 0
+        row = None
+        for r in t.get("timings") or []:
+            if r["start"] > pos / 1000.0 + 0.05:
+                break
+            row = r
+        if not row:
+            return 0
+        for r in timings.get("timings") or []:
+            if row.get("text") and r.get("text") == row["text"]:
+                return int(r["start"] * 1000)
+        return _start_ms(timings, row["line"])
+    return 0
+
+
 def _play(clip: Path, meta: dict, line: int | None) -> str:
     """Put `clip` on the book channel (or the app's book player); the state
     it is then in."""
@@ -315,7 +361,9 @@ def _play(clip: Path, meta: dict, line: int | None) -> str:
     if line is not None:
         start = _start_ms(timings, line)
     else:
-        start = srv._state().get_resume_pos(str(clip)) or 0
+        start = srv._state().get_resume_pos(str(clip))
+        if start is None:
+            start = _start_before_edit(clip, timings)
         dur = (timings or {}).get("duration") or 0
         if dur and start >= (dur - _HEARD_S) * 1000:
             start = 0

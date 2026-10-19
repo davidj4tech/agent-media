@@ -887,13 +887,15 @@ def _render_sections_to(sections: list, final: Path, engine: str,
     clock = 0.0
     for n, sec in enumerate(sections):
         start = clock
-        for (jn, line, _say, part), dur in zip(jobs, durs):
+        for (jn, line, say, part), dur in zip(jobs, durs):
             if jn != n or dur <= 0:
                 continue
             parts.append(part)
             if line >= 0:
+                # Its opening words find the paragraph again after an edit.
                 timings.append({"start": round(clock, 3),
-                                "end": round(clock + dur, 3), "line": line})
+                                "end": round(clock + dur, 3), "line": line,
+                                "text": say[:80]})
             clock += dur
         if clock > start:
             chapters.append((sec.heading or f"Section {n + 1}", start, clock))

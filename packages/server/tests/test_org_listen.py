@@ -6,6 +6,7 @@ nothing reaches a player, so no test plays on David's phone."""
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 
@@ -119,8 +120,8 @@ def book(tree, monkeypatch, tmp_path):
         clip.write_bytes(b"mp3")
         rows, clock = [], 0.0
         for sec in sections:
-            for line, _t in docs._pieces(sec):
-                rows.append({"start": clock, "end": clock + 1, "line": line})
+            for line, say in docs._pieces(sec):
+                rows.append({"start": clock, "end": clock + 1, "line": line, "text": say})
                 clock += 1
         docs.timings_path(clip).write_text(json.dumps(
             {**(extra or {}), "duration": clock, "timings": rows}))
@@ -197,6 +198,31 @@ def test_a_note_heard_to_the_end_starts_again(book, server):
     book.resume_pos[uri] = 1500
     _call(server, "POST", "/org/listen", {"path": "walk.org"})
     assert book.calls[-1][2] == 1500
+
+
+def test_an_edited_note_picks_up_where_it_was_left(book, server, tree):
+    _call(server, "POST", "/org/listen", {"path": "walk.org"})
+    assert _until(lambda: book.calls)
+    first = book.calls[0][1]
+    book.resume_pos[first] = 1500           # in "First we go." (line 3)
+    _call(server, "POST", "/org/listen/ctl", {"action": "stop"})
+    # A paragraph added above it: a new render, the place found by its words
+    # (line 3 is now the new paragraph).
+    (tree / "walk.org").write_text(NOTE.replace("First we go.", "A start.\n\nFirst we go."))
+    _call(server, "POST", "/org/listen", {"path": "walk.org"})
+    assert _until(lambda: len(book.rendered) == 2 and book.calls[-1][0] == "play"
+                  and book.calls[-1][1] != first)
+    assert book.calls[-1][0] == "play" and book.calls[-1][2] == 2000
+    # That one heard to the end, then edited again: from the top. (The
+    # newest render is the one asked; a file's clock is coarser than a test.)
+    second = book.calls[-1][1]
+    book.resume_pos[second] = 6000
+    later = time.time() + 5
+    os.utime(docs.timings_path(Path(second)), (later, later))
+    (tree / "walk.org").write_text(NOTE + "\nMore.\n")
+    _call(server, "POST", "/org/listen", {"path": "walk.org"})
+    assert _until(lambda: book.calls[-1][0] == "play" and book.calls[-1][1] not in (first, second))
+    assert book.calls[-1][2] == 0
 
 
 def test_nothing_playing_is_idle_and_bad_notes_refused(book, server):

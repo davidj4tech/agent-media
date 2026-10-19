@@ -2451,7 +2451,9 @@ like `/org/say` → `{"ok", "state", "path", "at", "title", "line"}`.
 - `line` (0-based in the `text` `/org/read` gave) starts at the paragraph at
   or after it. When this note is already the one playing, that is a seek.
   Without `line` a note resumes where it was left, or from the top once it
-  was heard to within 3 s of its end.
+  was heard to within 3 s of its end. Edited since, it is a new render with
+  no place of its own: it starts at the paragraph the last render was left
+  in (found by its opening words, else its line).
 - 404 and 409 as for `/org/read`; 422 when nothing readable is left; 502
   when the book channel refused it.
 
