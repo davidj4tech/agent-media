@@ -1326,6 +1326,18 @@ ahead.
     (All Mail or Gmail's API, mbsync or lieer, spam, read aloud) are in
     docs/proposals/2026-10-20-mail-in-sasonica.md. Not started.
 
+36. **Several servers, and settings by server** (David, 20 Oct 2026: "with
+    multi-server pairing, there are some settings and sign in features that
+    could be managed per server rather than per device. maybe under an
+    administrator role?"). The app pairs with several servers (a list of
+    pairings, a switcher, notifications from all), and Settings splits into
+    This phone, You on <server> (per-person voice, speech default,
+    language, alert levels) and <server> for admins (coding agents,
+    presets, project roots, personas, bridges, contacts, devices). Needs
+    roles step 1 first (docs/proposals/2026-10-18-roles.md). The plan and
+    its open questions are in docs/proposals/2026-10-20-several-servers.md.
+    Not started.
+
 ## Loose ends
 
 - **A reply with a figure had no follow-along at all** (David, 23 Sep 2026)
