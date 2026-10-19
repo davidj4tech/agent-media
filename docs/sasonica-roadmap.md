@@ -686,6 +686,70 @@ ahead.
    room's speakers at home, the e-ink canvas at the desk — the voice and the
    figures going where he is, the thread the same everywhere. Not a step of
    its own; the test that (b)–(c) are done.
+   **Plan for the first step** (20 Oct 2026, David: "y" to starting it).
+   *Where the app holds one server today:* one pairing in
+   `sasonica.chat.device` (sealed in the keystore in the shell, read by
+   `NotifyService.java` too) and the address in `sasonica.chat.baseUrl`.
+   Every call goes through `api/index.ts` `reach()`/`request()` with
+   `serverBase()` + `authHeaders()`: the lists, the thread stream
+   (`openThreadStream`), replies, the Organiser (`api/org.ts`),
+   `pictureUrl`. Also on the one pairing: `relocate()` (its lookup),
+   Settings, Devices (revoking itself), the profile menu (sign-in, sign
+   out), About, `useSpeech`, `lib/bridges.ts`, the background notifier,
+   and `finishAccountSignIn` (replacing a pairing on the same server).
+   Pairing another server replaced the device; `forgetSnapshots` runs only
+   on leaving the demo, so the old server's cached list painted until the
+   new one answered. *The server already names itself:* `POST /pair`,
+   `POST /enrol` and `POST /devices/code` answer `server: {name, base}`
+   (`gethostname()`), so nothing is added for now; small later options are
+   `MEDIA_SERVER_NAME` (already `servers_report`'s) there too, so a Termux
+   base is "Pixel" not "localhost", and `server` on `GET /targets` so rows
+   from a pairing made before the name was kept get one.
+   *Storage:* the current pairing stays exactly where it is
+   (`sasonica.chat.device`); the others go in `sasonica.chat.otherPairings`,
+   a JSON array of the same Device shape, sealed the same way. So the
+   existing pairing needs no migration (it is the current one), the native
+   notifier is unchanged, and an older build ignores the new key and keeps
+   working. A pairing is known by its normalised server address: the same
+   server paired again replaces its own pairing, another is added.
+   *Which base a request goes to:* in slice 1, the current one, as now. From
+   slice 3, a per-thread call takes the base of the row that owns the
+   session (a `session → base` map filled by the merged list; a link to a
+   session not in it asks each base); anything not per-thread (Settings,
+   voice, Organiser, People, Media, alerts) stays with the current base,
+   the "home" one. `relocate()` becomes per pairing.
+   *Merged vs per base:* merged — `/targets` sessions (each row tagged with
+   its base and label), `/sessions/state`, later Home and alerts. Per base —
+   places and projects (a new chat asks which server), settings, voice,
+   Organiser, contacts, devices, account.
+   *UI:* Settings → This device lists the current pairing, then "Also
+   paired with" (each: Switch to it, Remove) and "Pair another server"; the
+   pairing screen says another server is added and the same one replaced,
+   and a pairing link still waits for a tap. With more than one pairing the
+   thread list labels each row with its server, and (David, 20 Oct 2026:
+   "Merged, with a filter") the filter row gains a chip per server to show
+   just that one (`lib/threadFilter.ts`, `test/filter.mjs`).
+   *Slices, smallest first:* **(1) done 20 Oct 2026** (sasonica-app branch
+   `multi-base`, not merged): the list of pairings, pairing another server
+   adds it (it becomes current, the other kept with its token), Settings
+   switches and removes, Unpair (and sign out, revoking itself in Devices)
+   falls back to another pairing, the list and Home snapshots forgotten on
+   a switch (each thread's own snapshot kept: sessions are unique);
+   `test/multibase.mjs` against two mocks. (2) The merged thread list:
+   every pairing's `/targets` and `/sessions/state` asked in parallel, rows
+   tagged and merged, a server that does not answer shown quietly with its
+   rows from the last snapshot (snapshots kept per base), the label on each
+   row and the per-server filter chip. (3) Per-thread routing: open, stream,
+   reply, answer, stop, rename, archive, move and the rest to the row's
+   base. (4) Home and alerts from every base; the background notifier for
+   each base (`NotifyService` reads the list). (5) A new chat on a chosen
+   server; Devices and the account per server.
+   *Open questions:* does sign out from the profile menu sign out of the
+   current server only (built so) or all of them; is the current server
+   still a thing once the list is merged (the home base for Settings and
+   voice), or does Settings get a server picker; and should a session
+   appearing on two bases (one day, siblings listing each other's) be shown
+   once.
 8. **A Media tab** (David, 28 Sep 2026) — a fourth tab in the app, not a
    companion app, because speech and music share the phone's player and its
    handoff already lives here. Music plays in the app's own ExoPlayer (a
