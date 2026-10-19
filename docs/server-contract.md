@@ -3123,7 +3123,8 @@ memory as its own section when this host has agent-memory. Code:
   answers only that thread's messages, narrowed and paged as above (the app
   asks `sort=oldest`). `threads` is `[]`, `docs` and `memory` are left out,
   and the answer says `session` and, on the first page, `total`: how many of
-  its messages match (0 for a thread search does not answer). A hit opens
+  its messages match, each once though its words and a tool step both
+  may (0 for a thread search does not answer). A hit opens
   as any other, `/conversation/log?session=<id>&around=<message>`.
 - **`tools=1`** (the app's Advanced setting) adds tool steps: a tool's name,
   its title, its input summary and its result summary (§6.2.2 — summaries,

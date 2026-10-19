@@ -496,3 +496,16 @@ def test_one_thread_find_bar(home, gate):
     assert "total" not in page2
     assert ask("marten", session="no-such-thread")["total"] == 0
     assert len(ask("marten")["messages"]) == 4
+
+
+def test_one_thread_total_counts_messages_not_hits(home, gate):
+    s = claude(home, SID)
+    s.prompt("grebe in words")
+    s.end_turn()
+    s.tool("Bash", {"command": "grep grebe notes"}, "t1")
+    s.result("t1", "grebe found")
+    s.text("grebe said")
+    s.end_turn()
+    page = ask("grebe", session=SID, tools=True, sort="oldest")
+    assert len(page["messages"]) > len({h["message"] for h in page["messages"]})
+    assert page["total"] == len({h["message"] for h in page["messages"]})

@@ -1317,19 +1317,23 @@ def _message_hits(conn: sqlite3.Connection, query: str, *, tools: bool, before: 
 def _session_total(conn: sqlite3.Connection, query: str, session: str,
                    rows: dict[str, dict], owned: set[str], *, tools: bool,
                    since: float | None, who: str | None) -> int:
-    """How many of one thread's messages match: the find bar's "3 of 12".
+    """How many of one thread's messages match, each once: the find bar's "3 of 12".
     0 for a thread search does not answer (machinery, an excluded folder)."""
     t = rows.get(session)
     if t is None or _hidden(t.get("entrypoint"), session, owned, t.get("harness")) \
             or _excluded(t.get("cwd") or ""):
         return 0
-    n = 0
+    # Messages, not hits: one whose words and tool steps both match is one
+    # stop for the find bar's arrows, so it counts once (15 said, 10 to step
+    # through, 19 Oct 2026).
+    parts, params = [], []
     for fts in ("text_fts", "tool_fts") if tools else ("text_fts",):
         more, args = _narrowing(fts, since=since, who=who, rooms=None, session=session)
-        n += conn.execute(
-            f"SELECT count(*) FROM {fts} JOIN docs d ON d.id = {fts}.rowid "
-            f"WHERE {fts} MATCH ?" + more, (query, *args)).fetchone()[0]
-    return n
+        parts.append(f"SELECT d.msg FROM {fts} JOIN docs d ON d.id = {fts}.rowid "
+                     f"WHERE {fts} MATCH ?" + more)
+        params += [query, *args]
+    return conn.execute(f"SELECT count(DISTINCT msg) FROM ({' UNION ALL '.join(parts)})",
+                        params).fetchone()[0]
 
 
 # --- memory ---------------------------------------------------------------------

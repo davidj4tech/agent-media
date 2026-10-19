@@ -120,6 +120,21 @@ what it's given.**
    *Gain: Family, South Pen Labs, Rye Remedial.*
 4. **Label → space rules**, after David answers how they should act.
 
+## Decided (David, 19 Oct 2026)
+
+- **Chats, threads or both:** "it would be good to have the option for
+  either or". A space can hold chats, coding threads, or both; each space
+  says which. South Pen Labs can gather its chats and its coding threads.
+- **Label rules move chats automatically.** A rule "Family label → Family
+  space" keeps the space filled; taking a chat out by hand sticks and the
+  rule never puts it back.
+- **Unread is a chip; Archived stays in Show.**
+- **Unread at a glance:** "it would also be good to see which ones have
+  unread messages at a glance". Every space chip carries its unread count
+  (a badge; none when nothing is unread), the bridges' spaces included.
+  Bridge spaces are shown; David's own spaces come first, then the
+  bridges'; each can be hidden.
+
 ## Open questions for David
 
 - **Coding threads:** should spaces hold coding threads too (a "South Pen
