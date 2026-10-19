@@ -4168,6 +4168,36 @@ hold (and for any path that is not a uuid, as an unknown route).
 - **`updated`**: when the card last changed here (epoch s).
 - **`crm`**: the person in the Drupal CRM and the fields only it has
   (below, "The CRM"), or `null`.
+- **`mail`**: `{"url", "label"}` for "Their emails", a mail search over
+  every address on the card and every old chat address (`old_addresses`),
+  `from:(a) OR to:(a)` each, URL-encoded into the book's template:
+  `MEDIA_CONTACTS_MAIL_URL` (the owner's) or `contacts.json` `mail_url`,
+  `{query}` where the search goes, default
+  `https://mail.google.com/mail/u/0/#search/{query}`; `off` leaves it out.
+  `label` is "Gmail" for Gmail, else the link's host. A search longer than
+  2000 characters stops at the last address that fits — the card's own
+  first, then the old ones last seen first — and says `left_out` (how many
+  did not). `null` with no address. The app opens it outside itself, as it
+  does `tel:`, so Android can hand it to the Gmail app (David, 19 Oct 2026).
+- **`old_addresses`**: `[{"address", "real"}]`, the old Jabber (XMPP)
+  transport addresses to MSN, Yahoo, AIM, ICQ, Facebook chat, Google Talk
+  bots and the like (`someone%hotmail.com@msn.example.org`), folded off
+  `emails`: `real` is the address the local part encodes (`%` for `@`), or
+  `null`. A `real` the card lacks is added to `emails` as
+  `{"value", "type": "derived", "derived": true, "from"}`, and matching
+  reads it (a gateway address matches no one by itself). A transport is a
+  host matching `MEDIA_CONTACTS_GATEWAYS` / `contacts.json` `gateways`
+  (comma-separated fnmatch patterns, each `+pattern` added to the default
+  list, else replacing it; the default covers `*.gajim.org`, `*.jaim.at`,
+  `msn*.jabber.*`, `yahoo*.jabber.*`, `j2j.*`, `gtalk2voip.com`,
+  `chikkatalk.com`, `*.talk.google.com` and others), or a host starting
+  with a transport's name (msn, yahoo, aim, icq, fb, …) whose address
+  encodes one, so `someone@yahoo.com.au` never is. Every one ever seen is
+  kept per contact in the store's `aliases`, through schema bumps, so they
+  stay on the card and in the mail search after they are deleted from
+  Google; this list is current ones first, then those only `aliases`
+  remembers, last seen first. Cards made before this are made again from
+  the kept records at the next sync (`CARDS_VERSION`), nothing read again.
 - **`rooms`**: the Matrix rooms (§6.1 "Matrix rows") that are this
   person's, newest message first: `session` is the room's thread id, so
   every session route takes it; `at` its last message, or `null`.
@@ -4250,6 +4280,17 @@ app offers "Sign in again". A new sign-in clears it.
 `available` is whether this server has an OAuth client at all (false: the
 app hides the row's Sign in). `email` is `null` for a sign-in made before
 the `email` scope was asked. `contacts` counts Google's records in the book.
+
+`exports` (always there, whatever Google's state) is where each network's
+export is requested, for Settings → Contacts → Import a file:
+`[{"network": "facebook", "label": "Facebook friends", "url":
+"https://accountscentre.facebook.com/info_and_permissions/dyi", "steps"},
+{"network": "instagram", "label": "Instagram followers and following", …}]`.
+`steps` names the same choices the export reminder does (below, "The export
+cycle"; `contacts_exports.CHOICES`): Some of your information → Connections
+→ Friends and followers (Followers and following), All time, Format JSON.
+The app shows each as a button opened outside itself, its steps under it
+(David, 19 Oct 2026).
 
 #### `POST /contacts/google/login {"port"}` — gated (`auth.gate`)
 
@@ -4338,7 +4379,12 @@ the phone's contact groups — Google's labels, synced by Android
 book signed in to Google, its People API `memberships` by `contactGroups`
 name. Both are one list. These are also the work/personal tags the
 proposal waited on. `GET /contacts?label=<name>` (case and accents
-ignored) lists only the people with it. Pinned by
+ignored) lists only the people with it. Several labels are `label`
+repeated (`?label=Family&label=Friends`, not a comma list: a label may hold
+a comma), with `labels_mode=any` (the default: anyone with any of them) or
+`labels_mode=all` (only people with every one; David, 19 Oct 2026: "select
+multiple Google contact labels at once", with a switch between the two).
+Pinned by
 `packages/server/tests/test_contacts_labels.py`.
 
 **Exports** (19 Oct 2026; David: "a full list of my bridged contacts"). A
