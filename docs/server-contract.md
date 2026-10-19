@@ -4720,6 +4720,48 @@ A note on them, today: kept, and written to the CRM. `{"ok": true, "note":
 contact, 403 when `notes` is switched off. A note is at most 4000
 characters (cut, not refused).
 
+#### `POST /contacts/timeline/backfill` — the owner, or this host's token (19 Oct 2026)
+
+The timeline's past, counted once (timeline_backfill.py): what the phone
+and Matrix already hold, never fetched again from a network.
+
+- **The phone** (the owner's book, `MEDIA_CONTACTS_ADB`): `content://sms`
+  (`date`, `type`, `address`; type 1 in, 2 out, the rest left out) and
+  `content://mms` (`msg_box` 1 in, 2 and 4 out) with each MMS's addresses
+  (`content://mms/<id>/addr`: 137 from, 151/130/129 to). `body` is never
+  asked for. A message with one other party counts; a group MMS is no one's.
+  Channel `sms`.
+- **Every bridged room** this server holds that is a contact's (one-to-one,
+  §6.25 "The bridged networks"), on a network the timeline knows (`sms`,
+  `signal`, `messenger`, `instagram`, `teams`, `whatsapp`): paged back
+  through `/rooms/<id>/messages?dir=b`, 100 a page,
+  `MEDIA_TIMELINE_BACKFILL_PAUSE_S` (0.25) between pages. Notices, edits
+  and other events do not count. **Resumable**: each room's next token, and
+  the oldest day reached and not yet whole, are kept in the ledger's
+  `backfill` table, so a run cut short goes on where it stopped and a day
+  split across two runs is counted once; a room read to its start is not
+  read again.
+- **Not the bridges' own backfill**: asking a bridge to fetch older history
+  into a room would store those messages a second time (and Tuwunel cannot
+  take it into an existing room; §6.26). Only counts are wanted.
+- Written as imported days are (`via` `import`): **merged by the larger
+  count**, so the live rollup of the same rooms and the phone's SMS against
+  the Google Messages room never add up to more than happened, and running
+  it again changes nothing. Then the ledger goes to the CRM when there is
+  one.
+
+It runs in the server's process (the rooms are held there), as a job:
+`POST` starts it unless it is running and answers at once,
+`{"ok": true, "started": bool, "running": bool, "started_at", "phone",
+"rooms"}`; `GET` of the same path answers how it is doing, `finished_at`
+once done. `phone` is `{"sms", "mms", "counted", "nobody", "groups",
+"days"}` or `{"error"}` (no phone tool, the phone off Wi-Fi); `rooms` is
+`{"rooms", "done", "messages", "days", "errors"}`, `errors` the rooms cut
+short (run it again). Counts only, never a name or number. The owner's
+book alone: an enrolled owner's device or this host's own token (the CLI);
+403 for another account, 401 for nobody. `… contacts backfill` asks the
+running server and waits (`--no-wait` returns, `--status` only asks).
+
 ### 6.26 Bridges: signing in from the app — gated, owner only (19 Oct 2026)
 
 David: "Can we create a way to login to bridges from sasonica?" The

@@ -200,6 +200,10 @@ device gets its token):
   GET  /contacts/<id>/timeline[?limit=] → their texts, calls, mail and
                   notes by day, from the CRM's daily rollups (timeline.py)
   POST /contacts/<id>/notes {"text"} → a note on them, today, kept in the CRM
+  POST /contacts/timeline/backfill → the timeline's past counted once: the
+                  phone's SMS and MMS and every bridged room's history, in this
+                  process (timeline_backfill.py, §6.25a); the owner or this
+                  host's token. GET of it: how the job is doing
   GET  /contacts/labels → every label on someone, with counts (§6.25)
   GET  /contacts/suggestions → every open "Same person?" pair, both sides'
                   names, sources, labels and last contact (contacts_review.py)
@@ -308,7 +312,7 @@ CORS_PATHS = frozenset({
     "/sessions/events", "/search", "/contacts",
     "/contacts/google", "/contacts/google/login", "/contacts/google/finish",
     "/contacts/google/signout", "/contacts/labels", "/contacts/suggestions",
-    "/contacts/import", "/bridges",
+    "/contacts/import", "/contacts/timeline/backfill", "/bridges",
     "/mic/ask", "/mic/cancel",
     "/phone/ask", "/phone/answer", "/phone/cancel",
     "/notes", "/notes/clear",
@@ -736,6 +740,28 @@ def _contact_timeline(h: BaseHTTPRequestHandler, cid: str, query: str) -> None:
     _json_z(h, 200, {"ok": True, **timeline.timeline(cid, limit or None)})
 
 
+def _timeline_backfill(h: BaseHTTPRequestHandler, *, start: bool) -> None:
+    """`POST /contacts/timeline/backfill` starts the job (§6.25a,
+    timeline_backfill.py) unless it is running; `GET` says how it is doing.
+    The owner's book alone (the phone and the rooms are the owner's): an
+    enrolled owner's device, or this host's own token (the CLI)."""
+    from . import timeline_backfill
+
+    if start:
+        _read_json(h)                    # an empty body, or none
+    host = _TOKEN_OK is not None and _TOKEN_OK(h) and not _bearer(h)
+    if not host:
+        user, err = auth.gate(_bearer(h))
+        if not user:
+            _json(h, err.pop("status", 403), {"ok": False, **err})
+            return
+        if auth.request_account() != "":
+            _json(h, 403, {"ok": False, "error": "the timeline's backfill is the owner's"})
+            return
+    _json(h, 200, {"ok": True, **(timeline_backfill.start() if start
+                                  else timeline_backfill.status())})
+
+
 def _contact_note(h: BaseHTTPRequestHandler, cid: str) -> None:
     """`POST /contacts/<id>/notes {"text"}` (§6.25a)."""
     from . import contacts, timeline
@@ -1045,6 +1071,8 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
             _json(h, detail.pop("status", 400), {"ok": False, **detail})
     elif CONTACT_TIMELINE.fullmatch(path):
         _contact_timeline(h, CONTACT_TIMELINE.fullmatch(path).group(1), query)
+    elif path == "/contacts/timeline/backfill":
+        _timeline_backfill(h, start=False)
     elif path == "/contacts/google":
         _contacts_google(h, "state")
     elif path in ("/contacts", "/contacts/labels", "/contacts/suggestions") or \
@@ -1746,6 +1774,8 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         _contact_note(h, CONTACT_NOTES.fullmatch(path).group(1))
     elif path == "/contacts/import":
         _contacts_import(h)
+    elif path == "/contacts/timeline/backfill":
+        _timeline_backfill(h, start=True)
     elif CONTACT_SAME.fullmatch(path):
         m = CONTACT_SAME.fullmatch(path)
         _contact_same(h, m.group(1), m.group(2))
