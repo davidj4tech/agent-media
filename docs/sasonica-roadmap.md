@@ -1349,6 +1349,22 @@ ahead.
   `[[visual:]]` marker is easily 400 characters, which is the whole window
   `_norm(…)[:400]` looks at: the reply scored 0.45 against its own live
   line where the bar is 0.6, joined nothing, and the thread had no live
+37. **Sasonica in Android Auto** (David, 20 Oct 2026: "would this app work
+    on Android auto?" — "y"). Today it doesn't show in the car: speech and
+    music come through the car's speakers, but the app declares no
+    automotive_app_desc, so there's no car entry. Its notices aren't
+    MessagingStyle, so Auto never reads them out, and a sideloaded app
+    stays hidden unless Auto's developer settings allow Unknown sources.
+    First step, the messaging route: declare `<uses name="notification"/>`,
+    and post each thread's finished reply or waiting question from
+    NotifyService as a MessagingStyle conversation (one per thread, the
+    session as the sender). Add a RemoteInput reply that goes to that
+    thread the way the in-app composer does (item 10's answer from the
+    notification, reused), and a mark-as-read action. Auto then reads it
+    aloud and takes a spoken reply. Later, maybe: a MediaBrowserService
+    over SpeechSession and MusicSession so replies and rooms can be browsed
+    on the car screen. Not started.
+
   line to follow. The word match now compares `display_text`, which is what
   the voice was given. Note for whoever meets this again: it bites only
   while a reply is live — afterwards the history row carries a key and the
