@@ -1221,7 +1221,12 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
                            "account": dev.get("account") or None,
                            "username": dev.get("username") or None,
                            "picture": dev.get("picture") or None,
-                           "issuer": dev.get("iss") or None})
+                           "issuer": dev.get("iss") or None,
+                           # The quick tunnel's lookup, as POST /pair gives it: a
+                           # device paired before it existed (16 Oct 2026), or
+                           # over another address, learns it here without
+                           # pairing again.
+                           "lookup": _lookup_for(_base_url(h)) or None})
     elif path == "/enrol":
         # Where the app signs in with an account (oidc.py): open, like /pair.
         from . import oidc

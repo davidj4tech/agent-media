@@ -157,6 +157,21 @@ def test_pair_answer_names_the_lookup_over_the_tunnel(server, monkeypatch):  # n
     assert res.status == 200 and "lookup" not in body["server"]
 
 
+def test_me_names_the_lookup_over_the_tunnel(server, monkeypatch):  # noqa: F811
+    """A device paired before the lookup (16 Oct 2026) learns it from GET /me."""
+    monkeypatch.setenv("MEDIA_LOOKUP_URL", "https://lookup.example/r")
+    tunnel._write_state("https://abc-def.trycloudflare.com")
+    code, _ = devices.mint_code("Pixel 8a")
+    _, paired = call(server, "POST", "/pair", {"code": code, "device": "x"})
+    auth = {"Authorization": f"Bearer {paired['token']}"}
+    res, body = call(server, "GET", "/me", None,
+                     {**auth, "Host": "abc-def.trycloudflare.com", "X-Forwarded-Proto": "https"})
+    assert res.status == 200
+    assert body["lookup"] == f"https://lookup.example/r/{tunnel.identity()[2]}"
+    res, body = call(server, "GET", "/me", None, auth)
+    assert res.status == 200 and body["lookup"] is None
+
+
 def test_platform_assets_are_pinned():
     for name, sha in tunnel.CLOUDFLARED_ASSETS.values():
         assert name.startswith("cloudflared-") and len(sha) == 64

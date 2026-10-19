@@ -5288,11 +5288,15 @@ code for the ID token at the issuer's token endpoint (a public client, no
 secret) and then goes on as for an `id_token`.
 
 `GET /me` (a device token) → `{"ok", "device_id", "name", "enrol",
-"account", "username", "picture", "issuer"}`: this device as the server knows it, `account` the
+"account", "username", "picture", "issuer", "lookup"}`: this device as the server knows it, `account` the
 email of the account that enrolled it (null for a code-paired device) — the
 app's "Signed in as" (29 Sep 2026). `picture` is the account's picture (the
 OIDC `picture` claim, an https URL only; null when there is none) for the
-app's top-right corner. 401 for anything but a device token.
+app's top-right corner. `lookup` (19 Oct 2026) is `server.lookup` as
+`POST /pair` gives it (asked over this server's quick tunnel, publishing
+on), else null: a device paired before the lookup existed (16 Oct 2026)
+keeps it from here, so it finds the server after the tunnel's next name
+without pairing again. 401 for anything but a device token.
 An account's details stay current: the refresh token from the sign-in is
 kept on the device row (never listed or returned), and a `/me` that finds
 them over an hour old asks the issuer's userinfo again in the background, so
