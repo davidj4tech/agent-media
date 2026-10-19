@@ -25,6 +25,7 @@ import glob
 import json
 import os
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -170,6 +171,133 @@ def read_config(text: str) -> dict[str, str]:
     return flat
 
 
+# --- what a bridge needs before it runs (the server knows the setup) ------------
+
+#: Bridges that need values of the owner's own before they start, by
+#: appservice id: what to say, where to get them, and each field with the
+#: config key it is written to and the example config's placeholders (a
+#: value still one of those is unset). §6.26 "Setting a bridge up".
+SETUP: dict[str, dict] = {
+    "telegram": {
+        "name": "Telegram",
+        "url": "https://my.telegram.org/apps",
+        "instructions": ("Telegram's bridge needs API keys of your own. Sign in at "
+                         "https://my.telegram.org/apps with your phone number, create an "
+                         "app (any title; platform: Other), and copy its App api_id and "
+                         "App api_hash here."),
+        "fields": [
+            {"id": "api_id", "name": "App api_id", "type": "token", "pattern": "[0-9]{3,12}",
+             "key": ("network", "api_id"), "placeholders": ("", "12345")},
+            {"id": "api_hash", "name": "App api_hash", "type": "token", "pattern": "[0-9a-fA-F]{32}",
+             "key": ("network", "api_hash"),
+             "placeholders": ("", "tjyd5yge35lbodk1xwzw2jstp90k55qz")},
+        ],
+    },
+}
+
+
+def _unset(bid: str, conf: dict[str, str]) -> tuple[str, ...]:
+    need = SETUP.get(bid)
+    if not need:
+        return ()
+    return tuple(f["id"] for f in need["fields"]
+                 if conf.get(".".join(f["key"]), "").strip() in f["placeholders"])
+
+
+def setup_view(bid: str) -> dict | None:
+    """What the app shows for a bridge's setup: words, a link, the fields
+    (never their values: a key is not shown back)."""
+    need = SETUP.get(bid)
+    if not need:
+        return None
+    return {"instructions": need["instructions"], "url": need["url"],
+            "fields": [{k: f[k] for k in ("id", "name", "type", "pattern")}
+                       for f in need["fields"]]}
+
+
+def set_config_values(text: str, values: dict[tuple[str, str], str]) -> str:
+    """`text` with each `section.key` (two levels, as mautrix writes them)
+    set to its value, the line's own indent kept. KeyError for a key the
+    file does not have: setup never adds a key the bridge did not write."""
+    lines = text.splitlines(keepends=True)
+    todo = dict(values)
+    section = ""
+    for i, line in enumerate(lines):
+        body = line.strip()
+        if not body or body.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        kv = _split_key(body)
+        if kv is None:
+            continue
+        key, _rest = kv
+        if indent == 0:
+            section = key
+            continue
+        if indent == 4 and (section, key) in todo:
+            nl = "\n" if line.endswith("\n") else ""
+            lines[i] = f"    {key}: {todo.pop((section, key))}{nl}"
+    if todo:
+        raise KeyError(", ".join(".".join(k) for k in todo))
+    return "".join(lines)
+
+
+def _unit_of(b: Bridge) -> str:
+    """The bridge's systemd --user unit: its config folder's name
+    (~/.local/share/mautrix-telegram → mautrix-telegram.service)."""
+    name = Path(b.config).parent.name
+    if not re.fullmatch(r"mautrix-[a-z0-9-]+", name):
+        raise ValueError(f"no unit for {b.id}")
+    return name + ".service"
+
+
+def setup(bridge_id: str, values: dict) -> dict:
+    """`POST /bridges/<id>/setup {values}`: the owner's values written into
+    the bridge's config (0600), the bridge restarted, and its listing entry
+    once it answers (up to SETUP_WAIT_S). LookupError for no such bridge or
+    one with nothing to set up; ValueError for a missing or malformed value."""
+    b = find(bridge_id)
+    need = SETUP.get(bridge_id)
+    if b is None or need is None:
+        raise LookupError("no such bridge to set up")
+    got: dict[tuple[str, str], str] = {}
+    for f in need["fields"]:
+        v = str(values.get(f["id"]) or "").strip()
+        if not v:
+            raise ValueError(f"{f['name']} is missing")
+        if not re.fullmatch(f["pattern"], v):
+            raise ValueError(f"{f['name']} does not look right")
+        got[f["key"]] = v
+    path = Path(b.config)
+    text = set_config_values(path.read_text(encoding="utf-8"), got)
+    tmp = path.with_name(path.name + ".setup")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    os.chmod(tmp, 0o600)
+    tmp.replace(path)
+    _restart(_unit_of(b))
+    deadline = time.monotonic() + SETUP_WAIT_S
+    b = find(bridge_id) or b
+    while True:
+        e = entry(b)
+        if e["reachable"] or time.monotonic() >= deadline:
+            return e
+        time.sleep(1.0)
+
+
+#: How long setup waits for the restarted bridge to answer.
+SETUP_WAIT_S = 30.0
+
+
+def _restart(unit: str) -> None:
+    subprocess.run(["systemctl", "--user", "reset-failed", unit], capture_output=True, timeout=30)
+    r = subprocess.run(["systemctl", "--user", "restart", unit], capture_output=True,
+                       text=True, timeout=60)
+    if r.returncode != 0:
+        raise BridgeError(500, f"could not restart {unit}: {(r.stderr or '').strip()[:200]}")
+
+
 # --- which bridges ----------------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -179,6 +307,7 @@ class Bridge:
     secret: str
     homeserver: str   # the homeserver it talks to (for the network icon)
     config: str
+    unset: tuple[str, ...] = ()   # SETUP fields its config still lacks
 
 
 def _paths() -> list[str]:
@@ -213,7 +342,7 @@ def discover() -> list[Bridge]:
             host = f"[{host}]"
         found[bid] = Bridge(id=bid, url=f"http://{host}:{port}", secret=secret,
                             homeserver=(conf.get("homeserver.address") or "").rstrip("/"),
-                            config=p)
+                            config=p, unset=_unset(bid, conf))
     return list(found.values())
 
 
@@ -284,7 +413,12 @@ def _login(item: dict) -> dict:
 
 
 def entry(b: Bridge) -> dict:
-    """One bridge as `GET /bridges` lists it, asked now."""
+    """One bridge as `GET /bridges` lists it, asked now. A bridge still
+    missing its setup is not asked: it cannot run yet."""
+    if b.unset:
+        return {"id": b.id, "name": SETUP[b.id]["name"], "network": b.id, "icon": None,
+                "reachable": False, "error": None, "flows": [], "logins": [],
+                "setup": {**setup_view(b.id), "needed": True}}
     try:
         who = _call(b, "GET", "/whoami", timeout=WHOAMI_TIMEOUT_S)
     except (BridgeError, Unreachable) as e:
@@ -305,7 +439,8 @@ def entry(b: Bridge) -> dict:
     return {"id": b.id, "name": str(net.get("displayname") or b.id),
             "network": str(net.get("network_id") or net.get("beeper_bridge_type") or b.id),
             "icon": f"/bridges/{_q(b.id)}/icon" if mxc else None,
-            "reachable": True, "error": None, "flows": flows, "logins": logins}
+            "reachable": True, "error": None, "flows": flows, "logins": logins,
+            **({"setup": {**setup_view(b.id), "needed": False}} if b.id in SETUP else {})}
 
 
 def listing() -> list[dict]:

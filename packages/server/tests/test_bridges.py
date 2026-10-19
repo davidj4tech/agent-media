@@ -455,7 +455,8 @@ def test_only_the_owner(server, fake):
                          ("GET", "/bridges/msteams/login/proc1"),
                          ("POST", "/bridges/msteams/login/proc1/step"),
                          ("POST", "/bridges/msteams/login/proc1/cancel"),
-                         ("POST", "/bridges/msteams/logout/L1")):
+                         ("POST", "/bridges/msteams/logout/L1"),
+                         ("POST", "/bridges/telegram/setup")):
         res, obj = call(server, method, path, {} if method == "POST" else None,
                         headers={"Authorization": f"Bearer {tok}"})
         assert res.status == 403 and obj["error"] == "bridges are the owner's", path
@@ -499,3 +500,84 @@ def test_the_watch_raises_a_sign_in_that_needs_you_and_clears_it():
     assert by["bridge.instagram"]["level"] == "ok"
     assert by["bridge.msteams"]["level"] == "ok"
     assert all(b["every_s"] == int(bridges.WATCH_INTERVAL_S * 3) for b in got)
+
+
+# --- setting a bridge up: Telegram's own API keys (20 Oct 2026) -----------------
+
+TG_HASH = "0123456789abcdef0123456789abcdef"
+
+
+def _telegram(tmp_path, monkeypatch, api_id="12345", api_hash="tjyd5yge35lbodk1xwzw2jstp90k55qz"):
+    d = tmp_path / "tg" / "mautrix-telegram"
+    d.mkdir(parents=True)
+    conf = d / "config.yaml"
+    conf.write_text(f"""\
+network:
+    # Get your own API keys at https://my.telegram.org/apps
+    api_id: {api_id}
+    api_hash: {api_hash}
+    device_info:
+        device_model: mautrix-telegram
+appservice:
+    hostname: 127.0.0.1
+    port: {_free_port()}
+    id: telegram
+provisioning:
+    shared_secret: telegram-secret-1234
+""")
+    conf.chmod(0o600)
+    monkeypatch.setenv("MATRIX_BRIDGES", str(conf))
+    return conf
+
+
+def test_a_bridge_without_its_keys_asks_for_them(server, signed_in, tmp_path, monkeypatch):
+    _telegram(tmp_path, monkeypatch)
+    res, obj = call(server, "GET", "/bridges", headers=AUTH)
+    (tg,) = obj["bridges"]
+    assert res.status == 200 and tg["id"] == "telegram" and tg["name"] == "Telegram"
+    assert tg["reachable"] is False and tg["flows"] == [] and tg["error"] is None
+    setup = tg["setup"]
+    assert setup["needed"] is True and setup["url"] == "https://my.telegram.org/apps"
+    assert [f["id"] for f in setup["fields"]] == ["api_id", "api_hash"]
+    assert all(set(f) == {"id", "name", "type", "pattern"} for f in setup["fields"])
+    assert "12345" not in json.dumps(tg), "a placeholder or a key is never sent back"
+
+
+def test_setup_writes_the_keys_and_restarts_the_bridge(server, signed_in, tmp_path, monkeypatch):
+    conf = _telegram(tmp_path, monkeypatch)
+    restarted = []
+    monkeypatch.setattr(bridges, "_restart", restarted.append)
+    monkeypatch.setattr(bridges, "SETUP_WAIT_S", 0.0)
+    res, obj = call(server, "POST", "/bridges/telegram/setup",
+                    {"values": {"api_id": " 1234567 ", "api_hash": TG_HASH}}, AUTH)
+    assert res.status == 200 and obj["ok"], obj
+    text = conf.read_text()
+    assert "    api_id: 1234567\n" in text and f"    api_hash: {TG_HASH}\n" in text
+    assert "device_model: mautrix-telegram" in text and "# Get your own API keys" in text
+    assert (conf.stat().st_mode & 0o777) == 0o600
+    assert restarted == ["mautrix-telegram.service"]
+    # Set up now: asked like any bridge (not answering yet here), the keys never shown.
+    assert obj["bridge"].get("setup", {}).get("needed") is not True
+    assert TG_HASH not in json.dumps(obj)
+    assert bridges.find("telegram").unset == ()
+
+
+def test_setup_refuses_what_is_not_a_key(server, signed_in, tmp_path, monkeypatch):
+    conf = _telegram(tmp_path, monkeypatch)
+    before = conf.read_text()
+    monkeypatch.setattr(bridges, "_restart", lambda unit: pytest.fail("restarted"))
+    for values in ({"api_id": "", "api_hash": TG_HASH}, {"api_id": "12x", "api_hash": TG_HASH},
+                   {"api_id": "123456", "api_hash": "short"}):
+        res, obj = call(server, "POST", "/bridges/telegram/setup", {"values": values}, AUTH)
+        assert res.status == 400 and not obj["ok"], values
+    assert conf.read_text() == before
+    res, obj = call(server, "POST", "/bridges/msteams/setup", {"values": {}}, AUTH)
+    assert res.status == 404
+
+
+def test_config_values_are_set_in_their_section_only():
+    text = "network:\n    api_id: 1\n    nested:\n        api_id: 2\nother:\n    api_id: 3\n"
+    out = bridges.set_config_values(text, {("network", "api_id"): "99"})
+    assert out == "network:\n    api_id: 99\n    nested:\n        api_id: 2\nother:\n    api_id: 3\n"
+    with pytest.raises(KeyError):
+        bridges.set_config_values(text, {("network", "nope"): "1"})

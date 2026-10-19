@@ -5044,6 +5044,31 @@ process after the bridge's reply.
 bridge; answers `{"ok": true, "bridge": …}`, `GET /bridges`' entry for
 the bridge. 404 when the bridge has no such login.
 
+#### Setting a bridge up — its own keys (20 Oct 2026)
+
+Some bridges need values of the owner's own before they can run at all:
+Telegram's needs an API id and hash from https://my.telegram.org/apps
+(David, 19–20 Oct 2026: "Maybe the API key should be able to be entered in
+the bridges settings section too"). The server knows which
+(`bridges.SETUP`, by appservice id) and reads the bridge's config file; a
+value still the example config's placeholder is unset.
+
+- A bridge with unset values is listed **without asking it** (it cannot
+  start): `reachable: false`, `error: null`, no flows or logins, its
+  `name` from the table, and `setup: {needed: true, instructions, url,
+  fields: [{id, name, type, pattern}]}`. The app shows the instructions,
+  the link and a form, and no sign-in buttons.
+- A bridge in the table that is set up carries `setup` with `needed:
+  false`, so the app can offer to change the keys. A value is **never**
+  sent back.
+- `POST /bridges/<id>/setup {"values": {field id: string}}`: each value
+  trimmed and checked against its `pattern` (400 says which, nothing
+  written); written into the bridge's config in its own section (0600,
+  replaced whole), the bridge's `mautrix-<name>.service` restarted, and the
+  answer is `{"ok": true, "bridge": …}`, its listing entry once it answers
+  (up to 30 s; still `reachable: false` if it is slow). 404 for a bridge
+  with nothing to set up. Owner only, like every route here.
+
 #### A `cookies` step in the app
 
 The bridge wants cookies from a real sign-in page (Facebook, Instagram,

@@ -230,6 +230,8 @@ device gets its token):
   POST /bridges/<id>/login/<process>/step {"txn_id", "values"} → a form
                   or cookies submitted; …/cancel → cancelled at the bridge
   POST /bridges/<id>/logout/<login id> → that sign-in signed out
+  POST /bridges/<id>/setup {"values"} → a bridge's own keys (Telegram's API
+                  id and hash) written into its config, the bridge restarted
   POST /alerts    {"id", "level", "kind"?, "title"?, "detail"?, "fix"?,
                    "host"?, "step"?, "confirm"?, "every_s"?} → a watcher
                   says what is true now; the store answers what changed and
@@ -384,7 +386,8 @@ BRIDGE_LOGIN = re.compile(r"/bridges/([A-Za-z0-9_.-]+)/login")
 BRIDGE_PROC = re.compile(r"/bridges/([A-Za-z0-9_.-]+)/login/([A-Za-z0-9_.-]+)")
 BRIDGE_PROC_ACT = re.compile(r"/bridges/([A-Za-z0-9_.-]+)/login/([A-Za-z0-9_.-]+)/(step|cancel)")
 BRIDGE_LOGOUT = re.compile(r"/bridges/([A-Za-z0-9_.-]+)/logout/([^/]+)")
-BRIDGE_ROUTES = (BRIDGE_ICON, BRIDGE_LOGIN, BRIDGE_PROC, BRIDGE_PROC_ACT, BRIDGE_LOGOUT)
+BRIDGE_SETUP = re.compile(r"/bridges/([A-Za-z0-9_.-]+)/setup")
+BRIDGE_ROUTES = (BRIDGE_ICON, BRIDGE_LOGIN, BRIDGE_PROC, BRIDGE_PROC_ACT, BRIDGE_LOGOUT, BRIDGE_SETUP)
 
 
 def cors_path(path: str) -> bool:
@@ -934,6 +937,7 @@ def _bridges(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
     act = BRIDGE_PROC_ACT.fullmatch(path)
     login = BRIDGE_LOGIN.fullmatch(path)
     logout = BRIDGE_LOGOUT.fullmatch(path)
+    setup = BRIDGE_SETUP.fullmatch(path)
     try:
         if method == "GET" and path == "/bridges":
             _json(h, 200, {"ok": True, "bridges": bridges.listing()})
@@ -974,6 +978,10 @@ def _bridges(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
         elif method == "POST" and logout:
             got = bridges.logout(logout.group(1), unquote(logout.group(2)))
             _json(h, 200, {"ok": True, "bridge": got})
+        elif method == "POST" and setup:
+            body = _read_json(h)
+            values = body.get("values") if isinstance(body, dict) and isinstance(body.get("values"), dict) else {}
+            _json(h, 200, {"ok": True, "bridge": bridges.setup(setup.group(1), values)})
         else:
             return False
     except KeyError:
