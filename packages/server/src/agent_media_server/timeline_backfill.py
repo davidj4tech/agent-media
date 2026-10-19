@@ -8,13 +8,18 @@ channel and day, in and out. No body, subject, message id or number is
 kept; a number is read only to find whose a message is.
 
 **The phone** (the owner's book, over `MEDIA_CONTACTS_ADB` as the contacts
-and the call log are read): one script on the phone reads
+and the call log are read), in short scripts rather than one long one (one
+script for 3,520 SMS and 1,704 MMS did not finish in 900 s, 19 Oct 2026):
 `content://sms` (`date`, `type`, `address` — never `body`; type 1 is in, 2
-out, the rest left out) and `content://mms` (`_id`, `date` in seconds,
-`msg_box` 1 in, 2 and 4 out), each MMS's addresses from
-`content://mms/<id>/addr` (type 137 from, 151 to, 130 cc, 129 bcc). Only a
-message with one other party counts: a group MMS is no one's, as a group
-room is. Channel `sms`.
+out, the rest left out); then `content://mms` (`_id`, `date` in seconds,
+`msg_box` 1 in, 2 and 4 out); then each MMS's addresses from
+`content://mms/<id>/addr` (type 137 from, 151 to, 130 cc, 129 bcc),
+`MMS_BATCH` MMS a script, oldest first, a short random pause between. The
+MMS pass is resumable: after each batch its last id and the counts read so
+far (per contact and day, no number) are kept in the `backfill` table's
+`phone:mms` row, so a run cut short goes on from there, and a later run reads
+only newer MMS. Only a message with one other party counts: a group MMS is
+no one's, as a group room is. Channel `sms`.
 
 **The bridged rooms**: each room this server holds that is a contact's
 (contacts.for_room: one-to-one rooms only) on a network the timeline knows
@@ -68,8 +73,17 @@ PAGE = 100
 #: Pages between writes of what is counted so far (and the token).
 FLUSH_PAGES = 10
 PAUSE_S = 0.25
-#: The phone's script, at most (an MMS's addresses are one query each).
-PHONE_TIMEOUT_S = 900.0
+#: One script on the phone, at most: the SMS, the MMS list, or one batch of
+#: MMS addresses (an MMS's addresses are one query each, so they go in
+#: batches; 1,704 of them in one script did not finish in 900 s).
+PHONE_TIMEOUT_S = 600.0
+#: MMS whose addresses are read per script.
+MMS_BATCH = 100
+#: Between two batches, a short pause (seconds, a little random).
+MMS_PAUSE_S = (1.0, 3.0)
+#: The backfill table's row for the MMS pass (never a room id: those start
+#: with "!").
+MMS_ROW = "phone:mms"
 
 #: content://sms `type`: 1 inbox, 2 sent (3 draft, 4 outbox, 5 failed, 6
 #: queued are left out — not yet, or never, a message between two people).
@@ -109,22 +123,45 @@ def _add(sums: dict, cid: str, channel: str, day: str, direction: str, n: int = 
 
 # --- the phone ------------------------------------------------------------------
 
-def phone_script(nonce: str, since_ms: int = 0) -> str:
-    """One script on the phone: the SMS, the MMS, then each MMS's
-    addresses, each section after a marker (contacts_android.sections)."""
-    m = f"@@AM-{nonce}@@"
-    mms_where = f"'date>={since_ms // 1000}'"
+def _marker(nonce: str) -> str:
+    return f"@@AM-{nonce}@@"
+
+
+def sms_script(nonce: str, since_ms: int = 0) -> str:
+    """The SMS: date, type and address, never the body."""
+    m = _marker(nonce)
     return "; ".join([
         f"echo '{m} sms'",
         "content query --uri content://sms --projection date:type:address "
         f"--where 'date>={since_ms}' --sort date",
-        f"echo '{m} mms'",
-        f"content query --uri content://mms --projection _id:date:msg_box --where {mms_where}",
-        f"for i in $(content query --uri content://mms --projection _id --where {mms_where} "
-        "| sed -n 's/^Row: [0-9]* _id=\\([0-9]*\\).*/\\1/p'); do "
-        f"echo \"{m} addr-$i\"; "
-        "content query --uri content://mms/$i/addr --projection address:type; done",
         f"echo '{m} end'"])
+
+
+def mms_list_script(nonce: str, since_ms: int = 0) -> str:
+    """The MMS: id, date (seconds) and box, never a part."""
+    m = _marker(nonce)
+    return "; ".join([
+        f"echo '{m} mms'",
+        "content query --uri content://mms --projection _id:date:msg_box "
+        f"--where 'date>={since_ms // 1000}'",
+        f"echo '{m} end'"])
+
+
+def mms_addr_script(nonce: str, ids: list[str]) -> str:
+    """One batch of MMS addresses, each after its own marker."""
+    m = _marker(nonce)
+    ids = [i for i in ids if i.isdigit()]
+    if not ids:
+        return f"echo '{m} end'"
+    return (f"for i in {' '.join(ids)}; do echo \"{m} addr-$i\"; "
+            "content query --uri content://mms/$i/addr --projection address:type; done; "
+            f"echo '{m} end'")
+
+
+def phone_script(nonce: str, since_ms: int = 0) -> str:
+    """Every script the phone is sent, joined (what each asks, for a look)."""
+    return "; ".join([sms_script(nonce, since_ms), mms_list_script(nonce, since_ms),
+                      mms_addr_script(nonce, ["1"])])
 
 
 def _cols(row: str, keys: tuple) -> dict:
@@ -144,14 +181,13 @@ def _cols(row: str, keys: tuple) -> dict:
     return out
 
 
-def phone(since_ms: int = 0) -> dict:
-    """The phone's SMS and MMS as `{(contact, "sms", day): [in, out]}`,
-    with what was read and left out. Unreachable when the phone is."""
-    from . import contacts, contacts_android
+def _ask_phone(script: str, nonce: str) -> dict[str, str]:
+    """Run one script on the phone; its sections. Unreachable when the
+    phone does not answer, or answers with an error."""
+    from . import contacts_android
 
-    nonce = _nonce()
     try:
-        got = subprocess.run(contacts_android.command() + [phone_script(nonce, since_ms)],
+        got = subprocess.run(contacts_android.command() + [script],
                              capture_output=True, text=True, timeout=PHONE_TIMEOUT_S,
                              encoding="utf-8", errors="replace")
     except subprocess.TimeoutExpired:
@@ -163,7 +199,46 @@ def phone(since_ms: int = 0) -> dict:
         last = (got.stderr or got.stdout or "").strip().splitlines()[-1:] or [""]
         raise contacts_android.Unreachable(f"the phone tool exited {got.returncode}: "
                                            f"{last[0][:200]}")
-    parts = contacts_android.sections(got.stdout, nonce)
+    return contacts_android.sections(got.stdout, nonce)
+
+
+def _mms_pause() -> float:
+    if (os.environ.get("MEDIA_TIMELINE_BACKFILL_PAUSE_S") or "").strip() == "0":
+        return 0.0
+    import random
+
+    return random.uniform(*MMS_PAUSE_S)
+
+
+def _sums_out(sums: dict) -> list:
+    return [[c, ch, d, v[0], v[1]] for (c, ch, d), v in sums.items()]
+
+
+def _sums_in(rows) -> dict:
+    out: dict = {}
+    for r in rows or []:
+        try:
+            out[(r[0], r[1], r[2])] = [int(r[3]), int(r[4])]
+        except (IndexError, TypeError, ValueError):
+            continue
+    return out
+
+
+def phone(since_ms: int = 0) -> dict:
+    """The phone's SMS and MMS as `{(contact, "sms", day): [in, out]}`,
+    with what was read and left out. Three steps, so no one script runs
+    long: the SMS; the MMS list; then the MMS addresses `MMS_BATCH` at a
+    time, oldest id first, each batch's counts and its last id kept in the
+    backfill table (`phone:mms`), so a run cut short goes on from there and
+    an MMS is counted once. The MMS counts kept are every MMS read so far
+    (per contact and day, no number), so a day's SMS and MMS are summed
+    whole each run. Unreachable when the phone is, before anything is read;
+    a batch that fails after others were read ends the pass with what was
+    read (`mms_error`), the rest next run."""
+    from . import contacts, contacts_android
+
+    nonce = _nonce()
+    sms_parts = _ask_phone(sms_script(nonce, since_ms), nonce)
     region = contacts.region()
     phones = _by_phone()
     self_phones, _ = contacts._self_ids()
@@ -173,7 +248,7 @@ def phone(since_ms: int = 0) -> dict:
     def num(raw: str) -> str | None:
         return contacts.e164(raw, region) if raw and raw != _SELF_TOKEN else None
 
-    for row in contacts_android.rows(parts.get("sms") or ""):
+    for row in contacts_android.rows(sms_parts.get("sms") or ""):
         f = _cols(row, ("date", "type", "address"))
         direction = _SMS_DIR.get(f.get("type") or "")
         if not direction:
@@ -190,43 +265,79 @@ def phone(since_ms: int = 0) -> dict:
         _add(sums, who, "sms", day, direction)
         stats["counted"] += 1
 
-    addrs: dict[str, list[tuple[str, str]]] = {}
-    for key, text in parts.items():
-        if key.startswith("addr-"):
-            addrs[key[5:]] = [(a.get("type") or "", a.get("address") or "")
-                              for a in (_cols(r, ("address", "type"))
-                                        for r in contacts_android.rows(text)) if a]
-    for row in contacts_android.rows(parts.get("mms") or ""):
-        f = _cols(row, ("_id", "date", "msg_box"))
-        direction = _MMS_DIR.get(f.get("msg_box") or "")
-        if not direction:
-            continue
-        stats["mms"] += 1
-        try:
-            day = dt.date.fromtimestamp(int(f["date"])).isoformat()
-        except (KeyError, ValueError):
-            continue
-        rows = addrs.get(f.get("_id") or "") or []
-        frm = {n for t, a in rows if t == _FROM for n in [num(a)] if n} - self_phones
-        to = {n for t, a in rows if t in _TO for n in [num(a)] if n} - self_phones
-        if direction == "in":
-            # Without the phone's own number known, a received MMS's one
-            # "to" is taken to be the phone itself.
-            if not self_phones and len(to) == 1:
-                to = set()
-            others = frm | to
-        else:
-            others = to
-        if len(others) != 1:
-            stats["groups" if len(others) > 1 else "nobody"] += 1
-            continue
-        who = phones.get(next(iter(others)))
-        if not who:
-            stats["nobody"] += 1
-            continue
-        _add(sums, who, "sms", day, direction)
-        stats["counted"] += 1
-    return {"sums": sums, **stats}
+    # The MMS: what was read before (its counts and its last id), then the
+    # rest in batches.
+    st = _state(MMS_ROW) or {"token": None, "done": False, "carry": None, "counted": 0}
+    carry = st["carry"] or {}
+    mms_sums = _sums_in(carry.get("sums"))
+    mstats = {k: int(carry.get(k) or 0) for k in ("mms", "counted", "nobody", "groups")}
+    try:
+        last = int(st["token"] or 0)
+    except ValueError:
+        last = 0
+    mms_error = None
+    try:
+        nonce = _nonce()
+        listed = _ask_phone(mms_list_script(nonce, since_ms), nonce)
+        todo: list[tuple[int, str, str]] = []
+        for row in contacts_android.rows(listed.get("mms") or ""):
+            f = _cols(row, ("_id", "date", "msg_box"))
+            direction = _MMS_DIR.get(f.get("msg_box") or "")
+            try:
+                mid = int(f.get("_id") or "")
+                day = dt.date.fromtimestamp(int(f["date"])).isoformat()
+            except (KeyError, ValueError):
+                continue
+            if direction and mid > last:
+                todo.append((mid, day, direction))
+        todo.sort()
+        for i in range(0, len(todo), MMS_BATCH):
+            batch = todo[i:i + MMS_BATCH]
+            if i:
+                time.sleep(_mms_pause())
+            nonce = _nonce()
+            parts = _ask_phone(mms_addr_script(nonce, [str(m) for m, _, _ in batch]), nonce)
+            for mid, day, direction in batch:
+                text = parts.get(f"addr-{mid}") or ""
+                rows = [(a.get("type") or "", a.get("address") or "")
+                        for a in (_cols(r, ("address", "type"))
+                                  for r in contacts_android.rows(text)) if a]
+                mstats["mms"] += 1
+                frm = {n for t, a in rows if t == _FROM for n in [num(a)] if n} - self_phones
+                to = {n for t, a in rows if t in _TO for n in [num(a)] if n} - self_phones
+                if direction == "in":
+                    # Without the phone's own number known, a received MMS's
+                    # one "to" is taken to be the phone itself.
+                    if not self_phones and len(to) == 1:
+                        to = set()
+                    others = frm | to
+                else:
+                    others = to
+                if len(others) != 1:
+                    mstats["groups" if len(others) > 1 else "nobody"] += 1
+                    continue
+                who = phones.get(next(iter(others)))
+                if not who:
+                    mstats["nobody"] += 1
+                    continue
+                _add(mms_sums, who, "sms", day, direction)
+                mstats["counted"] += 1
+            last = batch[-1][0]
+            _save(MMS_ROW, str(last), i + MMS_BATCH >= len(todo),
+                  {"sums": _sums_out(mms_sums), **mstats}, mstats["counted"])
+    except contacts_android.Unreachable as e:
+        if not mms_sums and not stats["sms"]:
+            raise
+        mms_error = str(e)
+    for key, (n_in, n_out) in mms_sums.items():
+        _add(sums, key[0], key[1], key[2], "in", n_in)
+        _add(sums, key[0], key[1], key[2], "out", n_out)
+    out = {"sums": sums, "sms": stats["sms"], "mms": mstats["mms"],
+           "counted": stats["counted"] + mstats["counted"],
+           "nobody": stats["nobody"] + mstats["nobody"], "groups": mstats["groups"]}
+    if mms_error:
+        out["mms_error"] = mms_error
+    return out
 
 
 def _by_phone() -> dict:
@@ -478,6 +589,9 @@ def say(st: dict) -> list[str]:
             out.append(f"phone: {p.get('sms', 0)} SMS and {p.get('mms', 0)} MMS read, "
                        f"{p.get('counted', 0)} a contact's, {p.get('groups', 0)} group MMS left "
                        f"out; {p.get('days', 0)} days changed")
+            if p.get("mms_error"):
+                out.append(f"phone: the MMS stopped partway ({p['mms_error']}); "
+                           "run again to go on")
     r = st.get("rooms")
     if r:
         out.append(f"rooms: {r.get('done', 0)} of {r.get('rooms', 0)} read to their start, "

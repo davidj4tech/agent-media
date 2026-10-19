@@ -102,17 +102,42 @@ def _rows(rows):
     return "\n".join(f"Row: {i} {r}" for i, r in enumerate(rows)) or "No result found."
 
 
-def _phone(tmp_path, sms, mms, addrs):
-    """A fake adb that answers the backfill's one script, markers and all."""
-    m = f"@@AM-{NONCE}@@"
-    out = [f"{m} sms", _rows(sms), f"{m} mms", _rows(mms)]
-    for mid, rows in addrs.items():
-        out += [f"{m} addr-{mid}", _rows(rows)]
-    out.append(f"{m} end")
+def _phone(tmp_path, sms, mms, addrs, fail_after=None):
+    """A fake adb that answers each of the backfill's scripts as the phone
+    would: the SMS, the MMS list, or a batch of MMS addresses. Each script
+    is logged (one per line in `scripts`); with `fail_after`, the address
+    batches after that many fail as a phone gone off Wi-Fi does."""
+    data = tmp_path / "phone.json"
+    data.write_text(json.dumps({"sms": sms, "mms": mms, "addrs": addrs,
+                                "fail_after": fail_after}))
+    log = tmp_path / "scripts"
+    log.write_text("")
     script = tmp_path / "fake-adb"
-    (tmp_path / "args").write_text("")
-    script.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\" >> " + str(tmp_path / "args")
-                      + "\ncat <<'EOF'\n" + "\n".join(out) + "\nEOF\n")
+    script.write_text(f"""#!/usr/bin/env python3
+import json, re, sys
+d = json.load(open({str(data)!r}))
+s = sys.argv[-1]
+with open({str(log)!r}, "a") as f:
+    f.write(s.replace("\\n", " ") + "\\n")
+m = re.search(r"@@AM-[^@]+@@", s).group(0)
+def rows(rs):
+    return "\\n".join(f"Row: {{i}} {{r}}" for i, r in enumerate(rs)) or "No result found."
+out = []
+if "content://sms" in s:
+    out += [m + " sms", rows(d["sms"])]
+elif "_id:date:msg_box" in s:
+    out += [m + " mms", rows(d["mms"])]
+else:
+    ids = re.search(r"for i in ([0-9 ]+); do", s).group(1).split()
+    n = sum(1 for line in open({str(log)!r}) if "/addr" in line)
+    if d["fail_after"] is not None and n > d["fail_after"]:
+        print("error: device offline", file=sys.stderr)
+        sys.exit(1)
+    for i in ids:
+        out += [f"{{m}} addr-{{i}}", rows(d["addrs"].get(i, []))]
+out.append(m + " end")
+print("\\n".join(out))
+""")
     script.chmod(0o755)
     return str(script) + " shell"
 
@@ -138,10 +163,12 @@ ADDRS = {
 }
 
 
-def test_the_script_never_asks_for_a_body():
+def test_the_scripts_never_ask_for_a_body():
     s = timeline_backfill.phone_script(NONCE)
     assert "content://sms" in s and "content://mms" in s and "/addr" in s
     assert "body" not in s and "text" not in s.replace("content", "")
+    assert timeline_backfill.mms_addr_script(NONCE, ["7", "x; rm", "9"]).startswith(
+        "for i in 7 9; do")                                       # ids only, never words
 
 
 def test_the_phone_is_counted_per_contact_and_day(book, tmp_path, monkeypatch):
@@ -174,6 +201,49 @@ def test_a_phone_without_the_tool_or_that_does_not_answer_is_said(book, tmp_path
     monkeypatch.setenv("MEDIA_CONTACTS_ADB", f"{bad} shell")
     got = timeline_backfill.run(rooms_on=False)
     assert "device offline" in got["phone"]["error"]
+
+
+def test_the_phone_is_read_in_short_scripts_mms_in_batches(book, tmp_path, monkeypatch):
+    monkeypatch.setattr(timeline_backfill, "MMS_BATCH", 2)
+    monkeypatch.setenv("MEDIA_CONTACTS_ADB", _phone(tmp_path, SMS, MMS, ADDRS))
+    got = timeline_backfill.phone()
+    scripts = (tmp_path / "scripts").read_text().splitlines()
+    assert len(scripts) == 4                     # the SMS, the MMS list, 2 batches of 2 and 1
+    assert "content://sms" in scripts[0] and "_id:date:msg_box" in scripts[1]
+    assert "for i in 7 8; do" in scripts[2] and "for i in 9; do" in scripts[3]
+    assert got["sums"][(LIONEL, "sms", _day(0))] == [3, 2]
+    st = timeline_backfill._state(timeline_backfill.MMS_ROW)
+    assert st["token"] == "9" and st["done"]
+
+
+def test_an_mms_pass_cut_short_counts_what_it_read_and_goes_on(book, tmp_path, monkeypatch):
+    monkeypatch.setattr(timeline_backfill, "MMS_BATCH", 1)
+    monkeypatch.setenv("MEDIA_CONTACTS_ADB", _phone(tmp_path, SMS, MMS, ADDRS, fail_after=1))
+    first = timeline_backfill.run(rooms_on=False)
+    assert "device offline" in first["phone"]["mms_error"]
+    assert first["phone"]["mms"] == 1                            # MMS 7 only
+    assert _ledger()[("sms", _day(0))] == (3, 1)                 # SMS + the MMS read
+    assert timeline_backfill._state(timeline_backfill.MMS_ROW)["token"] == "7"
+    monkeypatch.setenv("MEDIA_CONTACTS_ADB", _phone(tmp_path, SMS, MMS, ADDRS))
+    second = timeline_backfill.run(rooms_on=False)
+    assert "mms_error" not in second["phone"]
+    asked = (tmp_path / "scripts").read_text()
+    assert "for i in 7;" not in asked                            # not read again
+    assert second["phone"]["mms"] == 3                           # all, counted once
+    assert _ledger()[("sms", _day(0))] == (3, 2)
+    third = timeline_backfill.run(rooms_on=False)
+    assert third["phone"]["days"] == 0 and third["phone"]["mms"] == 3
+    raw = timeline.db_path().read_bytes()
+    assert b"0412" not in raw and b"+61412345678" not in raw     # no number kept
+
+
+def test_a_phone_that_cannot_list_its_sms_is_unreadable(book, tmp_path, monkeypatch):
+    bad = tmp_path / "bad-adb"
+    bad.write_text("#!/bin/sh\necho 'error: device offline' >&2\nexit 1\n")
+    bad.chmod(0o755)
+    monkeypatch.setenv("MEDIA_CONTACTS_ADB", f"{bad} shell")
+    got = timeline_backfill.run(rooms_on=False)
+    assert "device offline" in got["phone"]["error"] and "sms" not in got["phone"]
 
 
 # --- the bridged rooms ----------------------------------------------------------
