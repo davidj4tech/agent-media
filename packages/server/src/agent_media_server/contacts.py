@@ -69,6 +69,9 @@ read-only card is `GET /contacts/<id>` (`card`).
   (contacts_import.py; `POST /contacts/import`, `contacts import`), each
   export replacing its last import. They join as a bridge's people do,
   and an Instagram username joins the bridged Instagram ghost it names.
+* **Write-back** (contacts_writeback.py): a Join puts the person's
+  Facebook, Instagram and WhatsApp links on their Google entry, through
+  the phone; only adds.
 * **Labels**: the phone's contact groups (Google's labels, synced by
   Android) and, for a book signed in to Google, its `contactGroups`, as
   `labels` on each person; `GET /contacts?label=` and `GET
@@ -2067,6 +2070,11 @@ def same(cid: str, other: str) -> dict:
         finally:
             conn.close()
     _fresh()
+    # Their Facebook and the like go onto the Google entry, through the
+    # phone (contacts_writeback.py).
+    from . import contacts_writeback
+
+    contacts_writeback.queue(into)
     return {"id": into}
 
 
@@ -2420,6 +2428,13 @@ def _sync_book(key: str) -> None:
                 # The phone off Wi-Fi is said by its own source already.
                 print(f"{who}: exports: {len(w.get('imported') or [])} imported, "
                       f"{len(bad)} not ({'; '.join(bad.values())[:200]})", file=sys.stderr)
+            # Joins the phone could not take yet (contacts_writeback.py).
+            from . import contacts_writeback
+
+            wb = contacts_writeback.flush()
+            if wb["written"] or wb.get("error"):
+                print(f"{who}: google write-back: {wb['written']} written, "
+                      f"{wb['waiting']} waiting {wb.get('error') or ''}".rstrip(), file=sys.stderr)
         if (os.environ.get("MEDIA_TIMELINE") or "1").strip() != "0":
             from . import timeline
 

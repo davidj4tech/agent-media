@@ -38,6 +38,10 @@ def _clean_media_env(monkeypatch, tmp_path, request):
     # and fail anywhere else. test_layout.py unpins it where it needs to.
     monkeypatch.setenv("MEDIA_LAYOUT", "projects-per-tmux-session")
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    # The phone's contacts are read, and a Join written back to Google
+    # (contacts_writeback.py), through `agent-phone-adb shell`: never the
+    # real phone from a test. A test that needs one sets a stand-in.
+    monkeypatch.setenv("MEDIA_CONTACTS_ADB", str(tmp_path / "no-such-adb") + " shell")
     # Private-thread markers (agent_media_core.private): never red5's own.
     monkeypatch.setenv("AGENT_PRIVATE_DIR", str(tmp_path / "private.d"))
     # The alert store files TODOs in ~/org/inbox.org: never David's here.
