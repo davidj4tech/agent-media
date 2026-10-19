@@ -53,6 +53,14 @@ def test_a_part_picked_in_the_app_speaks_the_next(spoken):
     assert ok and detail == {"spoken": False, "why": "already_spoken"}
 
 
+def test_the_question_alone_finds_its_thread(spoken):
+    ok, detail = ask_follow.post({"part": 2, "tool_use_id": "t1"}, "ok")
+    assert ok and detail == {"spoken": True}
+    assert spoken == [(S1, 2)]
+    assert ask_follow.post({"part": 2, "tool_use_id": "t-gone"}, "ok")[1]["why"] == "no_question"
+    assert not ask_follow.post({"part": 2, "tool_use_id": "t-gone"}, "bad")[0]
+
+
 @pytest.mark.parametrize("body, bearer, status", [
     ({"session": S1, "part": 1}, "bad", 401),
     ({"session": "../x", "part": 1}, "ok", 400),

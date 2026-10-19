@@ -127,6 +127,27 @@ def read(session: str) -> dict | None:
     return data if isinstance(data, dict) and data.get("questions") else None
 
 
+def session_of(tool_use_id: str) -> str:
+    """The session whose kept question is `tool_use_id`, or "".
+
+    The app's question card knows the question it draws, not which thread
+    it sits in, so a part picked there names the question."""
+    if not tool_use_id:
+        return ""
+    try:
+        files = list(_dir().glob("*.json"))
+    except OSError:
+        return ""
+    for f in files:
+        try:
+            data = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict) and data.get("tool_use_id") == tool_use_id:
+            return str(data.get("session") or "")
+    return ""
+
+
 def clear(session: str, tool_use_id: str = "") -> None:
     """Forget it once answered (only that one, when `tool_use_id` is given)."""
     path = _path(session)

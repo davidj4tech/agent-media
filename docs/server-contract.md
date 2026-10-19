@@ -1677,7 +1677,8 @@ the pane (`ask_follow.py`) that speaks a part when its tab becomes the
 current one. The app draws every part at once and sends them together, so
 it says when a part is picked:
 
-`{"session", "part": <n, 0-based>, "tool_use_id"?}` — every part before
+`{"session"?, "part": <n, 0-based>, "tool_use_id"?}` (`tool_use_id` alone
+finds the thread whose question it is) — every part before
 `part` has an answer picked; speak `part`. Send it the first time the last
 unanswered part before `part` gets a pick (`part` is the first part with no
 answer yet); sending it again, or for a part the terminal already reached,

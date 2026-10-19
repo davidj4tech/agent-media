@@ -147,7 +147,7 @@ device gets its token):
                   directory, restarting it (moves.py, §6.15). While it is
                   busy (a turn, a question, background agents) the move
                   waits until it is free (`pending`, `why_waiting`)
-  POST /session/ask/part {"session", "part", "tool_use_id"?} → every part of
+  POST /session/ask/part {"session"?, "part", "tool_use_id"?} → every part of
                   that session's question card before `part` has an answer
                   picked: speak part `part` (0-based), once; `spoken`, else
                   `why` (ask_follow.py)

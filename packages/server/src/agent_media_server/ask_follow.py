@@ -70,13 +70,25 @@ def _speak(session: str, part: int, tool_use_id: str = "", daemon: bool = True) 
 
 
 def post(body: dict, bearer: str) -> tuple[bool, dict]:
-    """POST /session/ask/part {"session", "part", "tool_use_id"?}: the app
+    """POST /session/ask/part {"session"?, "part", "tool_use_id"?} (one of
+    the two ids at least): the app
     has an answer picked for every part before `part`; speak `part`.
     `(ok, detail)`; ok with `spoken: false` and `why` when there was nothing
     to speak (already spoken, held for the screen, no such question)."""
     from . import auth, sessions
 
     session = str(body.get("session") or "").strip()
+    tool_use_id = str(body.get("tool_use_id") or "")
+    if not session and tool_use_id:
+        # The app's card knows its question, not its thread.
+        from agent_media_core import pending_asks
+
+        session = pending_asks.session_of(tool_use_id)
+        if not session:
+            user, err = auth.gate(bearer)
+            if not user:
+                return False, err
+            return True, {"spoken": False, "why": "no_question"}
     if not sessions._SESSION.fullmatch(session):
         return False, {"error": "not a session id", "status": 400}
     user, err = auth.gate(bearer)
@@ -86,7 +98,7 @@ def post(body: dict, bearer: str) -> tuple[bool, dict]:
         part = int(body.get("part"))
     except (TypeError, ValueError):
         return False, {"error": "part must be a number", "status": 400}
-    why = _speak(session, part, str(body.get("tool_use_id") or ""))
+    why = _speak(session, part, tool_use_id)
     return True, {"spoken": not why, **({"why": why} if why else {})}
 
 
