@@ -47,7 +47,7 @@ import uuid as uuidlib
 from pathlib import Path
 
 CHANNELS = ("sms", "signal", "messenger", "instagram", "teams", "whatsapp", "call", "email",
-            "note")
+            "chat", "note")
 SOURCES = ("texts", "calls", "email", "notes")
 DEFAULT_SOURCES = ("texts", "notes")
 DAYS = 2
@@ -93,6 +93,12 @@ def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(str(path), timeout=10.0, isolation_level=None)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(_SCHEMA)
+    # `via`: 'import' on the days an export wrote (contacts_history.py).
+    if "via" not in {r[1] for r in conn.execute("PRAGMA table_info(entries)")}:
+        try:
+            conn.execute("ALTER TABLE entries ADD COLUMN via TEXT")
+        except sqlite3.OperationalError:
+            pass                      # another process added it first
     try:
         os.chmod(path, 0o600)
     except OSError:
@@ -348,7 +354,8 @@ def summary_of(channel: str, n_in: int, n_out: int, secs: int) -> str:
         mins = round(secs / 60)
         return f"{_plural(n, 'call')}" + (f", {mins} min" if mins else "") + \
             f" ({n_in} in, {n_out} out)"
-    word = {"sms": "text", "signal": "Signal message", "email": "email"}.get(channel, "message")
+    word = {"sms": "text", "signal": "Signal message", "email": "email",
+            "chat": "chat message"}.get(channel, "message")
     return f"{_plural(n, word)} ({n_in} in, {n_out} out)"
 
 
@@ -396,6 +403,43 @@ def rollup(window: list[str] | None = None, push_: bool = True) -> dict:
     pushed = push() if push_ else {"pushed": 0, "unlinked": 0, "errors": 0}
     return {"window": window, "sources": enabled(), "changed": changed, **pushed,
             "source_errors": errors}
+
+
+def import_days(sums: dict, push_: bool = True) -> dict:
+    """Days an export holds (contacts_history.py), `{(contact, channel,
+    day): [in, out]}`, into the ledger as the rollup writes its own: merged
+    by the larger count, so the same export again changes nothing and a day
+    the rollup also counted is never counted twice. Marked `via` import."""
+    changed = 0
+    with _WRITE:
+        conn = _connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            for (cid, channel, day), (n_in, n_out) in sums.items():
+                key = key_of(channel, day, cid)
+                old = conn.execute("SELECT count_in, count_out FROM entries WHERE key=?",
+                                   (key,)).fetchone()
+                if old:
+                    n_in, n_out = max(n_in, old[0]), max(n_out, old[1])
+                    if (n_in, n_out) == tuple(old):
+                        continue
+                conn.execute(
+                    "INSERT INTO entries (key, contact, channel, day, count_in, count_out, "
+                    "summary, at, via) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'import') "
+                    "ON CONFLICT(key) DO UPDATE SET count_in=excluded.count_in, "
+                    "count_out=excluded.count_out, summary=excluded.summary, "
+                    "at=excluded.at, pushed=NULL, via=COALESCE(entries.via, 'import')",
+                    (key, cid, channel, day, n_in, n_out,
+                     summary_of(channel, n_in, n_out, 0), time.time()))
+                changed += 1
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+    pushed = push() if push_ and changed else {"pushed": 0, "unlinked": 0, "errors": 0}
+    return {"changed": changed, **pushed}
 
 
 def add_note(cid: str, text: str) -> dict:
@@ -490,7 +534,8 @@ def _entry(row: dict, origin: str) -> dict:
     return {"key": row.get("key") or "", "channel": row["channel"], "day": row["day"],
             "count_in": int(row.get("count_in") or 0), "count_out": int(row.get("count_out") or 0),
             "duration": int(row.get("duration") or 0), "summary": row.get("summary") or "",
-            "origin": origin, "synced": origin == "crm" or bool(row.get("pushed"))}
+            "origin": origin, "synced": origin == "crm" or bool(row.get("pushed")),
+            "via": row.get("via") or ""}
 
 
 def timeline(cid: str, limit: int | str | None = 100) -> dict:

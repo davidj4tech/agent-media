@@ -55,23 +55,45 @@ CHOICES = {
 #: Settings → Contacts → Import a file's links (`GET /contacts/google`
 #: `exports`): what each export brings, said as the reminder says it.
 LABELS = {"facebook": "Facebook friends", "instagram": "Instagram followers and following"}
+TAKEOUT_URL = "https://takeout.google.com/"
+#: The past conversations (contacts_history.py): asked for once, not on the
+#: reminder's clock. Message exports are large, so they are imported from
+#: this host's import folder or `contacts import`, not over the phone.
+HISTORY = (
+    {"network": "messenger", "label": "Messenger conversations", "url": DYI_URL,
+     "steps": "Download your information → Some of your information → Your activity "
+              "across Facebook → Messages only; All time, Format JSON, Media quality Low "
+              "→ Download to device."},
+    {"network": "instagram_messages", "label": "Instagram conversations", "url": DYI_URL,
+     "steps": "Download your information → the Instagram account → Some of your "
+              "information → Your Instagram activity → Messages only; All time, Format "
+              "JSON, Media quality Low → Download to device."},
+    {"network": "chats", "label": "Old Google Talk chats", "url": TAKEOUT_URL,
+     "steps": "Google Takeout → Deselect all → Mail → All Mail data included → only "
+              "the Chats label → Next step → Export once, .zip → Create export."},
+)
+HISTORY_WHERE = ("Conversations can be large: put the zip in the import folder on the "
+                 "server (MEDIA_CONTACTS_IMPORT_DIR) or run media contacts import <file>; "
+                 "up to 64 MB can be picked here or left in the phone's Downloads.")
 
 
 def export_links() -> list[dict]:
     """`[{network, label, url, steps}]`: where each export is requested,
-    with the same choices the reminder names."""
+    with the same choices the reminder names, then the past conversations
+    (contacts_history.py)."""
     return [{"network": net, "label": LABELS[net], "url": DYI_URL,
              "steps": (f"Download your information → {CHOICES[net]} → Download to device. "
                        "When it's ready, download it on the phone; it is imported from "
                        "Downloads by itself, or pick it here.")}
-            for net in NETWORKS]
+            for net in NETWORKS] + [{**h, "steps": f"{h['steps']} {HISTORY_WHERE}"}
+                                    for h in HISTORY]
 
 
 PHONE_DIR = "/sdcard/Download"
-EXPORT_NAME = re.compile(r"^(facebook|instagram|meta)-.*\.zip$", re.I)
+EXPORT_NAME = re.compile(r"^(facebook|instagram|meta|takeout)-.*\.zip$", re.I)
 LOCAL_NAME = re.compile(
-    r"^((facebook|instagram|meta)-.*\.zip|your_friends\.json|friends\.json|"
-    r"followers_\d+\.json|following\.json)$", re.I)
+    r"^((facebook|instagram|meta|takeout)-.*\.zip|your_friends\.json|friends\.json|"
+    r"followers_\d+\.json|following\.json|.*\.mbox)$", re.I)
 MAIL_FROM = ("facebookmail.com", "mail.instagram.com")
 MAIL_SUBJECT = re.compile(
     r"(information|data|files?|download).{0,40}(ready|available)|ready to download", re.I)
@@ -157,12 +179,16 @@ def note_import(networks, counts: dict, *, via: str = "", now: float | None = No
         lists = ", ".join(f"{_LIST_NAMES.get(k, k)} {v}" for k, v in sorted(counts.items()))
         _alert({"id": "contacts.import", "kind": "digest", "level": "warn",
                 "title": f"Imported {lists}" if lists else "Imported an export",
-                "detail": f"From {via}. The people are in People, under their labels."})
+                "detail": f"From {via}. The people are in People, under their labels; "
+                          "past conversations are in each one's timeline."})
 
 
 _LIST_NAMES = {"facebook_friends": "Facebook friends",
                "instagram_followers": "Instagram followers",
-               "instagram_following": "Instagram following"}
+               "instagram_following": "Instagram following",
+               "messenger_conversations": "Messenger conversations",
+               "instagram_conversations": "Instagram conversations",
+               "old_chats": "people from old chats"}
 
 
 # --- the reminder --------------------------------------------------------------------
@@ -309,7 +335,7 @@ def _phone(script: str, timeout: float) -> str:
 def phone_files() -> list[tuple[str, int, int]]:
     """`(path, mtime, size)` of the export zips in the phone's Download."""
     out = _phone(f"for f in {PHONE_DIR}/facebook-*.zip {PHONE_DIR}/instagram-*.zip "
-                 f"{PHONE_DIR}/meta-*.zip; do [ -f \"$f\" ] && stat -c '%Y %s %n' \"$f\"; "
+                 f"{PHONE_DIR}/meta-*.zip {PHONE_DIR}/takeout-*.zip; do [ -f \"$f\" ] && stat -c '%Y %s %n' \"$f\"; "
                  "done; echo END", LIST_TIMEOUT_S)
     if "END" not in out:
         raise RuntimeError("the listing did not finish")
@@ -360,8 +386,8 @@ def watch(*, now: float | None = None) -> dict:
             got["errors"]["phone"] = str(e)[:200]   # off Wi-Fi: next time
     folder = (os.environ.get("MEDIA_CONTACTS_IMPORT_DIR") or "").strip()
     if folder:
-        places.append((folder, local_files(Path(folder).expanduser()),
-                       lambda p: Path(p).read_bytes()))
+        # A file here is read as it goes (contacts.import_path): any size.
+        places.append((folder, local_files(Path(folder).expanduser()), None))
     if not places:
         return got
     state = load()
@@ -375,14 +401,19 @@ def watch(*, now: float | None = None) -> dict:
             seen[path] = mark
             changed = True
             name = path.rsplit("/", 1)[-1]
-            if size > contacts.IMPORT_MAX:
+            if read is not None and size > contacts.IMPORT_MAX:
+                # Over the phone's shell a file is read whole: a large one
+                # (a message history) belongs in the import folder.
                 got["skipped"] += 1
-                got["errors"][name] = "larger than an import takes: choose only the lists"
+                got["errors"][name] = ("too large to read over the phone: put it in the "
+                                       "server's import folder or run contacts import")
                 continue
             try:
-                data = read(path)
                 save(state)   # seen before importing: a bad file is tried once
-                contacts.import_export(data, name, via=where)
+                if read is None:
+                    contacts.import_path(Path(path), via=where)
+                else:
+                    contacts.import_export(read(path), name, via=where)
                 got["imported"].append(name)
             except contacts_import.NotAnExport as e:
                 got["skipped"] += 1

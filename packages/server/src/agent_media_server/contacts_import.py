@@ -184,6 +184,37 @@ def _people(kind: tuple[str, str], obj, out: dict) -> int:
     return n
 
 
+def _take(out: dict, counts: dict, kind, raw: bytes, fname: str) -> None:
+    try:
+        obj = json.loads(raw.decode("utf-8-sig"))
+    except (UnicodeDecodeError, ValueError):
+        return
+    kind = kind or _guess(obj, fname)
+    if kind:
+        key = f"{kind[0]}_{kind[1]}"
+        counts[key] = counts.get(key, 0) + _people(kind, obj, out)
+
+
+def parse_zip(zf: zipfile.ZipFile) -> tuple[dict, dict, bool]:
+    """`(records by export, counts by list, an HTML export seen)` from an
+    open zip (a path's, so a whole export is never read into memory: only
+    its list files are). No list is `({}, {}, html)`, not an error: the zip
+    may hold a message history instead (contacts_history.py)."""
+    out: dict[str, dict] = {}
+    counts: dict[str, int] = {}
+    html = False
+    for info in zf.infolist()[:MAX_MEMBERS]:
+        kind = _kind_of(info.filename)
+        if kind is None:
+            html = html or info.filename.lower().endswith(
+                ("your_friends.html", "followers_1.html", "following.html"))
+            continue
+        if info.file_size > MAX_FILE:
+            continue
+        _take(out, counts, kind, zf.read(info), info.filename)
+    return out, counts, html
+
+
 def parse(data: bytes, name: str = "") -> tuple[dict, dict]:
     """`(records by export, counts by list)` from a .zip or a JSON file.
     NotAnExport when it holds no list this knows."""
@@ -191,30 +222,14 @@ def parse(data: bytes, name: str = "") -> tuple[dict, dict]:
     counts: dict[str, int] = {}
 
     def take(kind, raw: bytes, fname: str) -> None:
-        try:
-            obj = json.loads(raw.decode("utf-8-sig"))
-        except (UnicodeDecodeError, ValueError):
-            return
-        kind = kind or _guess(obj, fname)
-        if kind:
-            key = f"{kind[0]}_{kind[1]}"
-            counts[key] = counts.get(key, 0) + _people(kind, obj, out)
+        _take(out, counts, kind, raw, fname)
 
     if data[:4] == b"PK\x03\x04":
         try:
             zf = zipfile.ZipFile(io.BytesIO(data))
         except zipfile.BadZipFile as e:
             raise NotAnExport("not a zip that opens") from e
-        html = False
-        for info in zf.infolist()[:MAX_MEMBERS]:
-            kind = _kind_of(info.filename)
-            if kind is None:
-                html = html or info.filename.lower().endswith(
-                    ("your_friends.html", "followers_1.html", "following.html"))
-                continue
-            if info.file_size > MAX_FILE:
-                continue
-            take(kind, zf.read(info), info.filename)
+        out, counts, html = parse_zip(zf)
         if not counts:
             raise NotAnExport(
                 "that export is HTML: download it again as JSON" if html else

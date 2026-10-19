@@ -664,10 +664,13 @@ def _multipart_file(ctype: str, body: bytes) -> tuple[bytes, str] | None:
 
 
 def _contacts_import(h: BaseHTTPRequestHandler) -> None:
-    """`POST /contacts/import[?name=]` (§6.25): a Facebook or Instagram data
-    export, raw (`application/zip`, `application/json`) or as a form's file,
-    into the caller's own book. Gated as the other contacts routes; the
-    body's size was checked against contacts.IMPORT_MAX before this."""
+    """`POST /contacts/import[?name=]` (§6.25): a data export — Facebook or
+    Instagram (friends, followers, messages), Google Takeout's Chats (.mbox
+    or its zip) — raw (`application/zip`, `application/json`,
+    `application/mbox`) or as a form's file, into the caller's own book.
+    Gated as the other contacts routes; the body's size was checked against
+    contacts.IMPORT_MAX before this (a larger one goes through `contacts
+    import` or the import folder, which read it as they go)."""
     from . import contacts, contacts_import
 
     user, err = auth.gate(_bearer(h))
@@ -696,7 +699,8 @@ def _contacts_import(h: BaseHTTPRequestHandler) -> None:
             return
         data, name = part[0], name or part[1]
     if not data:
-        _json(h, 400, {"ok": False, "error": "expected an export (.zip or .json) as the body"})
+        _json(h, 400, {"ok": False,
+                       "error": "expected an export (.zip, .mbox or .json) as the body"})
         return
     try:
         got = contacts.import_export(data, name)

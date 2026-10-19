@@ -617,7 +617,7 @@ def test_routes_shape_and_auth(server, signed_in, crm, book):
     assert res.status == 200 and set(obj) == {"ok", "entries", "sources", "crm"}
     assert [e["summary"] for e in obj["entries"]] == ["Call back Tuesday"]
     assert set(obj["entries"][0]) == {"key", "channel", "day", "count_in", "count_out",
-                                      "duration", "summary", "origin", "synced"}
+                                      "duration", "summary", "origin", "synced", "via"}
     assert res.getheader("Access-Control-Allow-Origin") == "*"
     nobody = "00000000-0000-0000-0000-000000000000"
     res, obj = call(server, "GET", f"/contacts/{nobody}/timeline", headers=AUTH)

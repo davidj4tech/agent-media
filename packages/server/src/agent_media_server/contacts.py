@@ -85,6 +85,7 @@ import base64
 import contextlib
 import contextvars
 import hashlib
+import io
 import json
 import logging
 import os
@@ -100,6 +101,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import zipfile
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -1542,14 +1544,106 @@ IMPORT_MAX = 64 * 1024 * 1024
 
 
 def import_export(data: bytes, name: str = "", *, via: str = "") -> dict:
-    """A Facebook or Instagram data export (contacts_import.py) into this
-    book, as the `import` source: each export's people replace that
-    export's last import (a Join or a "Not the same" holds, being kept by
-    the person's stable id). Answers the counts, never a name.
-    contacts_import.NotAnExport when the file holds no list."""
-    from . import contacts_import
+    """A data export as it was sent (`POST /contacts/import`, the phone's
+    Downloads): a .zip, an .mbox or one JSON file. Its people lists
+    (contacts_import.py) and its past conversations (contacts_history.py),
+    whichever it holds. contacts_import.NotAnExport when it holds neither."""
+    from . import contacts_history, contacts_import
 
-    found, counts = contacts_import.parse(data, name)
+    if data[:4] == b"PK\x03\x04":
+        try:
+            zf = zipfile.ZipFile(io.BytesIO(data))
+        except zipfile.BadZipFile as e:
+            raise contacts_import.NotAnExport("not a zip that opens") from e
+        return _import_zip(zf, name, via=via)
+    hist = contacts_history.scan_bytes(data, name)
+    try:
+        found, counts = contacts_import.parse(data, name)
+    except contacts_import.NotAnExport:
+        if not hist:
+            raise
+        found, counts = {}, {}
+    return _import_found(found, counts, hist, via=via)
+
+
+def import_path(path: Path, *, via: str = "") -> dict:
+    """A data export on this host (`contacts import`, the import folder),
+    read as it goes: a zip's list and message files and an .mbox's headers,
+    never the whole file, so an export of any size with its media is
+    fine. contacts_import.NotAnExport when it holds nothing this reads."""
+    from . import contacts_history, contacts_import
+
+    path = Path(path)
+    with path.open("rb") as f:
+        head = f.read(5)
+    if head[:4] == b"PK\x03\x04":
+        try:
+            with zipfile.ZipFile(path) as zf:
+                return _import_zip(zf, path.name, via=via)
+        except zipfile.BadZipFile as e:
+            raise contacts_import.NotAnExport("not a zip that opens") from e
+    if head == b"From " or path.suffix.lower() == ".mbox":
+        hist = contacts_history.History()
+        with path.open("rb") as f:
+            contacts_history.scan_mbox(f, hist)
+        if not hist:
+            raise contacts_import.NotAnExport("no chats in that mbox (Takeout: Mail, the "
+                                              "Chats label)")
+        return _import_found({}, {}, hist, via=via)
+    if path.stat().st_size > IMPORT_MAX:
+        raise contacts_import.NotAnExport("too large for a JSON file: import the export's zip")
+    return import_export(path.read_bytes(), path.name, via=via)
+
+
+def _import_zip(zf: "zipfile.ZipFile", name: str, *, via: str = "") -> dict:
+    from . import contacts_history, contacts_import
+
+    found, counts, html = contacts_import.parse_zip(zf)
+    hist = contacts_history.scan_zip(zf, name)
+    if not counts and not hist:
+        raise contacts_import.NotAnExport(
+            "that export is HTML: download it again as JSON" if html else
+            "no friends, followers, messages or chats in that zip")
+    return _import_found(found, counts, hist, via=via)
+
+
+def _import_found(found: dict, counts: dict, hist, *, via: str = "") -> dict:
+    """The people lists found, then the history, into this book."""
+    out = {"imported": dict(counts), "people": 0, "joined": 0, "contacts": 0}
+    if found:
+        out.update(_import_people(found, counts))
+    if hist:
+        from . import contacts_history
+
+        h = contacts_history.apply(hist)
+        out["history"] = h
+        for k in ("messenger_conversations", "instagram_conversations", "old_chats"):
+            if h.get(k):
+                out["imported"][k] = h[k]
+        conn = _connect(create=False)
+        if conn is not None:
+            try:
+                out["contacts"] = conn.execute("SELECT COUNT(*) FROM contacts").fetchone()[0]
+            finally:
+                conn.close()
+    log.info("contacts[%s]: imported %s", account() or "owner",
+             ", ".join(f"{k} {v}" for k, v in sorted(out["imported"].items())))
+    # The reminder clock and the export alerts (contacts_exports.py); `via`
+    # names where an automatic import found the file, which is then said.
+    from . import contacts_exports
+
+    try:
+        contacts_exports.note_import(found.keys(), out["imported"], via=via)
+    except Exception as e:  # noqa: BLE001 — the import itself is done
+        log.warning("contacts: export bookkeeping failed (%s)", e)
+    return out
+
+
+def _import_people(found: dict, counts: dict) -> dict:
+    """The friends and followers lists as the `import` source: each
+    export's people replace that export's last import (a Join or a "Not the
+    same" holds, being kept by the person's stable id). The counts, never a
+    name."""
     with _SYNC_LOCK, _WRITE:
         conn = _connect()
         try:
@@ -1566,10 +1660,11 @@ def import_export(data: bytes, name: str = "", *, via: str = "") -> dict:
             _set_meta(conn, "import_last_error", None)
             people = joined = 0
             for (raw,) in conn.execute("SELECT card FROM contacts"):
-                kinds = [s.get("kind") for s in json.loads(raw).get("sources") or []]
-                if "import" in kinds:
+                srcs = json.loads(raw).get("sources") or []
+                if any(s.get("kind") == "import" and ":" in (s.get("id") or "")
+                       and "-history:" not in s.get("id", "") for s in srcs):
                     people += 1
-                    joined += any(k != "import" for k in kinds)
+                    joined += any(s.get("kind") != "import" for s in srcs)
             total = conn.execute("SELECT COUNT(*) FROM contacts").fetchone()[0]
             conn.execute("COMMIT")
         except BaseException:
@@ -1578,17 +1673,7 @@ def import_export(data: bytes, name: str = "", *, via: str = "") -> dict:
         finally:
             conn.close()
     _fresh()
-    log.info("contacts[%s]: imported %s", account() or "owner",
-             ", ".join(f"{k} {v}" for k, v in sorted(counts.items())))
-    # The reminder clock and the export alerts (contacts_exports.py); `via`
-    # names where an automatic import found the file, which is then said.
-    from . import contacts_exports
-
-    try:
-        contacts_exports.note_import(found.keys(), counts, via=via)
-    except Exception as e:  # noqa: BLE001 — the import itself is done
-        log.warning("contacts: export bookkeeping failed (%s)", e)
-    return {"imported": counts, "people": people, "joined": joined, "contacts": total}
+    return {"people": people, "joined": joined, "contacts": total}
 
 
 def sources() -> list[str]:
@@ -2592,22 +2677,31 @@ def cmd_import(a) -> int:
 
     path = Path(a.file).expanduser()
     try:
-        if path.stat().st_size > IMPORT_MAX:
-            print(f"contacts: {path.name} is over {IMPORT_MAX // 2**20} MB: download only "
-                  "the friends / followers section", file=sys.stderr)
-            return 2
-        data = path.read_bytes()
+        got = import_path(path)
     except OSError as e:
         print(f"contacts: {e}", file=sys.stderr)
         return 2
-    try:
-        got = import_export(data, path.name)
     except contacts_import.NotAnExport as e:
         print(f"contacts: {e}", file=sys.stderr)
         return 2
     lists = ", ".join(f"{n} {k.replace('_', ' ')}" for k, n in sorted(got["imported"].items()))
-    print(f"imported {lists}: {got['people']} people from exports, {got['joined']} of them "
-          f"joined someone already here, {got['contacts']} contacts")
+    line = f"imported {lists or 'nothing new'}"
+    if got.get("people"):
+        line += (f": {got['people']} people from exports, {got['joined']} of them joined "
+                 "someone already here")
+    print(f"{line}; {got['contacts']} contacts")
+    h = got.get("history")
+    if h:
+        print(f"history: {h['days']} days added or raised in the timeline, "
+              f"{h['new_people']} new people, {h['groups_left_out']} group conversations "
+              f"left out, {h['unmatched']} with no one to match")
+        if h["unknown_self"]:
+            print(f"history: {h['unknown_self']} conversations where you were not found: set "
+                  "MEDIA_CONTACTS_SELF_NAME to your name as the export writes it",
+                  file=sys.stderr)
+        if h["chats_without_the_label"]:
+            print(f"history: {h['chats_without_the_label']} mails without the Chat label "
+                  "left out", file=sys.stderr)
     return 0
 
 
@@ -2715,10 +2809,11 @@ def main(argv: list[str] | None = None) -> int:
                    help="only this one (default: every source this host reads)")
     p.add_argument("--full", action="store_true", help="Google: everything, not the changes")
     p.set_defaults(fn=cmd_sync)
-    p = sub.add_parser("import", help="people from a Facebook or Instagram data export "
-                                      "(the .zip, or its friends/followers JSON)")
-    p.add_argument("file", help="the export's .zip, your_friends.json, followers_1.json "
-                                "or following.json")
+    p = sub.add_parser("import", help="people and past conversations from a data export: "
+                                      "Facebook or Instagram (.zip or JSON), Google Takeout's "
+                                      "Chats (.zip or .mbox); any size, read as it goes")
+    p.add_argument("file", help="the export's .zip, an .mbox, your_friends.json, "
+                                "followers_1.json, following.json or a message_1.json")
     p.set_defaults(fn=cmd_import)
     p = sub.add_parser("seed", help="add the people the CRM lacks to it (a dry run unless --go)")
     p.add_argument("--go", action="store_true", help="write to the CRM (default: say what would be)")

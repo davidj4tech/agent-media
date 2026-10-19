@@ -190,8 +190,11 @@ def test_login_needs_a_port_and_a_client(server, google):
     # Where each export is requested, whatever Google's state (Import a file).
     ex = obj["google"]["exports"]
     assert [(x["network"], x["label"]) for x in ex] == [
-        ("facebook", "Facebook friends"), ("instagram", "Instagram followers and following")]
-    assert {x["url"] for x in ex} == {"https://accountscentre.facebook.com/info_and_permissions/dyi"}
+        ("facebook", "Facebook friends"), ("instagram", "Instagram followers and following"),
+        ("messenger", "Messenger conversations"), ("instagram_messages", "Instagram conversations"),
+        ("chats", "Old Google Talk chats")]
+    assert {x["url"] for x in ex} == {"https://accountscentre.facebook.com/info_and_permissions/dyi",
+                                      "https://takeout.google.com/"}
     assert "Friends and followers" in ex[0]["steps"] and "JSON" in ex[0]["steps"]
     assert "Followers and following" in ex[1]["steps"] and "All time" in ex[1]["steps"]
 
