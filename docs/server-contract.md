@@ -4289,6 +4289,13 @@ export is requested, for Settings → Contacts → Import a file:
 `steps` names the same choices the export reminder does (below, "The export
 cycle"; `contacts_exports.CHOICES`): Some of your information → Connections
 → Friends and followers (Followers and following), All time, Format JSON.
+Then the past conversations (below, "Past conversations";
+`contacts_exports.HISTORY`): `messenger` "Messenger conversations" and
+`instagram_messages` "Instagram conversations" (the same page: Messages
+only, All time, JSON, Media quality Low) and `chats` "Old Google Talk
+chats" (`https://takeout.google.com/`: Deselect all → Mail → only the
+Chats label → .zip), each `steps` ending with where a large one goes (the
+import folder or `contacts import`).
 The app shows each as a button opened outside itself, its steps under it
 (David, 19 Oct 2026).
 
@@ -4412,6 +4419,50 @@ person's handle is `{"network": "instagram", "id": "instagram:<username>",
 "username", "url"}`. Pinned by
 `packages/server/tests/test_contacts_import.py`.
 
+**Past conversations** (19 Oct 2026; contacts_history.py; David: backfill
+the timeline from the exports). The same downloads hold the years before
+this server first counted a room. Read into §6.25a's timeline as its own
+entries — per contact, per channel, per day, counts in and out, **never a
+word of what was said** — marked `via: "import"`:
+
+- **Messenger**: Facebook's export, Messages, JSON:
+  `…/messages/{inbox,archived_threads,e2ee_cutover}/<thread>/message_N.json`
+  (`participants [{name}]`, `messages [{sender_name, timestamp_ms}]`; a
+  thread's files summed; message requests, media and everything else left
+  unread), channel `messenger`.
+- **Instagram**: its export, Messages: `your_instagram_activity/messages/
+  inbox/<thread>/message_N.json`, the same shape, channel `instagram` (a
+  path or a file name naming Instagram says which).
+- **Old chats**: Google Takeout, Mail, only the Chats label: an `.mbox` (or
+  the Takeout zip holding it) of the Google Talk and gateway chats Gmail
+  kept. Only From, To, Cc, Date and `X-Gmail-Labels` are read, the file
+  streamed a line at a time; a mail whose labels lack `Chat` is left out
+  (`chats_without_the_label`). Channel `chat`.
+
+**One-to-one only**: a group's messages belong to no one person, as a group
+room does (`groups_left_out`). **Who David is**: the name in at least 60%
+of a network's threads (two threads or more), the address in 60% of the
+chats, or `MEDIA_CONTACTS_SELF_NAME` (comma separated; another account's
+`contacts.json` `self_name`) and `MEDIA_CONTACTS_SELF`'s addresses; a
+thread where he is not found is left out (`unknown_self`). **Whose**: a
+thread's other person is the one contact with that name, one known on that
+network first (a bridged ghost of it, a friends-list or follower person),
+else an import person of their own labelled **"Messenger history"** /
+**"Instagram history"** (source `{"kind": "import", "id":
+"<network>-history:<hash>", "export": "<network>-history", "lists":
+["messages"]}`; they join and are joined as an export's person is). A
+chat's address is matched by the card's addresses and the old chat
+addresses (`aliases`, §6.25 "Old chat addresses"), raw or decoded (an XMPP
+resource after `/` dropped); an unmatched address adds no one
+(`unmatched`). **Idempotent**: counts are summed per day across a
+person's threads, then merged with the ledger by the larger, so the same
+export again changes nothing and a day the rollup also counted is never
+counted twice. **Size**: a message export with its media is large;
+`… contacts import <file>` and `MEDIA_CONTACTS_IMPORT_DIR` read a zip's
+message files and an mbox's headers as they go, any size; the route and
+the phone's Downloads (read whole over the shell) stay at 64 MiB. Pinned by
+`packages/server/tests/test_contacts_history.py`.
+
 **The export cycle** (19 Oct 2026; contacts_exports.py; David: "how might we
 automate the exports?"). Meta's website is never driven: requesting an
 export stays David's tap. Around it, in the sync loop, for the **owner's
@@ -4419,10 +4470,12 @@ book only** (an alert reaches the owner's phone, so another account's book
 gets none of this):
 
 - **Files.** Export zips in the phone's Download folder
-  (`facebook-*.zip`, `instagram-*.zip`, `meta-*.zip`, listed and read over
-  `MEDIA_CONTACTS_ADB`, base64 over the shell, never deleted there) and,
-  with `MEDIA_CONTACTS_IMPORT_DIR`, those zips or the list JSONs in that
-  folder, are imported once each (by path, size and time; a newer export
+  (`facebook-*.zip`, `instagram-*.zip`, `meta-*.zip`, `takeout-*.zip`,
+  listed and read over `MEDIA_CONTACTS_ADB`, base64 over the shell, never
+  deleted there; at most 64 MiB each, a larger one said as "too large to
+  read over the phone") and, with `MEDIA_CONTACTS_IMPORT_DIR`, those zips,
+  `.mbox` files or the list JSONs in that folder (read as they go, any
+  size), are imported once each (by path, size and time; a newer export
   is a new file). Each import is said as the `contacts.import` digest at
   warn (a phone notification: "Imported Facebook friends 412", counts,
   never names). A file that is not an export is tried once; one that could
@@ -4450,19 +4503,28 @@ the files and mails seen, what is raised). Pinned by
 #### `POST /contacts/import[?name=<file name>]` — gated (`auth.gate`)
 
 The body is the export: a `.zip` of it (the whole download, or the
-friends / followers part) or one of those JSON files, raw
-(`application/zip`, `application/json`) or as a `multipart/form-data`
-file. At most 64 MiB (413 before a byte is read). Into the caller's own
-book. →
+friends / followers / messages part, or a Takeout zip), an `.mbox`, or one
+of those JSON files (a list, or one `message_N.json`), raw
+(`application/zip`, `application/json`, `application/mbox`) or as a
+`multipart/form-data` file. At most 64 MiB (413 before a byte is read); a
+larger one goes through the CLI or the import folder. Into the caller's
+own book. →
 
 ```json
-{"ok": true, "imported": {"facebook_friends": 412},
- "people": 412, "joined": 37, "contacts": 3290}
+{"ok": true, "imported": {"facebook_friends": 412, "messenger_conversations": 96},
+ "people": 412, "joined": 37, "contacts": 3290,
+ "history": {"messenger_conversations": 96, "instagram_conversations": 0,
+             "old_chats": 0, "days": 5120, "new_people": 14, "groups_left_out": 31,
+             "unmatched": 0, "unknown_self": 0, "chats_without_the_label": 0}}
 ```
 
 `imported` counts each list read (`instagram_followers`,
-`instagram_following`); `people` is how many contacts hold an export's
-person now, `joined` how many of them are someone already here. 400
+`instagram_following`) and each kind of past conversation matched to
+someone (`messenger_conversations`, `instagram_conversations`, `old_chats`:
+people with old chats); `people` is how many contacts hold a list's person
+now, `joined` how many of them are someone already here. `history` is
+there when the export held conversations ("Past conversations" above):
+`days` the timeline entries added or raised. 400
 `{"code": "not_an_export"}` with why (HTML, no list found, not a zip that
 opens). Names are never logged. CLI: `media contacts [--account WHO]
 import <file>`.
@@ -4502,6 +4564,10 @@ separated; default `texts,notes`):
 | `calls` | **off** | `call` | the phone's call log over `MEDIA_CONTACTS_ADB`, by number |
 | `email` | **off** | `email` | mail headers (From, To, Cc only) over IMAP, by address: `~/.config/agent-media/timeline-imap.json` or `MEDIA_TIMELINE_IMAP`, `{host, user, password, folder?}` (default folder `[Gmail]/All Mail`) |
 
+Besides the sources, an import writes the years before (§6.25 "Past
+conversations"): Messenger and Instagram threads and Gmail's old chats,
+into the same entries, merged by the larger count.
+
 The rollup runs after each contacts sync over the last
 `MEDIA_TIMELINE_DAYS` (2: yesterday and today), and on `… contacts rollup
 [--days N] [--no-push]`; `MEDIA_TIMELINE=0` leaves it off. **A count never
@@ -4528,7 +4594,10 @@ until it does.
 ```
 
 - Newest day first, then by channel (`sms`, `signal`, `messenger`,
-  `instagram`, `teams`, `whatsapp`, `call`, `email`, `note`); at most `limit` (default 100, at most 1000).
+  `instagram`, `teams`, `whatsapp`, `call`, `email`, `chat`, `note`); at most `limit` (default 100, at most 1000).
+- **`via`**: `import` for a day an export wrote (§6.25 "Past
+  conversations"; channel `chat` is only ever that: old Google Talk and
+  gateway chats), else empty.
 - **`origin`**: `local`, this host's ledger, or `crm`, an entry the CRM
   holds that this host did not write (typed in its UI, another writer).
   **`synced`**: whether it is in the CRM yet.
