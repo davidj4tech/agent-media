@@ -274,3 +274,20 @@ def test_a_rooms_service_is_named_from_its_bridge_state():
     assert matrix._network([{"type": "m.room.name"}, {"type": "m.bridge",
                             "content": {"protocol": proto}}]) == {"id": "gmessages", "name": "Google Messages"}
     assert matrix._network([{"type": "m.room.create"}]) is None
+
+
+def test_a_room_can_be_archived_and_brought_back(one_room, monkeypatch):
+    # Archiving a chat from the Messages tab was a 404 ("no such session"):
+    # the route knew only coding sessions, though the room's row reads the
+    # same flags (David, 19 Oct 2026).
+    from agent_media_server import archive, auth
+
+    monkeypatch.setattr(auth, "gate", lambda bearer: ({"name": "david"}, {}))
+    ok, got = archive.session_archive(one_room.thread, True, "tok")
+    assert ok and got == {"session": one_room.thread, "archived": True}
+    (row,) = matrix.rows(frozenset(archive.archived()))
+    assert row["archived"] is True
+    ok, _ = archive.session_archive(one_room.thread, False, "tok")
+    assert ok and one_room.thread not in archive.archived()
+    ok, got = archive.session_archive("8f0e6c1e-0000-4000-8000-000000000000", True, "tok")
+    assert not ok and got["status"] == 404

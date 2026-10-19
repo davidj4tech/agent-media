@@ -141,9 +141,14 @@ def session_archive(session: str, flag, bearer: str) -> tuple[bool, dict]:
         return False, err
     from agent_media_core.sealed import is_sealed
 
-    # A sealed thread has none of these any more, and is still listed.
+    from . import matrix
+
+    # A sealed thread has none of these any more, and is still listed. A
+    # Matrix room's thread (§6.1 "Matrix rows") is archived like any other:
+    # its row reads the same flags.
     if not (sessions.live_sessions().get(session) or sessions.session_exists(session)
-            or sessions._folder_for_session(session) or is_sealed(session)):
+            or sessions._folder_for_session(session) or is_sealed(session)
+            or matrix.room(session) is not None):
         return False, {"error": f"no such session {session[:8]}", "status": 404}
     try:
         set_archived(session, flag)
