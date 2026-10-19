@@ -8672,6 +8672,15 @@ def cmd_contacts(a) -> int:
     return contacts.main(a.args or ["--help"])
 
 
+def cmd_session(a) -> int:
+    """`media session list|send`: headless sessions (sessiond) seen and
+    messaged from another session (agent_media_server.headless_mail)."""
+    mail = _server_module("headless_mail")
+    if mail is None:
+        return 1
+    return mail.main(a.args or ["--help"])
+
+
 def cmd_session_reap(a) -> int:
     """Close agent sessions idle past the threshold (agent_media_server.reap)."""
     reap = _server_module("reap")
@@ -9657,6 +9666,13 @@ def _build_parser() -> argparse.ArgumentParser:
     contacts.add_argument("args", nargs=argparse.REMAINDER)
     contacts.set_defaults(func=cmd_contacts)
 
+    session = sub.add_parser(
+        "session", add_help=False,
+        help="headless sessions: list [--all] [--cwd DIR], send <id|folder> [--from NAME] "
+             "[--wait S] <text> (queued behind a turn, never over a question card)")
+    session.add_argument("args", nargs=argparse.REMAINDER)
+    session.set_defaults(func=cmd_session)
+
     search = sub.add_parser("search", help="unified search (music/book library)")
     search.add_argument("--lines", action="store_true",
                         help="print title<TAB>uri rows for an external picker")
@@ -10357,6 +10373,8 @@ def main(argv=None) -> int:
     if argv[:1] == ["contacts"]:
         # Its own parser takes every option (--help, --go), not media's.
         return cmd_contacts(argparse.Namespace(args=list(argv[1:])))
+    if argv[:1] == ["session"]:
+        return cmd_session(argparse.Namespace(args=list(argv[1:])))
     args = _build_parser().parse_args(_end_opts_before_time(argv))
     try:
         return args.func(args)

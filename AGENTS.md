@@ -48,8 +48,14 @@ Before treating another session's uncommitted files as abandoned, check
 when its transcript last changed:
 `ls -lt ~/.claude/projects/<folder-slug>/*.jsonl | head` against `date`.
 Seconds old means live, whatever tmux says. Leave its files alone and reach
-it by agent-mail (`agent-mail-deliver` starts a new session in that folder
-when there is no pane to type into).
+it through sessiond: `media session list` shows the headless sessions (id,
+folder, title, whether a question card is up), and `media session send
+<id|folder> --from <you> <text>` puts a message in, queued behind a running
+turn and never over a question or permission card (headless_mail.py).
+`agent-mail-deliver --to <folder>` does the same when the folder has no pane
+(pane first, then sessiond, a new session only when neither has one).
+`ListAgents` and `SendMessage` cannot see these sessions: sessiond strips
+their messaging socket.
 
 ## Testing without touching a real device
 

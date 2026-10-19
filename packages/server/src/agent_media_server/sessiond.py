@@ -80,7 +80,9 @@ Ops (request `{"op", …}` → `{"ok": true, …}` or `{"ok": false, "error",
 "code"}`): `ping`, `list`, `get`, `start`, `send`, `resume`, `interrupt`,
 `answer`, `close`, `park`, `events`, `configure` (model and plan mode;
 session_settings.py), `relocate` (the directory a moved thread resumes in;
-moves.py).
+moves.py). `send` with `keep_pending` is refused `pending` rather than
+answer a waiting card the way typing does (another session's mail,
+headless_mail.py).
 
 Config (env): MEDIA_SESSIOND_SOCKET, MEDIA_SESSIOND_IDLE, MEDIA_SESSIOND_MAX,
 MEDIA_SESSIOND_MIN_FREE_MB, MEDIA_SESSIOND_BACKGROUND_AFTER, MEDIA_SESSIOND_TASK_STALE_S,
@@ -187,6 +189,9 @@ SETTLE_S = 3.0
 #: The deny a pending request gets when the user types a message instead.
 TYPED_INSTEAD = ("The user answered by typing a message instead of choosing; "
                  "their message follows. Take it as the answer.")
+#: Why a `keep_pending` send was refused (Supervisor.send).
+PENDING_KEPT = ("it has a question or permission waiting for an answer; "
+                "a message from another session would answer it, so it was not sent")
 
 
 # --- where things are -------------------------------------------------------------
@@ -993,14 +998,25 @@ class Supervisor:
             if s.proc is not None:
                 raise Refused(f"session {s.id[:8]} is still shutting down", "busy")
 
-    def send(self, session: str, text: str, *, uid: str = "", _fresh: bool = False) -> dict:
+    def send(self, session: str, text: str, *, uid: str = "", _fresh: bool = False,
+             keep_pending: bool = False) -> dict:
+        """`keep_pending`: a message that is not David's (another session's
+        mail, headless_mail.py) must not answer his question or permission
+        card the way typing does, so it is refused `pending` instead — under
+        the lock, so a card that comes up between a look and the send is kept."""
         if not (text or "").strip():
             raise Refused("empty message", "empty_text")
         uid = uid or str(uuid.uuid4())
         if self._agent(session) == "opencode":
+            if keep_pending:
+                with self.lock:
+                    if self._get(session).pending:
+                        raise Refused(PENDING_KEPT, "pending")
             return self._oc_send(session, text, _fresh=_fresh)
         with self.lock:
             s = self._get(session)
+            if keep_pending and (s.pending or s.state == "approval"):
+                raise Refused(PENDING_KEPT, "pending")
             self._await_exit(s)
             resumed = False
             if not s.live:
@@ -1575,7 +1591,8 @@ class Supervisor:
                     mode=req.get("mode") if isinstance(req.get("mode"), str) else None)}
             if op == "send":
                 return {"ok": True, **self.send(sid, str(req.get("text") or ""),
-                                                uid=str(req.get("uuid") or ""))}
+                                                uid=str(req.get("uuid") or ""),
+                                                keep_pending=bool(req.get("keep_pending")))}
             if op == "rename":
                 return {"ok": True, **self.rename(sid, str(req.get("title") or ""))}
             if op == "resume":
