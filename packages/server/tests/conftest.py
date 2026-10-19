@@ -148,6 +148,16 @@ def _clean_media_env(monkeypatch, tmp_path, request):
 
     monkeypatch.setattr(claude_models, "models", lambda **_: [])
     monkeypatch.setattr(session_settings, "_models_memo", (0.0, []))
+    # No server pinned the thread-watching table here, so a stream never
+    # writes it (core's watching.publish_pinned); and the watchers stop now,
+    # while the environment above is still in place (this teardown runs
+    # before monkeypatch's), not later under the real XDG_STATE_HOME.
+    from agent_media_core import watching
+
+    watching._reset_for_tests()
+    yield
+    thread_events._reset_for_tests()
+    watching._reset_for_tests()
 
 
 def pytest_configure(config):

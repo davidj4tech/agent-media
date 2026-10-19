@@ -2297,6 +2297,11 @@ def main() -> None:
     # one needs signing in again (agent_media_server.bridges, §6.26).
     from agent_media_server import bridges as _bridges
     _bridges.start_watch()
+    # The table of threads open in the app (core's watching.py), read by the
+    # Stop hook: its path pinned now and this process named its owner, so only
+    # this server ever writes it.
+    from agent_media_core import watching as _watching
+    _watching.pin()
     # One spoken catch-up when David is free again (agent_media_core.catchup,
     # roadmap item 14): watches free.answer(); MEDIA_CATCHUP=0 leaves it off.
     from agent_media_core import catchup as _catchup

@@ -478,10 +478,12 @@ def unsubscribe(w: Watcher, sub: Subscriber) -> None:
 
 def _publish() -> None:
     """Tell the Stop hook which threads are on screen (core's watching.py:
-    a Normal reply from one plays at once). Under `_LOCK`."""
+    a Normal reply from one plays at once). Under `_LOCK`. Only the server
+    writes it: to the path it pinned at start (canvas main,
+    `watching.pin()`); nothing in a process that did not, such as a test."""
     from agent_media_core import watching as _watching
 
-    _watching.publish({s: len(w.subs) for s, w in _WATCHERS.items()})
+    _watching.publish_pinned({s: len(w.subs) for s, w in _WATCHERS.items()})
 
 
 def watching() -> dict[str, int]:
