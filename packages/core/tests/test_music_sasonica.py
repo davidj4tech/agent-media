@@ -84,6 +84,7 @@ def test_play_hands_the_app_a_served_url(monkeypatch):
     assert sent == [
         ("tcp://p8a:6615", "cmd", "loadfile", "http://red5:8780/audio/music/x.mka", "replace"),
         ("tcp://p8a:6615", "set", "force-media-title", "A Song"),
+        ("tcp://p8a:6615", "set", "volume", 100),       # the balance's music level
         ("tcp://p8a:6615", "set", "user-data/agent-media/art",
          "https://i.ytimg.com/vi/aaaaaaaaaaa/hqdefault.jpg"),
         ("tcp://p8a:6615", "set", "pause", False),

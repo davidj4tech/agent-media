@@ -185,6 +185,9 @@ class SinkMusicSasonica(SinkMusicLocal):
             if title and replace:
                 self._set("force-media-title", title)
             if replace:
+                # The music gain from Settings' speech and music balance.
+                from ..speech_balance import music_level
+                self._set("volume", music_level())
                 from ..music_recent import art
                 picture = art(uri)
                 if picture:
@@ -246,9 +249,11 @@ class SinkMusicSasonica(SinkMusicLocal):
             return
         super().previous(target)
 
-    # The app's volume is ExoPlayer's 0-100, not the Termux mpv's 0-170.
+    # The app's volume is ExoPlayer's 0-100, not the Termux mpv's 0-170,
+    # and its resting level is the speech and music balance's.
     def nominal_volume(self, target: Target = SASONICA_TARGET) -> int:
-        return 100
+        from ..speech_balance import music_level
+        return music_level()
 
     def unduck(self, target: Target = SASONICA_TARGET, restore: int = 100) -> None:
         try:

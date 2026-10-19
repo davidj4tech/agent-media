@@ -1511,6 +1511,25 @@ device paired with it (the app's Settings says so). Kept in
 Pinned by `packages/server/tests/test_reap.py` and
 `packages/core/tests/test_speak_priority.py`.
 
+#### `GET` / `POST /speech/balance` — gated (19 Oct 2026)
+
+`GET` → `{"ok": true, "balance", "speech", "music"}`; `POST {"balance"}` →
+the same, after setting it. How loud speech is next to music in the app:
+`balance` -100..100, 0 until set. Above 0 speech is louder (music plays at
+`100 - balance`), below 0 music is (speech at `100 + balance`); `speech` and
+`music` are the two resulting 0-100 gains. They are the app players' own
+gains (Media3Speech, Media3Music), under Android's media volume, which the
+phone's keys still move for both. Speech takes its gain as each reply starts
+and after a duck, music as each track loads, and a POST sets both at once
+(best effort; music ducked under a reply is left to its restore). Only the
+`sasonica` targets: the rooms, Termux and the desk keep their own volumes.
+The server's, so every device's. Kept in `<state_dir>/speech-balance.json`.
+400 for anything but a number in range; in `CORS_PATHS` (David, 19 Oct
+2026: "a different volume for speech and music").
+
+Pinned by `packages/server/tests/test_reap.py` and
+`packages/core/tests/test_speech_balance.py`.
+
 #### `GET` / `POST /speech/voice` — gated (27 Sep 2026)
 
 `GET` → `{"ok": true, "target", "mode": "phone"|"server", "voice": str|null,

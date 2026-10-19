@@ -704,6 +704,20 @@ def test_speech_level_is_set_and_shows_on_the_rows(server, shelf, signed_in, typ
     call(server, "POST", "/session/priority", {"session": SID2, "level": "normal"}, AUTH)
 
 
+def test_speech_balance_is_the_servers(server, shelf, signed_in, typed):
+    from agent_media_core import speech_balance
+
+    res, obj = call(server, "GET", "/speech/balance", headers=AUTH)
+    assert res.status == 200 and obj == {"ok": True, "balance": 0, "speech": 100, "music": 100}
+    res, obj = call(server, "POST", "/speech/balance", {"balance": 35}, AUTH)
+    assert res.status == 200 and obj == {"ok": True, "balance": 35, "speech": 100, "music": 65}
+    assert speech_balance.balance() == 35
+    for bad in ("loud", 101, True, None):
+        res, obj = call(server, "POST", "/speech/balance", {"balance": bad}, AUTH)
+        assert res.status == 400, bad
+    assert speech_balance.balance() == 35
+
+
 def test_speech_default_is_every_thread_without_its_own(server, shelf, signed_in, typed):
     from agent_media_core import speak_priority
 

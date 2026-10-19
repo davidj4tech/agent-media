@@ -48,6 +48,15 @@ def _broker_default_volume() -> float:
         return 130.0
 
 
+def _balance_level(target: "Target | None") -> "float | None":
+    """The app's speech gain from the speech and music balance
+    (speech_balance.py), or None for a target it does not set."""
+    from .. import speech_balance
+    if target is None or not speech_balance.applies_to(target.name):
+        return None
+    return float(speech_balance.speech_level())
+
+
 def _broker_max_volume() -> float:
     """The broker's --volume-max ceiling (MEDIA_SPEECH_VOLUME_MAX, default 200).
     Duck levels clamp to this rather than a bare 100 so they stay valid across
@@ -604,10 +613,15 @@ class SinkSpeech:
         return cmds
 
     @staticmethod
-    def _start_cmds(start: int = 0) -> list:
-        return [["set_property", "pause", False],
+    def _start_cmds(start: int = 0, target: "Target | None" = None) -> list:
+        cmds = [["set_property", "pause", False],
                 ["set_property", "mute", False],
                 ["set_property", "playlist-pos", max(0, int(start))]]
+        level = _balance_level(target)
+        if level is not None:
+            # The app's speech gain, from Settings' speech and music balance.
+            cmds.insert(0, ["set_property", "volume", level])
+        return cmds
 
     def _send_or_miss(self, cmds: list, target: Target, what: str) -> bool:
         try:
@@ -647,7 +661,7 @@ class SinkSpeech:
         replay): the same batch, so the clips before it are never heard.
         """
         self._send_or_miss(self._load_cmds(uris, target, gapless)
-                           + self._start_cmds(start), target, "play_playlist")
+                           + self._start_cmds(start, target), target, "play_playlist")
 
     def load_playlist(self, uris: "list", target: Target = DEFAULT_TARGET,
                       gapless: bool = True) -> bool:
@@ -665,7 +679,7 @@ class SinkSpeech:
 
     def start_playlist(self, target: Target = DEFAULT_TARGET) -> bool:
         """The second half of play_playlist: play what load_playlist loaded."""
-        return self._send_or_miss(self._start_cmds(), target, "start_playlist")
+        return self._send_or_miss(self._start_cmds(target=target), target, "start_playlist")
 
     def append_clips(self, uris: "list", target: Target = DEFAULT_TARGET) -> bool:
         """Append clips to a playlist that is already playing. True if sent.
@@ -918,7 +932,7 @@ class SinkSpeech:
         if sock in _no_claim_play:
             return None
         me = _broker_owner_id()
-        cmds = self._load_cmds(uris, target, gapless) + self._start_cmds()
+        cmds = self._load_cmds(uris, target, gapless) + self._start_cmds(target=target)
         try:
             held = ipc.command(sock, "am-claim-play", _BROKER_OWNER_KEY,
                                {"owner": me, "deadline": time.time() + ttl},
@@ -974,7 +988,9 @@ class SinkSpeech:
         # Restore to the broker's *configured* default, not a hardcoded 100,
         # or every duck/unduck cycle would quietly pull speech below the
         # louder MEDIA_SPEECH_VOLUME the broker launched with.
-        ipc.set_property(_socket_for(target), "volume", _broker_default_volume())
+        level = _balance_level(target)
+        ipc.set_property(_socket_for(target), "volume",
+                         _broker_default_volume() if level is None else level)
 
     def position(self, target: Target = DEFAULT_TARGET) -> Optional[int]:
         try:

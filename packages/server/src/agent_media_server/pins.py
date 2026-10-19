@@ -149,6 +149,31 @@ def speech_default(bearer: str, level=None) -> tuple[bool, dict]:
     return True, {"level": speak_priority.default_level()}
 
 
+def speech_balance(bearer: str, balance=None) -> tuple[bool, dict]:
+    """`GET /speech/balance` and `POST /speech/balance {"balance"}`: how loud
+    speech is next to music in the app, -100 (music louder) .. 100 (speech
+    louder), applied at once (speech_balance.py). The server's, so every
+    device's. With `balance` None, only read."""
+    from agent_media_core import speech_balance as sb
+
+    if balance is not None and (isinstance(balance, bool)
+                                or not isinstance(balance, (int, float))
+                                or not -sb.LIMIT <= balance <= sb.LIMIT):
+        return False, {"error": "balance must be a number from -100 to 100",
+                       "status": 400}
+    user, err = auth.gate(bearer)
+    if not user:
+        return False, err
+    if balance is not None:
+        try:
+            sb.set_balance(balance)
+        except OSError as e:
+            return False, {"error": f"could not save the balance ({e})", "status": 500}
+        sb.apply_now()
+    b = sb.balance()
+    return True, {"balance": b, "speech": sb.speech_level(b), "music": sb.music_level(b)}
+
+
 def speech_voice(bearer: str, mode=None, voice=None) -> tuple[bool, dict]:
     """`GET /speech/voice` and `POST /speech/voice {"mode", "voice"?}`: whether
     the current speech target's replies are rendered on the phone, by

@@ -135,6 +135,8 @@ device gets its token):
                   (agent_media_core/watching.py, pins.py)
   GET|POST /speech/default {"level"} → the level of every thread with none
                   of its own; the server's, so every device's (pins.py)
+  GET|POST /speech/balance {"balance"} → how loud speech is next to music
+                  in the app, -100..100; the server's (speech_balance.py)
   GET|POST /speech/voice {"mode", "voice"?} → the speech target's replies
                   rendered on the phone (Android TTS) or by the server, and
                   in which voice, by language and accent (render/device.py,
@@ -293,7 +295,7 @@ CORS_PATHS = frozenset({
     "/session/stop",
     "/session/retract", "/session/move", "/session/move/cancel", "/session/settings",
     "/session/ask/part",
-    "/speech/now", "/speech/ctl", "/speech/sentences", "/speech/clip", "/speech/default", "/speech/voice",
+    "/speech/now", "/speech/ctl", "/speech/sentences", "/speech/clip", "/speech/default", "/speech/balance", "/speech/voice",
     "/settings/language",
     "/sessions/state", "/commands", "/rename",
     "/harnesses", "/harnesses/run", "/harnesses/screen",
@@ -1204,6 +1206,10 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
     elif path == "/speech/default":
         # The level of a thread with none of its own (speak_priority.py).
         ok, detail = pins.speech_default(_bearer(h))
+        _json(h, 200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
+    elif path == "/speech/balance":
+        # Speech next to music in the app (speech_balance.py).
+        ok, detail = pins.speech_balance(_bearer(h))
         _json(h, 200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
     elif path == "/speech/voice":
         # The phone's voice or the server's (render/device.py).
@@ -2143,6 +2149,13 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         # Settings' Default speech priority: every thread without its own.
         body = _read_json(h) or {}
         ok, detail = pins.speech_default(_bearer(h), level=str(body.get("level") or ""))
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/speech/balance":
+        # Settings' speech and music balance.
+        body = _read_json(h) or {}
+        # A missing or null balance is a bad one, not a read.
+        balance = body.get("balance")
+        ok, detail = pins.speech_balance(_bearer(h), balance="" if balance is None else balance)
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/speech/voice":
         # Settings' Voice: this phone's or the server's.
