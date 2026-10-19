@@ -229,6 +229,22 @@ def _label(v: dict) -> str:
     return f"session {sid}" + (f" ({first})" if first else "")
 
 
+def busy_kind(v: dict) -> str:
+    """What a sessiond session (its `get` / `list` view) is busy with, in the
+    words a move waiting on it uses (moves.py, §6.15), or "" when it is
+    free. The same test as `session_busy`, so a restart and a move agree on
+    what "busy" means: `"question"` — an approval or question pending;
+    `"turn"` — starting, working, or a message queued; `"agents"` — tasks
+    in flight (background agents, background commands)."""
+    if str(v.get("state") or "") == "approval" or v.get("pending"):
+        return "question"
+    if str(v.get("state") or "") in BUSY_STATES or v.get("queued"):
+        return "turn"
+    if int(v.get("tasks") or 0) > 0:
+        return "agents"
+    return ""
+
+
 def session_busy(v: dict) -> list[str]:
     why = []
     state = str(v.get("state") or "")

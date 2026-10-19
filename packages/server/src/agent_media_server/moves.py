@@ -306,15 +306,15 @@ def waiting_on(session: str, pane: str = "") -> str:
         hl = driver.headless_state(session)
         if hl is None or not hl.get("live"):
             return ""
-        raw = str(hl.get("raw") or hl.get("state") or "")
-        if raw in ("working", "starting") or hl.get("state") == "working" \
-                or hl.get("queued"):
-            return "turn"
-        if hl.get("approval") or raw == "approval" or hl.get("state") == "approval":
-            return "question"
-        if int(hl.get("tasks") or 0) > 0 or _agents_running(session):
-            return "agents"
-        return ""
+        # sessiond's own view, judged by the one test a restart uses too
+        # (restart_services.busy_kind), then the transcript's subagents.
+        from agent_media_core import restart_services
+
+        why = restart_services.busy_kind({
+            "state": hl.get("raw") or hl.get("state"),
+            "pending": [hl["approval"]] if hl.get("approval") else [],
+            "queued": hl.get("queued"), "tasks": hl.get("tasks")})
+        return why or ("agents" if _agents_running(session) else "")
     st = sessions.activity_of(session, pane)["state"]
     if st == "working":
         return "turn"

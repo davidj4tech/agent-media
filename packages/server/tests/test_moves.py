@@ -407,7 +407,9 @@ def test_a_headless_session_sessiond_will_not_move_stays_put(
 # --- busy is more than a turn (19 Oct 2026) -------------------------------------
 
 def _headless_view(**kw):
-    return {"state": "waiting", "live": True, "pane": None, "raw": "waiting",
+    """The driver's view: `raw` is sessiond's own state, `state` the contract's."""
+    kw.setdefault("raw", kw.get("state", "waiting"))
+    return {"state": "waiting", "live": True, "pane": None,
             "approval": None, "tasks": 0, "queued": False, **kw}
 
 
