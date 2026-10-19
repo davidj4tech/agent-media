@@ -1318,6 +1318,14 @@ ahead.
     own: the bridges' space rooms are probably taken in as empty threads.
     Plan only; open questions first.
 
+35. **Mail in Sasonica** (David, 20 Oct 2026: "I'd like to handle emails
+    from Sasonica"). Both a Mail tab (accounts, folders, search, compose)
+    and mail as a room on a person's Messages row; Gmail first (fifteen
+    accounts already in red5's notmuch, msmtp set up), Outlook next through
+    the calendar's Microsoft Graph sign-in. The plan and its open questions
+    (All Mail or Gmail's API, mbsync or lieer, spam, read aloud) are in
+    docs/proposals/2026-10-20-mail-in-sasonica.md. Not started.
+
 ## Loose ends
 
 - **A reply with a figure had no follow-along at all** (David, 23 Sep 2026)

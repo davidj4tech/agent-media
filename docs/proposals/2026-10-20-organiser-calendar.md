@@ -95,6 +95,8 @@ UID) is shown once, and the server's copy wins.
 5. Create and edit through CalDAV and the phone. Moving Org items.
 6. Microsoft Graph, read and write.
 
+**Shared with mail** (20 Oct 2026): the Microsoft Graph sign-in here also serves Outlook mail — docs/proposals/2026-10-20-mail-in-sasonica.md.
+
 ## Open questions
 
 - Which Google calendars: vdirsyncer's three, or khal's five?
