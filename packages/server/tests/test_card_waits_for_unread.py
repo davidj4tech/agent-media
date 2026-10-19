@@ -56,9 +56,35 @@ def test_it_stays_back_across_the_hand_on_then_comes(state):
     assert not threads.reading_unread(S, now=100.0 + threads.UNREAD_GRACE_S + 1)
 
 
-def test_an_ordinary_replay_does_not_hold_it(state):
+def test_any_reading_of_this_thread_holds_it(state):
     state.set_now_playing("speech", uri="/c.mp3", started_at=time.time(), target="phone",
                           extras={"replay": True, "source_session": S})
+    assert threads.reading_unread(S)
+
+
+ASK = [{"question": "Which way?", "options": [{"label": "A"}, {"label": "B"}]}]
+SENTS = ["Partly.", "With plain adb I can see the app.",
+         "The trade-off is the stored data. Which way?",
+         "Option 1: A.", "Option 2: B."]
+
+
+def test_the_lead_prose_holds_it_and_the_question_brings_it(state):
+    """19 Oct 2026: a live question turn read six sentences of prose with
+    the card up over them. It comes up when the question is reached."""
+    for idx, held in [(0, True), (1, True), (2, False), (3, False)]:
+        state.set_now_playing("speech", uri="/c.mp3", started_at=time.time(),
+                              target="phone",
+                              extras={"source_session": S, "ask": ASK,
+                                      "clip_sentences": SENTS,
+                                      "current_sentence_idx": idx})
+        assert threads.reading_unread(S) is held, idx
+
+
+def test_paused_or_gone_does_not_hold_it(state):
+    _reading(state, live_pause=True)
+    assert not threads.reading_unread(S)
+    threads._unread_seen.clear()
+    _reading(state, writer_pid=2 ** 22 + 12345)
     assert not threads.reading_unread(S)
 
 

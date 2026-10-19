@@ -410,20 +410,61 @@ def _messages_for(session: str, lines: list, *, working: bool, live: bool,
     return msgs, older
 
 
-#: How long after an unread reply's replay was last seen playing a thread's
-#: card stays back: the run hands on from one reply to the next through a
-#: fresh `media replay`, and the speech row is empty for a moment between.
+#: How long a thread's card stays back after its reading was last seen: an
+#: unread run hands on from one reply to the next through a fresh `media
+#: replay`, and the speech row is empty for a moment between.
 UNREAD_GRACE_S = 4.0
 _unread_seen: dict[str, float] = {}
 
 
+def _question_starts_at(ex: dict) -> int | None:
+    """The sentence of a question's read-out where the question itself
+    begins, after the lead prose spoken with it (`clip_sentences`); None
+    when it cannot be found."""
+    ask = ex.get("ask")
+    sents = ex.get("clip_sentences") or []
+    if not isinstance(ask, list) or not ask or not isinstance(ask[0], dict):
+        return None
+    q = str(ask[0].get("question") or "").strip()
+    if not q:
+        return None
+    for i, sent in enumerate(sents):
+        if q in str(sent) or str(sent).strip() and str(sent).strip() in q:
+            return i
+    return None
+
+
+def _writer_alive(ex: dict) -> bool:
+    try:
+        pid = int(ex.get("writer_pid") or 0)
+    except (TypeError, ValueError):
+        return True
+    if pid <= 0:
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
 def reading_unread(session: str, now: float | None = None) -> bool:
-    """True while the thread's unread replies are being read to the listener
-    (the replay's speech row says `unread`), or were a moment ago. Its
-    question card waits until they are done, as its voice does (core
-    `_UNREAD_RANK`): docked above the composer it took the room the
-    follow-along was in (David, 18 Oct 2026). A held question that is
-    itself the one being read is not kept back."""
+    """True while the voice is reading this thread's words that come before
+    its question, or was a moment ago: the thread's question card waits
+    until then. Docked above the composer it took the room the follow-along
+    was in (David, 18-19 Oct 2026). That is
+
+      * an unread reply being caught up on (the replay's row says `unread`;
+        its question's voice waits too, core `_UNREAD_RANK`), or any other
+        reply of this thread that is not the question;
+      * the lead prose spoken with the question, up to the sentence where
+        the question itself starts (`_question_starts_at`): the card comes
+        up as the question is read.
+
+    Not while the voice is paused, or the row's writer is gone: nobody is
+    following then, and the card must not stay hidden."""
     import time as _time
     now = _time.monotonic() if now is None else now
     try:
@@ -432,9 +473,22 @@ def reading_unread(session: str, now: float | None = None) -> bool:
     except Exception:  # noqa: BLE001
         np = None
     ex = (np or {}).get("extras") or {}
-    if ex.get("unread") and not ex.get("ask") and ex.get("source_session") == session:
-        _unread_seen[session] = now
-        return True
+    if (np and ex.get("source_session") == session and not ex.get("live_pause")
+            and _writer_alive(ex)):
+        if not ex.get("ask"):
+            _unread_seen[session] = now
+            return True
+        at = _question_starts_at(ex)
+        try:
+            idx = int(ex.get("current_sentence_idx"))
+        except (TypeError, ValueError):
+            idx = None
+        if at is not None and idx is not None and idx < at:
+            _unread_seen[session] = now
+            return True
+        # The question is being read: its card comes up now.
+        _unread_seen.pop(session, None)
+        return False
     seen = _unread_seen.get(session)
     if seen is not None and now - seen < UNREAD_GRACE_S:
         return True
