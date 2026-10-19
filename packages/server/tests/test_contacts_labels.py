@@ -132,6 +132,21 @@ def test_filter_and_list_by_label(phone):
                                             {"name": "My Contacts", "count": 2}]}
 
 
+def test_several_labels_any_or_all(phone):
+    contacts.sync_android()
+    names = lambda got: [c["name"] for c in got["contacts"]]  # noqa: E731
+    assert names(contacts.listing(label=["Family", "My Contacts"])) == ["Lionel Smith", "Mel Jones"]
+    assert names(contacts.listing(label=["Family", "My Contacts"], mode="any")) == [
+        "Lionel Smith", "Mel Jones"]
+    assert names(contacts.listing(label=["family", "MY CONTACTS"], mode="all")) == ["Lionel Smith"]
+    assert names(contacts.listing(label=["Family", "nobody's"], mode="all")) == []
+    assert names(contacts.listing(label=["Family", "nobody's"])) == ["Lionel Smith"]
+    assert names(contacts.listing(label=["Book club, Tuesdays"])) == ["Lionel Smith"]
+    assert names(contacts.listing(label=["", "Family"], mode="all")) == ["Lionel Smith"]
+    assert len(contacts.listing(label=[])["contacts"]) == 2
+    assert names(contacts.listing("mel", label=["My Contacts", "Family"])) == ["Mel Jones"]
+
+
 def test_the_routes(server, signed_in, phone):
     contacts.sync_android()
     res, obj = call(server, "GET", "/contacts/labels", headers=AUTH)
@@ -140,6 +155,15 @@ def test_the_routes(server, signed_in, phone):
     assert res.getheader("Access-Control-Allow-Origin") == "*"
     res, obj = call(server, "GET", "/contacts?label=Family", headers=AUTH)
     assert res.status == 200 and [c["name"] for c in obj["contacts"]] == ["Lionel Smith"]
+    res, obj = call(server, "GET", "/contacts?label=Family&label=My%20Contacts", headers=AUTH)
+    assert res.status == 200 and [c["name"] for c in obj["contacts"]] == [
+        "Lionel Smith", "Mel Jones"]
+    res, obj = call(server, "GET", "/contacts?label=Family&label=My%20Contacts&labels_mode=all",
+                    headers=AUTH)
+    assert res.status == 200 and [c["name"] for c in obj["contacts"]] == ["Lionel Smith"]
+    res, obj = call(server, "GET", "/contacts?label=Book%20club%2C%20Tuesdays&labels_mode=all",
+                    headers=AUTH)
+    assert [c["name"] for c in obj["contacts"]] == ["Lionel Smith"]
 
 
 def test_the_routes_are_gated(server, monkeypatch):

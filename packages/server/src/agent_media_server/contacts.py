@@ -389,9 +389,17 @@ CREATE TABLE IF NOT EXISTS merges (
   source TEXT NOT NULL, contact TEXT NOT NULL,
   kind TEXT NOT NULL CHECK (kind IN ('join', 'dismiss')), at REAL,
   PRIMARY KEY (source, contact));
+CREATE TABLE IF NOT EXISTS aliases (
+  contact TEXT NOT NULL, address TEXT NOT NULL, real TEXT,
+  first_seen REAL, last_seen REAL,
+  PRIMARY KEY (contact, address));
 """
-#: What a schema bump keeps: David's own decisions, not what a source said.
-_KEPT = {"overrides", "drupal_links", "merges"}
+#: What a schema bump keeps: David's own decisions, not what a source said,
+#: and the old chat addresses (`aliases`), which outlive their sources.
+_KEPT = {"overrides", "drupal_links", "merges", "aliases"}
+#: Bump when the cards are made differently from the same records: the
+#: next sync rebuilds them (records kept, nothing read again).
+CARDS_VERSION = "gateways-1"
 #: Bump when what a row holds changes: the store is emptied (but for the
 #: overrides and the seed's links) and read again.
 SCHEMA_VERSION = "2"
@@ -462,8 +470,119 @@ def _source(kind: str, sid: str, meta: dict) -> dict:
 
 
 def _keys(card: dict) -> tuple[set, set]:
-    return ({p["value"] for p in card.get("phones") or [] if p.get("value")},
-            {e["value"].lower() for e in card.get("emails") or [] if e.get("value")})
+    """The numbers and addresses a card is matched by; an old chat gateway's
+    address counts as the real one it encodes, and not at all when it
+    encodes none."""
+    gw = gateways()
+    emails = set()
+    for e in card.get("emails") or []:
+        a = (e.get("value") or "").strip()
+        if not a:
+            continue
+        if is_gateway(a, gw):
+            real = gateway_real(a)
+            if real:
+                emails.add(real.lower())
+        else:
+            emails.add(a.lower())
+    return ({p["value"] for p in card.get("phones") or [] if p.get("value")}, emails)
+
+
+# --- old chat gateway addresses --------------------------------------------------
+#
+# Jabber (XMPP) transports to MSN, Yahoo, AIM, ICQ, Facebook chat and the
+# like left addresses such as `someone%hotmail.com@msn.example.org` in
+# Google Contacts: the real address is the local part, `%` for `@`. They are
+# folded off the card's `emails` into `old_addresses`, the real address added
+# (marked derived) when the card lacks it, and every one ever seen kept in
+# `aliases` so the mail search still finds the old chats after they are
+# deleted from Google (David, 19 Oct 2026).
+
+#: The transports' hosts (fnmatch patterns, matched against the domain).
+GATEWAYS = (
+    "msn*.jabber.*", "yahoo*.jabber.*", "aim*.jabber.*", "icq*.jabber.*",
+    "*.gajim.org", "*.jaim.at", "*.jabbim.cz", "j2j.*", "*.j2j.*",
+    "gtalk2voip.com", "*.gtalk2voip.com", "chikkatalk.com", "*.chikkatalk.com",
+    "*.talk.google.com",
+)
+#: A host's first label naming a transport: such a host is one when the
+#: address's local part encodes an address (`user%hotmail.com`), so a real
+#: `someone@yahoo.com.au` never is.
+TRANSPORTS = {"msn", "yahoo", "aim", "icq", "fb", "facebook", "gg", "gadugadu",
+              "irc", "skype", "qq", "myspace", "twitter", "sms", "gtalk"}
+
+
+def gateways() -> tuple[str, ...]:
+    """`MEDIA_CONTACTS_GATEWAYS` (the owner's) or `contacts.json`
+    `gateways`: comma-separated patterns that replace `GATEWAYS`, or, each
+    starting with `+`, are added to them."""
+    raw = (setting("MEDIA_CONTACTS_GATEWAYS", "gateways") or "").strip()
+    if not raw:
+        return GATEWAYS
+    got = [x.strip().lower() for x in raw.split(",") if x.strip()]
+    add = [x[1:] for x in got if x.startswith("+") and x[1:]]
+    own = [x for x in got if not x.startswith("+")]
+    return tuple(own or GATEWAYS) + tuple(add)
+
+
+def gateway_real(address: str) -> str | None:
+    """The real address a gateway address encodes (`user%hotmail.com@…` →
+    `user@hotmail.com`), else None."""
+    local = address.rpartition("@")[0].strip()
+    for sep in ("%40", "%", "\\40"):
+        if sep in local:
+            user, _, dom = local.rpartition(sep)
+            if user and "." in dom and "@" not in user + dom and " " not in user + dom:
+                return f"{user}@{dom}".lower()
+    return None
+
+
+def is_gateway(address: str, patterns: tuple[str, ...] | None = None) -> bool:
+    """An old chat transport's address: its host matches a pattern, or its
+    host starts with a transport's name and it encodes an address."""
+    import fnmatch
+
+    user, at, host = address.strip().lower().rpartition("@")
+    if not at or not user or not host:
+        return False
+    if any(fnmatch.fnmatchcase(host, p) for p in (patterns or gateways())):
+        return True
+    return host.split(".")[0] in TRANSPORTS and host.count(".") >= 2 and bool(
+        gateway_real(address))
+
+
+def _fold_gateways(conn: sqlite3.Connection, cid: str, card: dict, now: float) -> dict:
+    """The card with its gateway addresses folded off `emails` into
+    `old_addresses` (with those `aliases` holds for it from before, last
+    seen first), the real addresses they encode added as derived emails."""
+    gw = gateways()
+    real, old = [], []
+    for e in card.get("emails") or []:
+        a = (e.get("value") or "").strip()
+        (old if a and is_gateway(a, gw) else real).append(e)
+    have = {(e.get("value") or "").strip().lower() for e in real}
+    seen = []
+    for e in old:
+        a = e["value"].strip()
+        if a.lower() in {x.lower() for x in seen}:
+            continue
+        seen.append(a)
+        r = gateway_real(a)
+        conn.execute("INSERT INTO aliases (contact, address, real, first_seen, last_seen) "
+                     "VALUES (?, ?, ?, ?, ?) ON CONFLICT(contact, address) DO UPDATE "
+                     "SET last_seen=excluded.last_seen, real=excluded.real",
+                     (cid, a.lower(), r, now, now))
+        if r and r not in have:
+            have.add(r)
+            real.append({"value": r, "type": "derived", "derived": True, "from": a})
+    known = [{"address": a, "real": r} for a, r in conn.execute(
+        "SELECT address, real FROM aliases WHERE contact=? ORDER BY last_seen DESC, "
+        "first_seen DESC, address", (cid,)) if a not in {x.lower() for x in seen}]
+    if not seen and not known and not old:
+        return card
+    out = {**card, "emails": real}
+    out["old_addresses"] = [{"address": a, "real": gateway_real(a)} for a in seen] + known
+    return out
 
 
 #: The card's list fields. Google's value wins where it has one (the
@@ -534,7 +653,7 @@ def _rebuild(conn: sqlite3.Connection) -> None:
         conn.execute(f"DELETE FROM {t}")
     now = time.time()
     for cid, entry in book.items():
-        c = {**entry["card"], "sources": entry["sources"]}
+        c = _fold_gateways(conn, cid, {**entry["card"], "sources": entry["sources"]}, now)
         raw = json.dumps(c, sort_keys=True)
         was = old.get(cid)
         conn.execute("INSERT INTO contacts (id, name, card, updated) VALUES (?, ?, ?, ?)",
@@ -545,7 +664,31 @@ def _rebuild(conn: sqlite3.Connection) -> None:
                          [(cid, p) for p in sorted(phones)])
         conn.executemany("INSERT INTO emails (contact, email) VALUES (?, ?)",
                          [(cid, e) for e in sorted(emails)])
+    _set_meta(conn, "cards", CARDS_VERSION)
     _bump(conn)
+
+
+def refold() -> bool:
+    """Rebuild the cards from the kept records when they were made by an
+    older `CARDS_VERSION` (no source is read again); True when it did."""
+    with _WRITE:
+        conn = _connect(create=False)
+        if conn is None:
+            return False
+        try:
+            if _meta(conn, "cards") == CARDS_VERSION or not conn.execute(
+                    "SELECT 1 FROM records LIMIT 1").fetchone():
+                return False
+            conn.execute("BEGIN IMMEDIATE")
+            _rebuild(conn)
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+    _fresh()
+    return True
 
 
 def trusted_names() -> set[str]:
@@ -1537,23 +1680,29 @@ def _source_states(conn: sqlite3.Connection | None) -> list[dict]:
     return out
 
 
-def listing(q: str = "", limit: int | str | None = None, label: str = "") -> dict:
+def listing(q: str = "", limit: int | str | None = None,
+            label: str | list[str] | tuple = "", mode: str = "any") -> dict:
     """`GET /contacts`: everyone, or those `q` matches as it is typed (name,
-    a phone's digits as written or dialled at home, an email); `label`, only
-    the people with that label."""
+    a phone's digits as written or dialled at home, an email); `label`, one
+    label or several, only the people with any of them (`mode` "any", the
+    default) or with every one (`mode` "all")."""
     try:
         n = max(1, min(int(limit or LIMIT), LIMIT_MAX))
     except (TypeError, ValueError):
         n = LIMIT
-    want = fold(label)
+    picked = [label] if isinstance(label, str) else list(label or [])
+    want = {fold(x) for x in picked if x and fold(x)}
+    every = (mode or "").strip().lower() == "all"
     conn = _connect(create=False)
     rows: list[tuple[int, str, dict]] = []
     try:
         if conn is not None:
             for cid, name, raw in conn.execute("SELECT id, name, card FROM contacts"):
                 card = json.loads(raw)
-                if want and want not in {fold(x) for x in card.get("labels") or []}:
-                    continue
+                if want:
+                    has = {fold(x) for x in card.get("labels") or []}
+                    if not (want <= has if every else want & has):
+                        continue
                 score = _matches(q, name, card) if q else 2
                 if score:
                     rows.append((score, fold(name), _row(cid, name, card)))
@@ -1565,6 +1714,49 @@ def listing(q: str = "", limit: int | str | None = None, label: str = "") -> dic
     synced = [s["synced_at"] for s in states if s["synced_at"]]
     return {"contacts": [r[2] for r in rows[:n]], "total": len(rows),
             "synced_at": max(synced) if synced else None, "sources": states}
+
+
+#: Where a card's "Their emails" goes: a mail search, `{query}` the
+#: URL-encoded `from:(a) OR to:(a) …` over every address. Per book:
+#: `MEDIA_CONTACTS_MAIL_URL` (the owner's) or `contacts.json` `mail_url`;
+#: "off" leaves the link out.
+MAIL_URL = "https://mail.google.com/mail/u/0/#search/{query}"
+
+
+#: The longest mail search link made: addresses past it are left out
+#: (`left_out`), the card's own first, then the old ones last seen first.
+MAIL_URL_MAX = 2000
+
+
+def mail_link(emails: list, aliases: list | None = None) -> dict | None:
+    """`{url, label}` for a search of the mail to and from these addresses
+    and the old chat addresses (`aliases`), or None (no address, the link
+    switched off, a template without `{query}`); `left_out` counts what
+    did not fit in `MAIL_URL_MAX`."""
+    got: list[str] = []
+    for e in list(emails or []) + list(aliases or []):
+        a = (e.get("value") if isinstance(e, dict) else e) or ""
+        a = str(a).strip()
+        if a and "@" in a and a.lower() not in {x.lower() for x in got}:
+            got.append(a)
+    if not got:
+        return None
+    tpl = (setting("MEDIA_CONTACTS_MAIL_URL", "mail_url") or "").strip() or MAIL_URL
+    if tpl.lower() in ("off", "0", "none", "no") or "{query}" not in tpl:
+        return None
+    url, used = "", 0
+    for i in range(1, len(got) + 1):
+        query = " OR ".join(f"from:({a}) OR to:({a})" for a in got[:i])
+        u = tpl.replace("{query}", urllib.parse.quote(query, safe=""))
+        if i > 1 and len(u) > MAIL_URL_MAX:
+            break
+        url, used = u, i
+    host = urllib.parse.urlsplit(url).hostname or ""
+    label = "Gmail" if host == "mail.google.com" else (host or "Mail")
+    out = {"url": url, "label": label}
+    if used < len(got):
+        out["left_out"] = len(got) - used
+    return out
 
 
 def card(cid: str) -> dict | None:
@@ -1586,6 +1778,9 @@ def card(cid: str) -> dict | None:
             "notes": c.get("notes") or "", "sources": c.get("sources") or [],
             "labels": c.get("labels") or [], "handles": c.get("handles") or [],
             "suggestions": suggestions(cid),
+            "old_addresses": c.get("old_addresses") or [],
+            "mail": mail_link(c.get("emails") or [],
+                              [x.get("address") for x in c.get("old_addresses") or []]),
             "updated": round(got[2], 3) if got[2] else None, "rooms": rooms_of(cid)}
 
 
@@ -2020,6 +2215,8 @@ def _sync_book(key: str) -> None:
     """One book's sync and rollup, in the loop: said, never raised."""
     who = f"contacts[{key}]" if key else "contacts"
     try:
+        if refold():
+            print(f"{who}: cards made again ({CARDS_VERSION})", file=sys.stderr)
         got = sync()
         for s in got["synced"]:
             if s.get("changed") or s.get("deleted") or s.get("unchanged") is False:
@@ -2221,7 +2418,8 @@ def _kick_sync(key: str) -> None:
 
 def google_state() -> dict:
     """`GET /contacts/google`: this book's Google — `{available, signed_in,
-    email, expired, signed_in_at, last_sync, last_error, contacts}`."""
+    email, expired, signed_in_at, last_sync, last_error, contacts}` — and
+    `exports`, where each network's export is requested (contacts_exports)."""
     tok = load_token()
     conn = _connect(create=False)
     synced = err = None
@@ -2235,7 +2433,9 @@ def google_state() -> dict:
         if conn is not None:
             conn.close()
     expired = bool(tok and tok.get("expired_at"))
-    return {"available": load_client() is not None,
+    from .contacts_exports import export_links
+
+    return {"available": load_client() is not None, "exports": export_links(),
             "signed_in": bool(tok) and not expired, "expired": expired,
             "email": (tok or {}).get("email") or None,
             "signed_in_at": (tok or {}).get("obtained_at"),

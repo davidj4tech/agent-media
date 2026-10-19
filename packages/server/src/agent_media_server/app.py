@@ -189,8 +189,10 @@ device gets its token):
   GET  /search?q=[&limit=&before=&tools=1&memory=0] → every thread's messages,
                   titles, recaps and projects, and long-term memory when this
                   host has agent-memory (search.py, §6.14)
-  GET  /contacts?q=[&limit=] → people from the phone's contacts, or those a
-                  name, number or email being typed matches (contacts.py, §6.25)
+  GET  /contacts?q=[&limit=][&label=…&label=…][&labels_mode=any|all] →
+                  people from the phone's contacts, or those a name, number or
+                  email being typed matches, with any (or all) of the labels
+                  (contacts.py, §6.25)
   GET  /contacts/<id> → one person's card: names, phones, emails,
                   addresses, notes, sources, and the rooms that are theirs
   GET  /contacts/<id>/timeline[?limit=] → their texts, calls, mail and
@@ -617,7 +619,8 @@ def _contacts(h: BaseHTTPRequestHandler, path: str, query: str) -> None:
         return
     qs = parse_qs(query)
     arg = lambda k: (qs.get(k) or [""])[0]  # noqa: E731
-    _json_z(h, 200, {"ok": True, **contacts.listing(arg("q"), arg("limit"), arg("label"))})
+    _json_z(h, 200, {"ok": True, **contacts.listing(arg("q"), arg("limit"), qs.get("label") or [],
+                                                     arg("labels_mode") or "any")})
 
 
 def _contact_same(h: BaseHTTPRequestHandler, cid: str, act: str) -> None:

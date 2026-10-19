@@ -187,6 +187,13 @@ def test_login_needs_a_port_and_a_client(server, google):
     assert res.status == 503 and obj["no_client"]
     res, obj = call(server, "GET", "/contacts/google", headers=H(kat))
     assert res.status == 200 and obj["google"]["available"] is False
+    # Where each export is requested, whatever Google's state (Import a file).
+    ex = obj["google"]["exports"]
+    assert [(x["network"], x["label"]) for x in ex] == [
+        ("facebook", "Facebook friends"), ("instagram", "Instagram followers and following")]
+    assert {x["url"] for x in ex} == {"https://accountscentre.facebook.com/info_and_permissions/dyi"}
+    assert "Friends and followers" in ex[0]["steps"] and "JSON" in ex[0]["steps"]
+    assert "Followers and following" in ex[1]["steps"] and "All time" in ex[1]["steps"]
 
 
 def test_the_routes_are_gated(server, google):

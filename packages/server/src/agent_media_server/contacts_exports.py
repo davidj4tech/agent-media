@@ -52,6 +52,21 @@ CHOICES = {
     "instagram": "Some of your information → Connections → Followers and following; "
                  "All time, Format JSON",
 }
+#: Settings → Contacts → Import a file's links (`GET /contacts/google`
+#: `exports`): what each export brings, said as the reminder says it.
+LABELS = {"facebook": "Facebook friends", "instagram": "Instagram followers and following"}
+
+
+def export_links() -> list[dict]:
+    """`[{network, label, url, steps}]`: where each export is requested,
+    with the same choices the reminder names."""
+    return [{"network": net, "label": LABELS[net], "url": DYI_URL,
+             "steps": (f"Download your information → {CHOICES[net]} → Download to device. "
+                       "When it's ready, download it on the phone; it is imported from "
+                       "Downloads by itself, or pick it here.")}
+            for net in NETWORKS]
+
+
 PHONE_DIR = "/sdcard/Download"
 EXPORT_NAME = re.compile(r"^(facebook|instagram|meta)-.*\.zip$", re.I)
 LOCAL_NAME = re.compile(
