@@ -5050,6 +5050,11 @@ the owner's"`. With no bridges configured, `GET /bridges` is `{"ok": true,
   What each fills varies: Telegram all four and a picture, WhatsApp name
   and phone, Instagram name and username, Messenger name and picture,
   Google Messages and Teams nothing beyond `name`. `{}` when nothing.
+  A field the bridge leaves out is filled from the owner's own data export
+  when it has it (`<state_dir>/owner-networks.json`, `{network: {name?,
+  email?, phone?, username?}}`, written by the contacts import from
+  Facebook's and Instagram's personal-information files; Messenger's email
+  comes from there), never over what the bridge said.
 - `logins[].state` is the bridge state event as the bridge says it
   (`CONNECTED`, `CONNECTING`, `BACKFILLING`, `TRANSIENT_DISCONNECT`,
   `BAD_CREDENTIALS`, `UNKNOWN_ERROR`, `LOGGED_OUT`, …); `error` its error

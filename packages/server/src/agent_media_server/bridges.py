@@ -298,6 +298,26 @@ def _restart(unit: str) -> None:
         raise BridgeError(500, f"could not restart {unit}: {(r.stderr or '').strip()[:200]}")
 
 
+# --- the owner's own accounts, from their exports ---------------------------------
+
+def owner_networks_path() -> Path:
+    from agent_media_core._paths import state_dir
+
+    return state_dir() / "owner-networks.json"
+
+
+def owner_networks() -> dict[str, dict]:
+    """`{network: {name?, email?, phone?, username?}}`: the owner's own
+    account on each network as their data exports say it (written by the
+    contacts import from Facebook's profile_information and Instagram's
+    personal_information; §6.26 `profile`). {} when there is none."""
+    try:
+        got = json.loads(owner_networks_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {str(k): v for k, v in got.items() if isinstance(v, dict)} if isinstance(got, dict) else {}
+
+
 # --- which bridges ----------------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -457,6 +477,14 @@ def entry(b: Bridge) -> dict:
               "description": str(f.get("description") or "")}
              for f in (who.get("login_flows") or []) if isinstance(f, dict)]
     logins = [_login(x, b.id) for x in (who.get("logins") or []) if isinstance(x, dict)]
+    network = str(net.get("network_id") or net.get("beeper_bridge_type") or b.id)
+    extra = owner_networks().get(network) or {}
+    for lg in logins:
+        # What the bridge leaves out, from the owner's own export (Messenger
+        # gives no email): filled in, never over what the bridge said.
+        for k in ("name", "email", "phone", "username"):
+            if not lg["profile"].get(k) and str(extra.get(k) or "").strip():
+                lg["profile"][k] = str(extra[k]).strip()
     return {"id": b.id, "name": str(net.get("displayname") or b.id),
             "network": str(net.get("network_id") or net.get("beeper_bridge_type") or b.id),
             "icon": f"/bridges/{_q(b.id)}/icon" if mxc else None,

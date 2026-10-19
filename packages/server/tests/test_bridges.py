@@ -595,3 +595,16 @@ def test_config_values_are_set_in_their_section_only():
     assert out == "network:\n    api_id: 99\n    nested:\n        api_id: 2\nother:\n    api_id: 3\n"
     with pytest.raises(KeyError):
         bridges.set_config_values(text, {("network", "nope"): "1"})
+
+
+def test_what_the_bridge_leaves_out_comes_from_the_owners_export(server, signed_in, fake):
+    # Messenger gives no email; the owner's own export does (owner-networks.json,
+    # written by the contacts import). It fills gaps, never over the bridge.
+    fake.logins[0]["profile"] = {"name": "David T"}
+    path = bridges.owner_networks_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"teams": {"email": "david@example.com", "name": "Not this"},
+                                "facebook": {"email": "other@example.com"}}))
+    res, obj = call(server, "GET", "/bridges", headers=AUTH)
+    (login,) = [b for b in obj["bridges"] if b["id"] == "msteams"][0]["logins"]
+    assert login["profile"] == {"name": "David T", "email": "david@example.com"}
