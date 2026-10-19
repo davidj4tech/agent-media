@@ -149,6 +149,13 @@ TRUSTED_NAMES = ("gmessages",)
 NUMBER_GHOSTS = ("signal", "whatsapp")
 #: Instagram's network ids (mautrix-meta's and the older bridge's).
 INSTAGRAM = ("instagramgo", "instagram")
+#: Which uploaded address book (contacts_import.py, `upload` records) speaks
+#: for a bridged network's people: Messenger's are Facebook's.
+UPLOAD_NETWORKS = {"facebookgo": "facebook", "facebook": "facebook", "meta": "facebook",
+                   "instagramgo": "instagram", "instagram": "instagram"}
+#: Why a person joined by one (a source's `why` on the card).
+UPLOAD_WHY = {"facebook": "Facebook's uploaded contacts",
+              "instagram": "Instagram's uploaded contacts"}
 #: A stable namespace for contact ids (uuid5 of "<kind>:<source id>").
 _NS = uuid.UUID("5b0e6f8c-7d0a-4c55-9a4b-2f1d0c6e1a17")
 
@@ -747,8 +754,37 @@ def _rebuild_bridges(conn: sqlite3.Connection, recs: list, book: dict) -> None:
     for cid in book:
         index(cid)
 
-    def place(kind: str, sid: str, c: dict, meta: dict, joined_to: str | None) -> None:
+    # The address books David once let Facebook and Instagram sync (`upload`
+    # records): an entry named as a network's person, holding a number or
+    # an address of exactly one contact here, says they are that contact.
+    uploads: dict[str, dict[str, list]] = {}
+    for kind, sid, card, meta in recs:
+        if kind == "upload":
+            c = json.loads(card)
+            net = json.loads(meta).get("export") or ""
+            for n in _names_of(c):
+                uploads.setdefault(net, {}).setdefault(n, []).append(_keys(c))
+
+    def uploaded(kind: str, c: dict, meta: dict) -> set:
+        net = (meta.get("export") if kind == "import" else
+               UPLOAD_NETWORKS.get(meta.get("network") or ""))
+        got: set = set()
+        for n in _names_of(c):
+            entries = (uploads.get(net) or {}).get(n) or []
+            if len(entries) != 1:      # two uploaded people of that name: neither
+                continue
+            phones, emails = entries[0]
+            for p in phones:
+                got |= by_phone.get(p, set())
+            for e in emails:
+                got |= by_email.get(e, set())
+        return got - bridged
+
+    def place(kind: str, sid: str, c: dict, meta: dict, joined_to: str | None,
+              why: str = "") -> None:
         src = _source(kind, sid, meta)
+        if why:
+            src["why"] = why
         if joined_to:
             entry = book[joined_to]
             book[joined_to] = {"card": _merge(entry["card"], c),
@@ -784,11 +820,17 @@ def _rebuild_bridges(conn: sqlite3.Connection, recs: list, book: dict) -> None:
             for h in c.get("handles") or []:
                 if h.get("network") in INSTAGRAM and h.get("username"):
                     hits |= by_username.get(fold(h["username"]), set())
+        why = ""
+        if not hits and uploads:
+            hits = uploaded(kind, c, meta) - dismissed
+            why = UPLOAD_WHY.get(meta.get("export") if kind == "import" else
+                                 UPLOAD_NETWORKS.get(meta.get("network") or ""), "") if hits else ""
         if not hits and kind == "bridges" and meta.get("network") in trusted:
             for n in _names_of(c):
                 hits |= by_name.get(n, set()) - bridged
         hits -= dismissed
-        place(kind, sid, c, meta, next(iter(hits)) if len(hits) == 1 else None)
+        one = next(iter(hits)) if len(hits) == 1 else None
+        place(kind, sid, c, meta, one, why if one else "")
     for _round in range(len(later) + 1):
         if not later:
             break
@@ -1650,11 +1692,15 @@ def _import_people(found: dict, counts: dict) -> dict:
         try:
             conn.execute("BEGIN IMMEDIATE")
             for export, recs in found.items():
-                conn.execute("DELETE FROM records WHERE kind='import' AND sid LIKE ?",
-                             (export + ":%",))
+                # An uploaded address book (`facebook_uploads`) makes no one:
+                # its entries are `upload` records, evidence for _rebuild_bridges.
+                kind, prefix = (("upload", export[:-len("_uploads")] + "-upload:")
+                                if export.endswith("_uploads") else ("import", export + ":"))
+                conn.execute("DELETE FROM records WHERE kind=? AND sid LIKE ?",
+                             (kind, prefix + "%"))
                 conn.executemany(
-                    "INSERT INTO records (kind, sid, card, meta) VALUES ('import', ?, ?, ?)",
-                    [(sid, json.dumps(r["card"]), json.dumps(r["meta"]))
+                    "INSERT INTO records (kind, sid, card, meta) VALUES (?, ?, ?, ?)",
+                    [(kind, sid, json.dumps(r["card"]), json.dumps(r["meta"]))
                      for sid, r in recs.items()])
             _rebuild(conn)
             _set_meta(conn, "import_synced_at", str(round(time.time(), 3)))
@@ -1957,21 +2003,18 @@ def _bridge_only(card: dict) -> bool:
 
 
 def suggestions(cid: str) -> list[dict]:
-    """Other contacts with this one's name, where one of the two is known
-    only from a bridge (a name joins nobody there by itself) and David has
-    not said they are not the same: `[{id, name, why: "same name"}]`."""
+    """Other contacts with this one's name, or a nickname of it with the same
+    surname (contacts_review.py), where one of the two is known only from a
+    bridge or an export (a name joins nobody there by itself), the two do not
+    both have numbers of their own, and David has not said they are not the
+    same: `[{id, name, why: "same name" | "nickname"}]`."""
+    from . import contacts_review
+
     idx = _index()
     if idx is None or cid not in idx["display"]:
         return []
-    out = []
-    for other in sorted({o for n in idx["card_names"].get(cid, ()) for o in idx["names"].get(n, ())}
-                        - {cid}):
-        if cid not in idx["bridge_only"] and other not in idx["bridge_only"]:
-            continue
-        if (cid, other) in idx["dismissed"] or (other, cid) in idx["dismissed"]:
-            continue
-        out.append({"id": other, "name": idx["display"].get(other) or "", "why": "same name"})
-    return out
+    return [{"id": other, "name": idx["display"].get(other) or "", "why": why}
+            for other, why in contacts_review.candidates(idx, cid)]
 
 
 def _fresh() -> None:

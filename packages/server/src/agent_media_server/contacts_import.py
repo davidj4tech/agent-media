@@ -22,6 +22,18 @@ contacts.import_people. Each person is one record (someone both a follower
 and followed is one, with both labels); its id is stable across exports, so
 a newer one replaces the older and David's Joins hold. Nothing here logs a
 name.
+
+**Uploaded contacts** (David, 19 Oct 2026): the phone address books David
+once let Facebook, Messenger or Instagram sync, from the same downloads —
+Facebook's `your_address_books.json` (`{"address_book_v2": {"address_book":
+[{"name", "details": [{"contact_point"}]}]}}`, the older `address_book`,
+and the newest exports' `label_values` rows) and Instagram's
+`synced_contacts.json` (`{"contacts_contact_info": [{"string_map_data":
+{"First name", "Surname", "Contact information"}}]}`). They are his own
+address book again, so they make nobody: under `facebook_uploads` /
+`instagram_uploads` they are kept as evidence (contacts.py, the `upload`
+records), and a network's person whose name is an uploaded entry's joins
+the one contact holding that entry's number or address.
 """
 
 from __future__ import annotations
@@ -64,6 +76,11 @@ def _kind_of(path: str) -> tuple[str, str] | None:
     base = p.rsplit("/", 1)[-1]
     if not base.endswith(".json"):
         return None
+    if base in ("your_address_books.json", "address_books.json"):
+        return ("facebook", "uploads")
+    if base in ("synced_contacts.json", "contacts_synced.json") or (
+            "/contacts/" in "/" + p and base.startswith(("synced_contact", "contacts_synced"))):
+        return ("instagram", "uploads")
     if base == "your_friends.json" or (base == "friends.json" and (
             "/friends/" in "/" + p or "friends_and_followers/" in p)):
         return ("facebook", "friends")
@@ -77,6 +94,10 @@ def _kind_of(path: str) -> tuple[str, str] | None:
 def _guess(obj, name: str) -> tuple[str, str] | None:
     """A lone JSON file's list, by what it holds (its name helps)."""
     if isinstance(obj, dict):
+        if "address_book_v2" in obj or "address_book" in obj:
+            return ("facebook", "uploads")
+        if "contacts_contact_info" in obj:
+            return ("instagram", "uploads")
         if "friends_v2" in obj or "friends" in obj:
             return ("facebook", "friends")
         if "relationships_following" in obj:
@@ -85,6 +106,8 @@ def _guess(obj, name: str) -> tuple[str, str] | None:
             return ("instagram", "followers")
         return None
     if isinstance(obj, list) and obj and isinstance(obj[0], dict):
+        if "address_book" in name.lower():
+            return ("facebook", "uploads")
         if "string_list_data" in obj[0]:
             return ("instagram", "following" if "following" in name.lower() else "followers")
         if "label_values" in obj[0] or "name" in obj[0]:
@@ -184,6 +207,97 @@ def _people(kind: tuple[str, str], obj, out: dict) -> int:
     return n
 
 
+# --- uploaded contacts ------------------------------------------------------------
+
+_PHONEISH = re.compile(r"^\+?[\d\s().-]{6,}$")
+
+
+def _upload_rows(obj) -> list:
+    if isinstance(obj, list):
+        return obj
+    if not isinstance(obj, dict):
+        return []
+    for k in ("address_book_v2", "address_book", "contacts_contact_info"):
+        v = obj.get(k)
+        if isinstance(v, dict):
+            v = v.get("address_book")
+        if isinstance(v, list):
+            return v
+    return []
+
+
+def _strings(x, depth: int = 0):
+    """Every string value under `x` (a few levels: label_values' `vec` and
+    `dict` rows nest)."""
+    if depth > 5:
+        return
+    if isinstance(x, str):
+        yield x
+    elif isinstance(x, dict):
+        for v in x.values():
+            yield from _strings(v, depth + 1)
+    elif isinstance(x, list):
+        for v in x:
+            yield from _strings(v, depth + 1)
+
+
+def _upload_entry(row: dict) -> tuple[str, list[str]]:
+    """`(name, contact points)` of one uploaded address-book entry."""
+    name, points = "", []
+    if isinstance(row.get("string_map_data"), dict):           # Instagram
+        m = {k.casefold(): (v or {}).get("value") if isinstance(v, dict) else None
+             for k, v in row["string_map_data"].items()}
+        first = str(m.get("first name") or "").strip()
+        last = str(m.get("surname") or m.get("last name") or "").strip()
+        name = " ".join(x for x in (first, last) if x)
+        points = [str(v) for k, v in m.items() if v and "contact" in k]
+    elif isinstance(row.get("label_values"), list):             # Facebook's newest
+        for lv in row["label_values"]:
+            if not isinstance(lv, dict):
+                continue
+            label = str(lv.get("label") or "").casefold()
+            if not name and "name" in label and isinstance(lv.get("value"), str):
+                name = lv["value"]
+            elif "name" not in label:
+                points += list(_strings({k: v for k, v in lv.items() if k != "label"}))
+    else:                                                       # Facebook
+        name = str(row.get("name") or "")
+        for d in row.get("details") or []:
+            if isinstance(d, dict) and d.get("contact_point"):
+                points.append(str(d["contact_point"]))
+    return fix_text(name).strip(), [fix_text(p).strip() for p in points if p]
+
+
+def _uploads(kind: tuple[str, str], obj, out: dict) -> int:
+    """An uploaded address book's entries with a name and a number or an
+    address into `out[<network>_uploads]`; how many."""
+    from .contacts import _EMAIL, e164, region
+
+    reg = region()
+    book = out.setdefault(f"{kind[0]}_uploads", {})
+    n = 0
+    for row in _upload_rows(obj):
+        if not isinstance(row, dict):
+            continue
+        name, points = _upload_entry(row)
+        phones, emails = set(), set()
+        for p in points:
+            if _EMAIL.fullmatch(p):
+                emails.add(p.lower())
+            elif _PHONEISH.match(p) and (num := e164(p, reg)):
+                phones.add(num)
+        if not name or not (phones or emails):
+            continue
+        key = f"{name.casefold()}|{'|'.join(sorted(phones | emails))}"
+        sid = f"{kind[0]}-upload:" + hashlib.sha256(key.encode()).hexdigest()[:20]
+        card = _card(name, [])
+        card["phones"] = [{"value": p} for p in sorted(phones)]
+        card["emails"] = [{"value": e} for e in sorted(emails)]
+        book[sid] = {"card": card, "meta": {"export": kind[0], "upload": True}}
+        n += 1
+    return n
+
+
 def _take(out: dict, counts: dict, kind, raw: bytes, fname: str) -> None:
     try:
         obj = json.loads(raw.decode("utf-8-sig"))
@@ -192,7 +306,8 @@ def _take(out: dict, counts: dict, kind, raw: bytes, fname: str) -> None:
     kind = kind or _guess(obj, fname)
     if kind:
         key = f"{kind[0]}_{kind[1]}"
-        counts[key] = counts.get(key, 0) + _people(kind, obj, out)
+        n = _uploads(kind, obj, out) if kind[1] == "uploads" else _people(kind, obj, out)
+        counts[key] = counts.get(key, 0) + n
 
 
 def parse_zip(zf: zipfile.ZipFile) -> tuple[dict, dict, bool]:
@@ -207,7 +322,8 @@ def parse_zip(zf: zipfile.ZipFile) -> tuple[dict, dict, bool]:
         kind = _kind_of(info.filename)
         if kind is None:
             html = html or info.filename.lower().endswith(
-                ("your_friends.html", "followers_1.html", "following.html"))
+                ("your_friends.html", "followers_1.html", "following.html",
+                 "your_address_books.html", "synced_contacts.html"))
             continue
         if info.file_size > MAX_FILE:
             continue
@@ -233,11 +349,13 @@ def parse(data: bytes, name: str = "") -> tuple[dict, dict]:
         if not counts:
             raise NotAnExport(
                 "that export is HTML: download it again as JSON" if html else
-                "no Facebook friends or Instagram followers/following list in that zip")
+                "no Facebook friends, Instagram followers/following or uploaded contacts "
+                "in that zip")
     else:
         if data.lstrip()[:1] == b"<":
             raise NotAnExport("that is HTML: download the export as JSON")
         take(_kind_of(name) if name else None, data, name)
         if not counts:
-            raise NotAnExport("not a Facebook friends or Instagram followers/following list")
+            raise NotAnExport("not a Facebook friends, Instagram followers/following or "
+                              "uploaded contacts list")
     return out, counts

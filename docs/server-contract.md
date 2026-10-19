@@ -4358,11 +4358,28 @@ On the card and its rooms:
   person. A room whose member is a contact's handle is that contact's
   first of all. A bridge's source is `{"kind": "bridges", "id": <ghost id>,
   "network", "network_name"}`.
-- **`suggestions`**: `[{"id", "name", "why": "same name"}]` — other contacts
-  with this one's name where one of the two is known only from a bridge,
-  and David has not said they are not the same. A name off a trusted
-  network joins nobody by itself; this is how it is offered.
+- **`suggestions`**: `[{"id", "name", "why": "same name" | "nickname"}]` —
+  other contacts with this one's name, or a nickname of it with the same
+  surname ("Dave Jones" / "David Jones", "Liz Wong" / "Elizabeth Wong";
+  `contacts_review.NICKNAMES`, a small table of common English short forms,
+  a one-word name never), where one of the two is known only from a bridge
+  or an export, the two do not both have numbers and share none (two people
+  of one name with phones of their own are two people), and David has not
+  said they are not the same. A name off a trusted network joins nobody by
+  itself, and a nickname never does; this is how they are offered.
 - **`labels`**: below.
+
+#### `GET /contacts/suggestions` — gated (`auth.gate`)
+
+Every open "Same person?" of the caller's book in one place (David, 19 Oct
+2026: a review screen rather than card by card; `contacts_review.py`) →
+`{"ok": true, "count": n, "suggestions": [{"a": <side>, "b": <side>, "why":
+"same name" | "nickname"}]}`, each pair once, the side known only from a
+bridge or an export first; a side is `{"id", "name", "sources": ["Phone",
+"Google", "Messenger", "Facebook export", …], "labels", "last": {day,
+channel} | null}` (`last` as on a `GET /contacts` row). Same names come
+before nicknames, then whoever was talked to last. Answered with the routes
+below. Pinned by `packages/server/tests/test_contacts_review.py`.
 
 #### `POST /contacts/<id>/same {"other"}` — gated (`auth.gate`)
 
@@ -4440,6 +4457,28 @@ David's Joins hold. The source is `{"kind": "import", "id", "export":
 person's handle is `{"network": "instagram", "id": "instagram:<username>",
 "username", "url"}`. Pinned by
 `packages/server/tests/test_contacts_import.py`.
+
+**Uploaded contacts** (19 Oct 2026; David: help Google, Facebook,
+Instagram and Teams people come together). The address books David once let
+Facebook (and Messenger) or Instagram sync, from the same downloads:
+Facebook's `your_address_books.json` (`address_book_v2.address_book` rows
+of `{name, details: [{contact_point}]}`, the older `address_book`, the
+newest `label_values` rows) and Instagram's `synced_contacts.json`
+(`contacts_contact_info` rows of `string_map_data` "First name", "Surname" /
+"Last name", "Contact information"). They are his own address book again,
+so **they make nobody**: each entry with a name and a number or an address
+is kept as an `upload` record (`POST /contacts/import` answers
+`facebook_uploads` / `instagram_uploads` counts), a newer upload replacing
+that network's last. As evidence: a bridged or exported person of that
+network (Messenger's are Facebook's) who joined nobody by number, address
+or username, whose name is exactly one uploaded entry's, joins the one
+contact (not a bridge's or an export's alone) holding that entry's number
+or address; its source on the card says why (`"why": "Facebook's uploaded
+contacts"`). Two uploaded entries of one name speak for nobody, and a kept
+"Not the same" holds. `exports` (`GET /contacts/google`) lists both, with
+the choices (Facebook: Personal information, which holds Your address
+books; Instagram: Connections → Contacts). Pinned by
+`packages/server/tests/test_contacts_uploads.py`.
 
 **Past conversations** (19 Oct 2026; contacts_history.py; David: backfill
 the timeline from the exports). The same downloads hold the years before

@@ -199,6 +199,8 @@ device gets its token):
                   notes by day, from the CRM's daily rollups (timeline.py)
   POST /contacts/<id>/notes {"text"} → a note on them, today, kept in the CRM
   GET  /contacts/labels → every label on someone, with counts (§6.25)
+  GET  /contacts/suggestions → every open "Same person?" pair, both sides'
+                  names, sources, labels and last contact (contacts_review.py)
   POST /contacts/import[?name=] <a Facebook or Instagram export: .zip or
                   JSON, raw or multipart> → its friends / followers / following
                   into the caller's book, the counts (contacts_import.py, §6.25)
@@ -303,7 +305,8 @@ CORS_PATHS = frozenset({
     "/share", "/upload", "/dashboard",
     "/sessions/events", "/search", "/contacts",
     "/contacts/google", "/contacts/google/login", "/contacts/google/finish",
-    "/contacts/google/signout", "/contacts/labels", "/contacts/import", "/bridges",
+    "/contacts/google/signout", "/contacts/labels", "/contacts/suggestions",
+    "/contacts/import", "/bridges",
     "/mic/ask", "/mic/cancel",
     "/phone/ask", "/phone/answer", "/phone/cancel",
     "/notes", "/notes/clear",
@@ -616,6 +619,11 @@ def _contacts(h: BaseHTTPRequestHandler, path: str, query: str) -> None:
         return
     if path == "/contacts/labels":
         _json(h, 200, {"ok": True, **contacts.labels()})
+        return
+    if path == "/contacts/suggestions":
+        from . import contacts_review
+
+        _json(h, 200, {"ok": True, **contacts_review.pairs()})
         return
     qs = parse_qs(query)
     arg = lambda k: (qs.get(k) or [""])[0]  # noqa: E731
@@ -1035,7 +1043,8 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         _contact_timeline(h, CONTACT_TIMELINE.fullmatch(path).group(1), query)
     elif path == "/contacts/google":
         _contacts_google(h, "state")
-    elif path in ("/contacts", "/contacts/labels") or CONTACT.fullmatch(path):
+    elif path in ("/contacts", "/contacts/labels", "/contacts/suggestions") or \
+            CONTACT.fullmatch(path):
         # People, from the phone's contacts (contacts.py, §6.25): the list or
         # matches as you type, and one person's card with their rooms.
         _contacts(h, path, query)

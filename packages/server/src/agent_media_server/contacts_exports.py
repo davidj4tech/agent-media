@@ -72,6 +72,20 @@ HISTORY = (
      "steps": "Google Takeout → Deselect all → Mail → All Mail data included → only "
               "the Chats label → Next step → Export once, .zip → Create export."},
 )
+#: The address books David once let Facebook and Instagram sync: no one new,
+#: only proof that a network's person is a contact here (contacts_import.py).
+UPLOADS = (
+    {"network": "facebook_uploads", "label": "Facebook's uploaded contacts", "url": DYI_URL,
+     "steps": "Download your information → the Facebook profile → Some of your "
+              "information → Personal information (it holds Your address books) only; "
+              "All time, Format JSON → Download to device. It adds no one: it lets the "
+              "people you chat with on Messenger join the contacts they already are."},
+    {"network": "instagram_uploads", "label": "Instagram's uploaded contacts", "url": DYI_URL,
+     "steps": "Download your information → the Instagram account → Some of your "
+              "information → Connections → Contacts only (synced contacts); All time, "
+              "Format JSON → Download to device. It adds no one: it lets Instagram's "
+              "people join the contacts they already are."},
+)
 HISTORY_WHERE = ("Conversations can be large: put the zip in the import folder on the "
                  "server (MEDIA_CONTACTS_IMPORT_DIR) or run media contacts import <file>; "
                  "up to 64 MB can be picked here or left in the phone's Downloads.")
@@ -80,20 +94,21 @@ HISTORY_WHERE = ("Conversations can be large: put the zip in the import folder o
 def export_links() -> list[dict]:
     """`[{network, label, url, steps}]`: where each export is requested,
     with the same choices the reminder names, then the past conversations
-    (contacts_history.py)."""
+    (contacts_history.py), then the uploaded contacts (contacts_import.py)."""
     return [{"network": net, "label": LABELS[net], "url": DYI_URL,
              "steps": (f"Download your information → {CHOICES[net]} → Download to device. "
                        "When it's ready, download it on the phone; it is imported from "
                        "Downloads by itself, or pick it here.")}
             for net in NETWORKS] + [{**h, "steps": f"{h['steps']} {HISTORY_WHERE}"}
-                                    for h in HISTORY]
+                                    for h in HISTORY] + [dict(u) for u in UPLOADS]
 
 
 PHONE_DIR = "/sdcard/Download"
 EXPORT_NAME = re.compile(r"^(facebook|instagram|meta|takeout)-.*\.zip$", re.I)
 LOCAL_NAME = re.compile(
     r"^((facebook|instagram|meta|takeout)-.*\.zip|your_friends\.json|friends\.json|"
-    r"followers_\d+\.json|following\.json|.*\.mbox)$", re.I)
+    r"followers_\d+\.json|following\.json|your_address_books\.json|synced_contacts\.json|"
+    r".*\.mbox)$", re.I)
 MAIL_FROM = ("facebookmail.com", "mail.instagram.com")
 MAIL_SUBJECT = re.compile(
     r"(information|data|files?|download).{0,40}(ready|available)|ready to download", re.I)
@@ -188,7 +203,9 @@ _LIST_NAMES = {"facebook_friends": "Facebook friends",
                "instagram_following": "Instagram following",
                "messenger_conversations": "Messenger conversations",
                "instagram_conversations": "Instagram conversations",
-               "old_chats": "people from old chats"}
+               "old_chats": "people from old chats",
+               "facebook_uploads": "Facebook's uploaded contacts",
+               "instagram_uploads": "Instagram's uploaded contacts"}
 
 
 # --- the reminder --------------------------------------------------------------------
