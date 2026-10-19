@@ -509,3 +509,37 @@ def test_one_thread_total_counts_messages_not_hits(home, gate):
     page = ask("grebe", session=SID, tools=True, sort="oldest")
     assert len(page["messages"]) > len({h["message"] for h in page["messages"]})
     assert page["total"] == len({h["message"] for h in page["messages"]})
+
+
+def test_a_stale_thread_list_answers_while_it_is_read_again(home, gate, monkeypatch):
+    """The list takes seconds to build: a search after the cache runs out
+    answers with the old one and reads it again behind the query."""
+    import threading
+    import time
+
+    gate_open = threading.Event()
+    calls = []
+
+    def slow():
+        calls.append(1)
+        gate_open.wait(5)
+        return [{"session": SID, "title": "fresh"}]
+
+    monkeypatch.setattr(sessions, "sessions_index", slow)
+    monkeypatch.setattr(search, "_LISTED", [(time.monotonic() - 60, {SID: {"session": SID, "title": "old"}})])
+    t0 = time.monotonic()
+    assert search._listed()[SID]["title"] == "old"
+    assert time.monotonic() - t0 < 1
+    gate_open.set()
+    for _ in range(50):
+        if search._LISTED[0][1].get(SID, {}).get("title") == "fresh":
+            break
+        time.sleep(0.05)
+    assert search._listed()[SID]["title"] == "fresh" and len(calls) == 1
+
+
+def test_one_thread_skips_the_thread_list(home, gate, monkeypatch):
+    claude(home, SID).prompt("osprey here")
+    monkeypatch.setattr(search, "_listed", lambda: (_ for _ in ()).throw(AssertionError("listed")))
+    page = ask("osprey", session=SID)
+    assert page["total"] == 1 and len(page["messages"]) == 1

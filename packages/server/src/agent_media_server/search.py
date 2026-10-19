@@ -1142,6 +1142,8 @@ def _owned_headless() -> set[str]:
 #: a keystroke at a time, and each list is a /proc sweep and a tmux call.
 _LISTED: list[tuple[float, dict]] = [(0.0, {})]
 _LISTED_TTL_S = 10.0
+#: Held while the stale thread list is read again in the background.
+_LISTING = threading.Lock()
 
 
 def _listed() -> dict[str, dict]:
@@ -1152,12 +1154,28 @@ def _listed() -> dict[str, dict]:
     at, rows = _LISTED[0]
     if at and time.monotonic() - at < _LISTED_TTL_S:
         return rows
-    try:
-        rows = {r["session"]: r for r in sessions.sessions_index() if r.get("session")}
-    except Exception as e:  # noqa: BLE001 — the index still answers
-        print(f"search: thread list unavailable ({e})", file=sys.stderr)
-        rows = {}
-    _LISTED[0] = (time.monotonic(), rows)
+
+    def fetch() -> dict[str, dict]:
+        try:
+            got = {r["session"]: r for r in sessions.sessions_index() if r.get("session")}
+        except Exception as e:  # noqa: BLE001 — the index still answers
+            print(f"search: thread list unavailable ({e})", file=sys.stderr)
+            got = {}
+        _LISTED[0] = (time.monotonic(), got)
+        return got
+
+    if not at:
+        return fetch()
+    # Stale: answer with it and read the list again behind the query. The
+    # list takes 2–4 s to build on red5, and every search after the 10 s
+    # cache ran out waited for it (find bar timings, 19 Oct 2026).
+    if _LISTING.acquire(blocking=False):
+        def again():
+            try:
+                fetch()
+            finally:
+                _LISTING.release()
+        threading.Thread(target=again, name="search-listed", daemon=True).start()
     return rows
 
 
@@ -1428,7 +1446,8 @@ def search(q: str, bearer: str, *, limit=None, before=None, tools: bool = False,
         caught = refresh(budget_s=QUERY_BUDGET_S)
         conn = _connect()
         rows = _threads_rows(conn)
-        listed = _listed()
+        # One thread's find bar shows no thread names: not the list at all.
+        listed = {} if session else _listed()
         owned = _owned_headless()
         query = fts_query(terms)
         try:
@@ -1437,9 +1456,12 @@ def search(q: str, bearer: str, *, limit=None, before=None, tools: bool = False,
                 listed=listed, owned=owned, sort=sort, after=times["after"],
                 offset=skip or 0, since=times["since"], who=who, rooms=rooms,
                 session=session)
-            total = (_session_total(conn, query, session, rows, owned, tools=tools,
-                                    since=times["since"], who=who)
-                     if session and cursor is None else None)
+            # Every match on this one page: they are the count, with no
+            # second pass over the index (a common word took 0.5 s).
+            total = (None if not session or cursor is not None
+                     else len({h["message"] for h in messages}) if nxt is None
+                     else _session_total(conn, query, session, rows, owned, tools=tools,
+                                         since=times["since"], who=who))
         except sqlite3.OperationalError as e:
             return False, {"error": f"could not search for that ({e})", "status": 400}
         out = {"q": q, "terms": terms, "tools": bool(tools), "sort": sort,
