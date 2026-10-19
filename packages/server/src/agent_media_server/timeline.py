@@ -245,11 +245,17 @@ def calls(window: list[str]) -> list[tuple]:
         got = subprocess.run(contacts_android.command() + [_call_script(int(since * 1000))],
                              capture_output=True, text=True, timeout=60,
                              encoding="utf-8", errors="replace")
-    except (OSError, subprocess.TimeoutExpired) as e:
-        raise contacts_android.Unreachable(f"the call log was not read ({e})") from None
-    if got.returncode != 0:
+    except subprocess.TimeoutExpired:
+        raise contacts_android.Unreachable("the call log was not read (no answer in 60 s)") \
+            from None
+    except OSError as e:
         raise contacts_android.Unreachable(
-            f"the call log was not read ({(got.stderr or got.stdout).strip()[:200]})")
+            f"the call log was not read ({type(e).__name__})") from None
+    if got.returncode != 0:
+        # Never the tool's output: it can hold the numbers just read.
+        raise contacts_android.Unreachable(
+            "the call log was not read "
+            f"({contacts_android.failed(got.returncode, got.stdout, got.stderr)})")
     phones = _by_phone()
     want = set(window)
     out = []

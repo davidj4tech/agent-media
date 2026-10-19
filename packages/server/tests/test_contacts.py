@@ -783,8 +783,9 @@ sys.stdout.buffer.write(text.replace("@@AM-NONCE@@", f"@@AM-{{nonce}}@@").encode
     recs, digest = ca.read()
     assert set(recs) == {LIONEL_LOOKUP, "3789r21-ZZ"} and len(digest) == 64
     fake.write_text("#!/bin/sh\necho 'adb: device offline' >&2\nexit 1\n")
-    with pytest.raises(ca.Unreachable, match="device offline"):
+    with pytest.raises(ca.Unreachable, match=r"exited 1 \(\d+ bytes of output\)") as e:
         ca.read()
+    assert "device offline" not in str(e.value)        # never the tool's own output
     monkeypatch.setenv("MEDIA_CONTACTS_ADB", str(tmp_path / "missing") + " shell")
     assert not ca.available()
     with pytest.raises(ca.Unreachable, match="could not run"):

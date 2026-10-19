@@ -75,6 +75,24 @@ class Unreachable(Exception):
     error: nothing was read."""
 
 
+def scrub(text: str, limit: int = 120) -> str:
+    """A tool's output made fit for an error or a status: its first line
+    with every `key=value` emptied and every run of five or more digits
+    (spaces, dots, dashes and brackets between them allowed) masked, so no number, address or message text is ever said or kept."""
+    line = (text or "").strip().splitlines()[:1]
+    line = line[0] if line else ""
+    line = re.sub(r"=[^,\s]*", "=…", line)
+    line = re.sub(r"\+?(?:\d[\s().-]?){4,}\d", "#", line)
+    return line[:limit]
+
+
+def failed(rc: int, out: str = "", err: str = "") -> str:
+    """How a phone tool failed, in words that carry none of its output:
+    the exit code and how much it printed."""
+    n = len((out or "").encode()) + len((err or "").encode())
+    return f"exited {rc} ({n} bytes of output)"
+
+
 def command() -> list[str]:
     return shlex.split(os.environ.get("MEDIA_CONTACTS_ADB") or "agent-phone-adb shell")
 
@@ -127,8 +145,7 @@ def run(timeout: float = TIMEOUT_S) -> tuple[str, str]:
     except OSError as e:
         raise Unreachable(f"could not run {command()[0]} ({e})") from None
     if got.returncode != 0:
-        last = (got.stderr or got.stdout or "").strip().splitlines()[-1:] or [""]
-        raise Unreachable(f"{command()[0]} exited {got.returncode}: {last[0][:200]}")
+        raise Unreachable(f"{command()[0]} {failed(got.returncode, got.stdout, got.stderr)}")
     return nonce, got.stdout
 
 
@@ -159,8 +176,7 @@ def rows(text: str) -> list[str]:
     if head and head != "No result found." and not head.startswith("Row: 0 "):
         # "Error while accessing provider…", a Java exception, adb's own
         # complaint: not rows.
-        raise Unreachable("the contacts provider refused the query: "
-                          + head.splitlines()[0][:200])
+        raise Unreachable("the contacts provider refused the query: " + scrub(head))
     out: list[str] = []
     for line in text.split("\n"):
         want = f"Row: {len(out)} "

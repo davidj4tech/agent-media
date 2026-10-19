@@ -153,8 +153,11 @@ def mms_addr_script(nonce: str, ids: list[str]) -> str:
     ids = [i for i in ids if i.isdigit()]
     if not ids:
         return f"echo '{m} end'"
+    # `|| true`: one id the provider refuses (deleted, no rows) must not end
+    # the batch or set its exit status.
     return (f"for i in {' '.join(ids)}; do echo \"{m} addr-$i\"; "
-            "content query --uri content://mms/$i/addr --projection address:type; done; "
+            "content query --uri content://mms/$i/addr --projection address:type "
+            "2>&1 || true; done; "
             f"echo '{m} end'")
 
 
@@ -181,9 +184,15 @@ def _cols(row: str, keys: tuple) -> dict:
     return out
 
 
-def _ask_phone(script: str, nonce: str) -> dict[str, str]:
+def _ask_phone(script: str, nonce: str, partial: bool = False) -> dict[str, str]:
     """Run one script on the phone; its sections. Unreachable when the
-    phone does not answer, or answers with an error."""
+    phone does not answer, or answers with an error. An error never quotes
+    the tool's output (it holds numbers): its exit code and size only.
+
+    `partial`: a run that failed or was cut short still answers the
+    sections it finished — each one followed by another marker — with
+    `_cut` set to how it ended; only a run that printed no section at all
+    is Unreachable."""
     from . import contacts_android
 
     try:
@@ -194,12 +203,42 @@ def _ask_phone(script: str, nonce: str) -> dict[str, str]:
         raise contacts_android.Unreachable(
             f"the phone did not answer in {int(PHONE_TIMEOUT_S)} s") from None
     except OSError as e:
-        raise contacts_android.Unreachable(f"could not run the phone tool ({e})") from None
-    if got.returncode != 0:
-        last = (got.stderr or got.stdout or "").strip().splitlines()[-1:] or [""]
-        raise contacts_android.Unreachable(f"the phone tool exited {got.returncode}: "
-                                           f"{last[0][:200]}")
-    return contacts_android.sections(got.stdout, nonce)
+        raise contacts_android.Unreachable(
+            f"could not run the phone tool ({type(e).__name__})") from None
+    how = contacts_android.failed(got.returncode, got.stdout, got.stderr)
+    if got.returncode == 0:
+        try:
+            return contacts_android.sections(got.stdout, nonce)
+        except contacts_android.Unreachable:
+            if not partial:
+                raise
+            how = "cut short (no end marker)"
+    elif not partial:
+        raise contacts_android.Unreachable(f"the phone tool {how}")
+    done, began = _finished_sections(got.stdout or "", nonce)
+    if not began:
+        raise contacts_android.Unreachable(f"the phone tool {how}")
+    done["_cut"] = how
+    return done
+
+
+def _finished_sections(output: str, nonce: str) -> tuple[dict[str, str], bool]:
+    """The sections of a run that stopped early that were finished (each
+    one another marker followed; the last one begun may be cut and is left
+    for another try), and whether any section began at all — the phone
+    answered."""
+    m = re.escape(_marker(nonce))
+    names: list[str] = []
+    body: dict[str, list[str]] = {}
+    for line in output.split("\n"):
+        hit = re.fullmatch(m + r" (\S+)\r?", line)
+        if hit:
+            names.append(hit.group(1))
+            body[hit.group(1)] = []
+        elif names:
+            body[names[-1]].append(line)
+    finished = names if (names and names[-1] == "end") else names[:-1]
+    return {k: "\n".join(body[k]) for k in finished if k != "end"}, bool(names)
 
 
 def _mms_pause() -> float:
@@ -208,6 +247,34 @@ def _mms_pause() -> float:
     import random
 
     return random.uniform(*MMS_PAUSE_S)
+
+
+def _addr_parts(batch: list) -> dict[str, str]:
+    """One batch's address sections. A batch the phone cut short (an id that
+    took the shell down, the connection dropped) answers what it finished;
+    the ids it did not reach are asked one at a time, and an id that fails
+    even alone is left out of the answer (the caller counts it unreadable),
+    so one bad MMS never stops the pass. Unreachable only when nothing at
+    all came back for the batch."""
+    from . import contacts_android
+
+    nonce = _nonce()
+    ids = [str(m) for m, _, _ in batch]
+    parts = _ask_phone(mms_addr_script(nonce, ids), nonce, partial=True)
+    if "_cut" not in parts:
+        return parts
+    parts.pop("_cut")
+    for i in ids:
+        if f"addr-{i}" in parts:
+            continue
+        nonce = _nonce()
+        # Nothing at all back (not even the id's marker): the phone went,
+        # so the pass stops here and the next run goes on; an id that only
+        # fails is left out, unreadable.
+        one = _ask_phone(mms_addr_script(nonce, [i]), nonce, partial=True)
+        if "_cut" not in one and f"addr-{i}" in one:
+            parts[f"addr-{i}"] = one[f"addr-{i}"]
+    return parts
 
 
 def _sums_out(sums: dict) -> list:
@@ -270,7 +337,7 @@ def phone(since_ms: int = 0) -> dict:
     st = _state(MMS_ROW) or {"token": None, "done": False, "carry": None, "counted": 0}
     carry = st["carry"] or {}
     mms_sums = _sums_in(carry.get("sums"))
-    mstats = {k: int(carry.get(k) or 0) for k in ("mms", "counted", "nobody", "groups")}
+    mstats = {k: int(carry.get(k) or 0) for k in ("mms", "counted", "nobody", "groups", "unreadable")}
     try:
         last = int(st["token"] or 0)
     except ValueError:
@@ -295,13 +362,21 @@ def phone(since_ms: int = 0) -> dict:
             batch = todo[i:i + MMS_BATCH]
             if i:
                 time.sleep(_mms_pause())
-            nonce = _nonce()
-            parts = _ask_phone(mms_addr_script(nonce, [str(m) for m, _, _ in batch]), nonce)
+            parts = _addr_parts(batch)
             for mid, day, direction in batch:
-                text = parts.get(f"addr-{mid}") or ""
+                if f"addr-{mid}" not in parts:
+                    # Refused even on its own: counted as read, nobody's.
+                    mstats["mms"] += 1
+                    mstats["unreadable"] += 1
+                    mstats["nobody"] += 1
+                    continue
+                text = parts[f"addr-{mid}"]
+                try:
+                    got_rows = contacts_android.rows(text)
+                except contacts_android.Unreachable:
+                    got_rows = []           # this id refused (deleted, gone): nobody's
                 rows = [(a.get("type") or "", a.get("address") or "")
-                        for a in (_cols(r, ("address", "type"))
-                                  for r in contacts_android.rows(text)) if a]
+                        for a in (_cols(r, ("address", "type")) for r in got_rows) if a]
                 mstats["mms"] += 1
                 frm = {n for t, a in rows if t == _FROM for n in [num(a)] if n} - self_phones
                 to = {n for t, a in rows if t in _TO for n in [num(a)] if n} - self_phones
@@ -328,13 +403,14 @@ def phone(since_ms: int = 0) -> dict:
     except contacts_android.Unreachable as e:
         if not mms_sums and not stats["sms"]:
             raise
-        mms_error = str(e)
+        mms_error = str(e)          # our own words: exit code and size, never output
     for key, (n_in, n_out) in mms_sums.items():
         _add(sums, key[0], key[1], key[2], "in", n_in)
         _add(sums, key[0], key[1], key[2], "out", n_out)
     out = {"sums": sums, "sms": stats["sms"], "mms": mstats["mms"],
            "counted": stats["counted"] + mstats["counted"],
-           "nobody": stats["nobody"] + mstats["nobody"], "groups": mstats["groups"]}
+           "nobody": stats["nobody"] + mstats["nobody"], "groups": mstats["groups"],
+           "unreadable": mstats["unreadable"]}
     if mms_error:
         out["mms_error"] = mms_error
     return out
@@ -588,7 +664,9 @@ def say(st: dict) -> list[str]:
         else:
             out.append(f"phone: {p.get('sms', 0)} SMS and {p.get('mms', 0)} MMS read, "
                        f"{p.get('counted', 0)} a contact's, {p.get('groups', 0)} group MMS left "
-                       f"out; {p.get('days', 0)} days changed")
+                       f"out; {p.get('days', 0)} days changed"
+                       + (f"; {p['unreadable']} MMS the phone would not read"
+                          if p.get("unreadable") else ""))
             if p.get("mms_error"):
                 out.append(f"phone: the MMS stopped partway ({p['mms_error']}); "
                            "run again to go on")

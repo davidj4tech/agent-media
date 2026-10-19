@@ -102,14 +102,16 @@ def _rows(rows):
     return "\n".join(f"Row: {i} {r}" for i, r in enumerate(rows)) or "No result found."
 
 
-def _phone(tmp_path, sms, mms, addrs, fail_after=None):
+def _phone(tmp_path, sms, mms, addrs, fail_after=None, bad_ids=()):
     """A fake adb that answers each of the backfill's scripts as the phone
     would: the SMS, the MMS list, or a batch of MMS addresses. Each script
     is logged (one per line in `scripts`); with `fail_after`, the address
-    batches after that many fail as a phone gone off Wi-Fi does."""
+    batches after that many fail as a phone gone off Wi-Fi does; an id in
+    `bad_ids` takes the shell down mid-batch as the live phone did on 20 Oct
+    2026 (its marker and a row printed, then exit 255, no end marker)."""
     data = tmp_path / "phone.json"
     data.write_text(json.dumps({"sms": sms, "mms": mms, "addrs": addrs,
-                                "fail_after": fail_after}))
+                                "fail_after": fail_after, "bad_ids": list(bad_ids)}))
     log = tmp_path / "scripts"
     log.write_text("")
     script = tmp_path / "fake-adb"
@@ -134,6 +136,10 @@ else:
         print("error: device offline", file=sys.stderr)
         sys.exit(1)
     for i in ids:
+        if i in d["bad_ids"]:
+            out += [f"{{m}} addr-{{i}}", "Row: 0 address=+61415584499, type=151"]
+            print("\\n".join(out))
+            sys.exit(255)
         out += [f"{{m}} addr-{{i}}", rows(d["addrs"].get(i, []))]
 out.append(m + " end")
 print("\\n".join(out))
@@ -200,7 +206,8 @@ def test_a_phone_without_the_tool_or_that_does_not_answer_is_said(book, tmp_path
     bad.chmod(0o755)
     monkeypatch.setenv("MEDIA_CONTACTS_ADB", f"{bad} shell")
     got = timeline_backfill.run(rooms_on=False)
-    assert "device offline" in got["phone"]["error"]
+    assert "exited 1" in got["phone"]["error"]
+    assert "device offline" not in got["phone"]["error"]              # never the tool's words
 
 
 def test_the_phone_is_read_in_short_scripts_mms_in_batches(book, tmp_path, monkeypatch):
@@ -220,7 +227,7 @@ def test_an_mms_pass_cut_short_counts_what_it_read_and_goes_on(book, tmp_path, m
     monkeypatch.setattr(timeline_backfill, "MMS_BATCH", 1)
     monkeypatch.setenv("MEDIA_CONTACTS_ADB", _phone(tmp_path, SMS, MMS, ADDRS, fail_after=1))
     first = timeline_backfill.run(rooms_on=False)
-    assert "device offline" in first["phone"]["mms_error"]
+    assert "exited 1" in first["phone"]["mms_error"]
     assert first["phone"]["mms"] == 1                            # MMS 7 only
     assert _ledger()[("sms", _day(0))] == (3, 1)                 # SMS + the MMS read
     assert timeline_backfill._state(timeline_backfill.MMS_ROW)["token"] == "7"
@@ -243,7 +250,52 @@ def test_a_phone_that_cannot_list_its_sms_is_unreadable(book, tmp_path, monkeypa
     bad.chmod(0o755)
     monkeypatch.setenv("MEDIA_CONTACTS_ADB", f"{bad} shell")
     got = timeline_backfill.run(rooms_on=False)
-    assert "device offline" in got["phone"]["error"] and "sms" not in got["phone"]
+    assert "exited 1" in got["phone"]["error"] and "sms" not in got["phone"]
+
+
+def test_an_mms_that_takes_the_shell_down_does_not_stop_the_pass(book, tmp_path, monkeypatch):
+    # The live phone, 20 Oct 2026: a batch printed rows, then exited 255.
+    monkeypatch.setattr(timeline_backfill, "MMS_BATCH", 3)
+    monkeypatch.setenv("MEDIA_CONTACTS_ADB", _phone(tmp_path, SMS, MMS, ADDRS, bad_ids=["8"]))
+    got = timeline_backfill.run(rooms_on=False)
+    p = got["phone"]
+    assert "mms_error" not in p and "error" not in p
+    assert p["mms"] == 3 and p["unreadable"] == 1                 # 8 left out, 7 and 9 read
+    assert _ledger()[("sms", _day(0))] == (3, 2)                  # 7 in, 9 out, as before
+    asked = (tmp_path / "scripts").read_text().splitlines()
+    assert any("for i in 7 8 9; do" in a for a in asked)          # the batch
+    assert any("for i in 8; do" in a for a in asked)              # then the rest alone
+    assert any("for i in 9; do" in a for a in asked)
+    assert timeline_backfill._state(timeline_backfill.MMS_ROW)["token"] == "9"
+    assert all("|| true" in a for a in asked if "/addr" in a)     # an id's failure is its own
+    assert "MMS the phone would not read" in " ".join(timeline_backfill.say(got))
+
+
+def test_an_error_never_says_a_number_or_an_address(book, tmp_path, monkeypatch):
+    import re as _re
+
+    def says_a_number(text):
+        return bool(_re.search(r"(?:\d[\s().-]?){6,}", text or ""))   # 6+ digits
+
+    leaky = tmp_path / "leaky-adb"
+    leaky.write_text("#!/bin/sh\necho 'Row: 2 address=+61415584499, type=151'\n"
+                     "echo 'body=meet at 0412 345 678' >&2\nexit 255\n")
+    leaky.chmod(0o755)
+    monkeypatch.setenv("MEDIA_CONTACTS_ADB", f"{leaky} shell")
+    got = timeline_backfill.run(rooms_on=False)
+    err = got["phone"]["error"]
+    assert "exited 255" in err and not says_a_number(err) and "address" not in err
+    assert "meet at" not in err
+    for line in timeline_backfill.say(got):
+        assert not says_a_number(line)
+    from agent_media_server import contacts_android
+    for text in ("Row: 2 address=+61415584499, type=151",
+                 "Error while accessing provider: content://mms/8/addr 0412 345 678"):
+        assert not says_a_number(contacts_android.scrub(text))
+    try:
+        contacts_android.rows("Error: number=+61 412 345 678 refused")
+    except contacts_android.Unreachable as e:
+        assert not says_a_number(str(e))
 
 
 # --- the bridged rooms ----------------------------------------------------------
