@@ -1272,9 +1272,11 @@ ahead.
     built 19 Oct 2026** (§6.25 "Past conversations"): Messenger and
     Instagram threads and Gmail's old Google Talk chats as timeline days
     (counts only, one-to-one only, merged by the larger count), any size
-    through `media contacts import` or the import folder. Still to do: the
-    app's import note names the new counts (it shows only friends and
-    followers).
+    through `media contacts import` or the import folder; the app's import
+    note says the days added. **Show and Sort** for People (19 Oct 2026):
+    Recent, Name, Most talked to; the last 30 days, 3 months or year; one
+    service; each row's last talked (agent-media 908422f, sasonica-app
+    aae0c58).
 
 ## Loose ends
 
