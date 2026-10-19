@@ -646,7 +646,8 @@ def _contacts(h: BaseHTTPRequestHandler, path: str, query: str) -> None:
 def _contact_photo(h: BaseHTTPRequestHandler, cid: str, query: str) -> None:
     """`GET /contacts/<id>/photo` (§6.25): their picture from the caller's
     book, gated as the card is; `?access_token=` for an <img>, which cannot
-    set a header. An ETag (the picture's hash) and Last-Modified; a matching
+    set a header; `?size=large` the larger one (the thumbnail when there is
+    none). An ETag (the picture's hash) and Last-Modified; a matching
     If-None-Match is 304; none to have is 404."""
     from email.utils import formatdate
 
@@ -660,7 +661,8 @@ def _contact_photo(h: BaseHTTPRequestHandler, cid: str, query: str) -> None:
     if not user:
         _json(h, err.pop("status", 403), {"ok": False, **err})
         return
-    got = contacts_photos.photo(cid)
+    size = ((parse_qs(query).get("size") or [""])[0]).strip()
+    got = contacts_photos.photo(cid, "large" if size == "large" else "")
     if got is None:
         _json(h, 404, {"ok": False, "error": "no picture"})
         return

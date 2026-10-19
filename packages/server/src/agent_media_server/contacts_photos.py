@@ -35,6 +35,15 @@ first source, in `KIND_ORDER`, that has one.
 **Served** as `GET /contacts/<id>/photo` (app.py, §6.25): the caller's book
 only, an ETag (the hash) and Last-Modified, 404 when there is none; every
 list row and card carries `photo: {url, etag}` when there is one.
+
+**Larger** (David, 20 Oct 2026: "the option to click on profile pictures
+for a larger view"): `?size=large` asks for the same source at up to
+`LARGE` px a side — Google's URL with a bigger size option, the ghost's
+mxc as a large thumbnail or whole — fetched only when first asked, then
+kept beside the thumbnail as `photos/large/<thumbnail's hash>` (0600), so a
+new source picture makes a new one and `refresh()` drops the old. A source
+that has nothing bigger, or a fetch that fails, answers the thumbnail (a
+failure is not tried again for `LARGE_RETRY_S`).
 """
 
 from __future__ import annotations
@@ -66,6 +75,12 @@ RECHECK_S = 7 * 86400.0
 #: A failed fetch waits `_backoff(tries)`, at most this.
 BACKOFF_MAX_S = 7 * 86400.0
 TIMEOUT_S = 15.0
+#: The longest side of the larger picture, in px.
+LARGE = 1024
+#: The largest source taken for it.
+LARGE_MAX_BYTES = 8 * 1024 * 1024
+#: A larger picture that could not be had is not asked for again before this.
+LARGE_RETRY_S = 86400.0
 
 _MAGIC = ((b"\xff\xd8\xff", "image/jpeg"), (b"\x89PNG\r\n\x1a\n", "image/png"),
           (b"GIF8", "image/gif"))
@@ -91,12 +106,13 @@ def sniff(data: bytes) -> str | None:
     return None
 
 
-def thumbnail(data: bytes) -> tuple[bytes, str] | None:
-    """`(bytes, type)` as kept: a JPEG at most `SIZE` px a side when Pillow
+def thumbnail(data: bytes, size: int = SIZE,
+              max_bytes: int = MAX_BYTES) -> tuple[bytes, str] | None:
+    """`(bytes, type)` as kept: a JPEG at most `size` px a side when Pillow
     can read it, else the source's own bytes when they are an image of at
-    most `MAX_BYTES`; None when it is not an image."""
+    most `max_bytes`; None when it is not an image."""
     ctype = sniff(data)
-    if ctype is None or len(data) > MAX_BYTES:
+    if ctype is None or len(data) > max_bytes:
         return None
     try:
         from PIL import Image
@@ -110,9 +126,9 @@ def thumbnail(data: bytes) -> tuple[bytes, str] | None:
             rgba = im.convert("RGBA")
             bg.paste(rgba, mask=rgba.split()[3])
             im = bg
-        im.thumbnail((SIZE, SIZE))
+        im.thumbnail((size, size))
         out = io.BytesIO()
-        im.save(out, "JPEG", quality=85, optimize=True)
+        im.save(out, "JPEG", quality=85 if size <= SIZE else 88, optimize=True)
         return out.getvalue(), "image/jpeg"
     except Exception:  # noqa: BLE001 — an image Pillow cannot read: as sent
         return data, ctype
@@ -141,11 +157,11 @@ def _keep(data: bytes) -> tuple[str, str] | None:
     return name, ctype
 
 
-def _http(url: str, headers: dict | None = None) -> bytes:
+def _http(url: str, headers: dict | None = None, max_bytes: int = MAX_BYTES) -> bytes:
     req = urllib.request.Request(url, headers=headers or {})
     with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
-        data = resp.read(MAX_BYTES + 1)
-    if len(data) > MAX_BYTES:
+        data = resp.read(max_bytes + 1)
+    if len(data) > max_bytes:
         raise ValueError("too large")
     return data
 
@@ -165,11 +181,16 @@ def google_url(person: dict) -> str:
         return ""
     # Google's photo URLs end in a size option (`=s100`, `=s100-p`): ask
     # for ours instead.
-    return re.sub(r"=s\d+(-[a-z0-9-]+)?$", "", best) + f"=s{SIZE}"
+    return sized(best, SIZE)
 
 
-def fetch_google(url: str) -> bytes:
-    return _http(url)
+def sized(url: str, px: int) -> str:
+    """A Google photo URL asking for `px` instead of its own size option."""
+    return re.sub(r"=s\d+(-[a-z0-9-]+)?$", "", url) + f"=s{px}"
+
+
+def fetch_google(url: str, max_bytes: int = MAX_BYTES) -> bytes:
+    return _http(url, max_bytes=max_bytes)
 
 
 def _homeserver() -> str:
@@ -197,16 +218,16 @@ def ghost_avatar(user_id: str) -> str:
     return mxc if mxc.startswith("mxc://") and "/" in mxc[6:] else ""
 
 
-def fetch_mxc(mxc: str) -> bytes:
-    """An mxc's picture: a thumbnail through authenticated media, else the
-    whole of it through the old media API."""
+def fetch_mxc(mxc: str, px: int = SIZE, max_bytes: int = MAX_BYTES) -> bytes:
+    """An mxc's picture: a `px` thumbnail through authenticated media, else the
+    whole of it, else a thumbnail through the old media API."""
     hs = _homeserver()
     if not hs:
         raise OSError("no MATRIX_HOMESERVER")
     server, media = mxc[6:].split("/", 1)
     tail = f"{urllib.parse.quote(server, safe='')}/{urllib.parse.quote(media, safe='')}"
     tok = _token()
-    size = f"width={SIZE}&height={SIZE}&method=scale"
+    size = f"width={px}&height={px}&method=scale"
     tries = []
     if tok:
         tries += [(f"{hs}/_matrix/client/v1/media/thumbnail/{tail}?{size}", tok),
@@ -215,7 +236,7 @@ def fetch_mxc(mxc: str) -> bytes:
     last: Exception = OSError("no way to fetch it")
     for url, t in tries:
         try:
-            return _http(url, {"Authorization": f"Bearer {t}"} if t else {})
+            return _http(url, {"Authorization": f"Bearer {t}"} if t else {}, max_bytes)
         except (urllib.error.URLError, OSError, ValueError) as e:
             last = e
     raise last
@@ -351,11 +372,15 @@ def refresh(budget: int | None = None, now: float | None = None,
             raise
         finally:
             conn.close()
-    # Files no source points at any more.
+    # Files no source points at any more, and the larger ones of those.
     try:
         for p in photos_dir().iterdir():
             if p.is_file() and not p.name.startswith(".") and p.name not in used:
                 p.unlink()
+        if only is None and (photos_dir() / "large").is_dir():
+            for p in (photos_dir() / "large").iterdir():
+                if p.is_file() and p.name.split(".")[0] not in used:
+                    p.unlink()
     except OSError:
         pass
     return counts
@@ -372,15 +397,22 @@ def index(conn) -> dict[tuple[str, str], tuple[str, str]]:
         return {}
 
 
-def best(card: dict, idx: dict) -> tuple[str, str] | None:
-    """The card's picture, `(file, type)`: its first source in `KIND_ORDER`
+def best_source(card: dict, idx: dict) -> tuple[str, str] | None:
+    """`(kind, sid)` of the card's picture: its first source in `KIND_ORDER`
     that has one."""
     srcs = card.get("sources") or []
     for kind in KIND_ORDER:
         for s in srcs:
             if s.get("kind") == kind and (kind, s.get("id") or "") in idx:
-                return idx[(kind, s["id"])]
+                return kind, s["id"]
     return None
+
+
+def best(card: dict, idx: dict) -> tuple[str, str] | None:
+    """The card's picture, `(file, type)`: its first source in `KIND_ORDER`
+    that has one."""
+    key = best_source(card, idx)
+    return idx[key] if key else None
 
 
 def field(cid: str, card: dict, idx: dict) -> dict | None:
@@ -391,8 +423,10 @@ def field(cid: str, card: dict, idx: dict) -> dict | None:
     return {"url": f"/contacts/{cid}/photo", "etag": got[0][:16]}
 
 
-def photo(cid: str) -> tuple[bytes, str, str, float] | None:
-    """`GET /contacts/<id>/photo`: `(bytes, type, etag, mtime)`, or None."""
+def photo(cid: str, size: str = "") -> tuple[bytes, str, str, float] | None:
+    """`GET /contacts/<id>/photo[?size=large]`: `(bytes, type, etag, mtime)`,
+    or None. `large` answers the larger picture when there is one (fetched
+    now if it was never asked for), else the thumbnail."""
     from . import contacts
 
     conn = contacts._connect(create=False)
@@ -401,13 +435,21 @@ def photo(cid: str) -> tuple[bytes, str, str, float] | None:
     try:
         got = conn.execute("SELECT card FROM contacts WHERE id=?", (cid,)).fetchone()
         idx = index(conn) if got else {}
+        key = best_source(json.loads(got[0]), idx) if got else None
+        ref = ""
+        if key:
+            row = conn.execute("SELECT ref FROM photo_src WHERE kind=? AND sid=?",
+                               key).fetchone()
+            ref = (row[0] if row else "") or ""
     finally:
         conn.close()
-    if not got:
+    if not key:
         return None
-    b = best(json.loads(got[0]), idx)
-    if not b:
-        return None
+    b = idx[key]
+    if size == "large":
+        big = _large(key[0], ref, b[0])
+        if big is not None:
+            return big
     path = photos_dir() / b[0]
     try:
         data = path.read_bytes()
@@ -415,3 +457,54 @@ def photo(cid: str) -> tuple[bytes, str, str, float] | None:
     except OSError:
         return None
     return data, b[1] or sniff(data) or "application/octet-stream", b[0][:16], mtime
+
+
+def _large(kind: str, ref: str, thumb: str) -> tuple[bytes, str, str, float] | None:
+    """The larger picture for a source whose thumbnail is `thumb`: kept, else
+    fetched now from `ref` and kept; None when there is none to be had (the
+    caller answers the thumbnail)."""
+    d = photos_dir() / "large"
+    path = d / thumb
+    miss = d / f"{thumb}.none"
+    try:
+        if path.is_file():
+            data = path.read_bytes()
+            return data, sniff(data) or "image/jpeg", "L" + thumb[:15], path.stat().st_mtime
+        if miss.is_file() and time.time() - miss.stat().st_mtime < LARGE_RETRY_S:
+            return None
+    except OSError:
+        return None
+    if not ref:
+        return None
+    try:
+        if kind == "google":
+            data = fetch_google(sized(ref, LARGE), LARGE_MAX_BYTES)
+        else:
+            data = fetch_mxc(ref, LARGE, LARGE_MAX_BYTES)
+        got = thumbnail(data, LARGE, LARGE_MAX_BYTES)
+        if got is None:
+            raise ValueError("not an image")
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        log.info("contacts: a larger %s picture unread: %s", kind, e)
+        _write(d, miss.name, b"")
+        return None
+    out, ctype = got
+    _write(d, thumb, out)
+    try:
+        miss.unlink()
+    except OSError:
+        pass
+    return out, ctype, "L" + thumb[:15], time.time()
+
+
+def _write(d: Path, name: str, data: bytes) -> None:
+    d.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(d, 0o700)
+    except OSError:
+        pass
+    tmp = d / f".{name}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+    os.replace(tmp, d / name)

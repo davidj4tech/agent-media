@@ -4744,6 +4744,18 @@ failure waits longer each time (15 min doubling, at most a week). Kept as
 `<state>/photos/<sha256>` (0600, the folder 0700); nothing else of the
 source is kept. `MEDIA_CONTACTS_PHOTOS=0` turns it off.
 
+**The larger one** (20 Oct 2026, for the card's tap-to-enlarge):
+`GET /contacts/<id>/photo?size=large` answers the same picture at up to
+1024 px a side — Google's URL with a bigger size option, the ghost's mxc as
+a 1024 px thumbnail (else whole) — fetched the first time it is asked for,
+never up front, and kept as `<state>/photos/large/<the thumbnail's hash>`
+(0600), so a new picture makes a new one and the old goes with its
+thumbnail. Its ETag starts `L`; If-None-Match, `Last-Modified`, the gate and
+`?access_token=` are as for the small one. A source with nothing bigger, or
+a fetch that fails, answers the thumbnail (its own etag), and a failed one
+is not tried again for a day. No `photo` field changes: the app adds
+`size=large` to the `url` it has.
+
 #### Find on a network — `POST /contacts/<id>/find` — gated, owner only (19 Oct 2026)
 
 A card's `find` lists the networks it may be searched on: `["messenger"]`

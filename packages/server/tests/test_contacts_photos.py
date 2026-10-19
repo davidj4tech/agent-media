@@ -64,7 +64,7 @@ class Web:
         self.pages: dict[str, object] = {}
         self.got: list[tuple[str, dict]] = []
 
-    def __call__(self, url, headers=None):
+    def __call__(self, url, headers=None, max_bytes=None):
         self.got.append((url, dict(headers or {})))
         for prefix, v in self.pages.items():
             if url.startswith(prefix):
@@ -315,6 +315,87 @@ def test_the_route_serves_the_callers_book_only(server, web):
     kat = devices.enrol_account({"iss": ISS, "sub": "kat", "email": "k@x.test"}, "phone")["token"]
     res, _ = _get(server, f"/contacts/{LIONEL}/photo", {"Authorization": f"Bearer {kat}"})
     assert res.status == 404
+
+
+# --- the larger picture ---------------------------------------------------------
+
+BIG = _image((10, 120, 200), (2000, 1500))
+
+
+def _side(data):
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+    return max(Image.open(io.BytesIO(data)).size)
+
+
+def test_a_larger_googles_is_fetched_when_first_asked_then_kept(web):
+    web.pages["https://lh3.test/l"] = BIG
+    _book(_google(1, "Lionel Smith", "https://lh3.test/l=s256"))
+    contacts_photos.refresh()
+    n = len(web.got)
+    assert not (contacts_photos.photos_dir() / "large").exists()      # not up front
+    data, ctype, etag, _ = contacts_photos.photo(LIONEL, "large")
+    assert web.got[n][0] == "https://lh3.test/l=s1024"
+    assert etag.startswith("L") and ctype.startswith("image/")
+    if _side(data) is not None:
+        assert _side(data) == contacts_photos.LARGE > _side(_pic(LIONEL))
+    (f,) = list((contacts_photos.photos_dir() / "large").iterdir())
+    assert stat.S_IMODE(f.stat().st_mode) == 0o600
+    m = len(web.got)
+    assert contacts_photos.photo(LIONEL, "large")[0] == data and len(web.got) == m
+
+
+def test_a_ghosts_larger_one_is_a_large_thumbnail(web):
+    web.avatar(FB, "mxc://ryer.org/zed")
+    web.media("mxc://ryer.org/zed", BIG)
+    _book(_ghost(FB, "Zed Facebook"))
+    contacts_photos.refresh()
+    n = len(web.got)
+    assert contacts_photos.photo(ZED, "large")[2].startswith("L")
+    assert any("/media/thumbnail/" in u and "width=1024" in u for u, _ in web.got[n:])
+
+
+def test_no_larger_one_answers_the_thumbnail_and_is_not_asked_again_soon(web):
+    web.pages["https://lh3.test/l"] = RED
+    _book(_google(1, "Lionel Smith", "https://lh3.test/l=s256"))
+    contacts_photos.refresh()
+    web.pages = {"https://lh3.test/l": OSError("down")}
+    data, _, etag, _ = contacts_photos.photo(LIONEL, "large")
+    assert data == _pic(LIONEL) and not etag.startswith("L")
+    n = len(web.got)
+    contacts_photos.photo(LIONEL, "large")
+    assert len(web.got) == n                                  # remembered for a day
+
+
+def test_a_new_picture_drops_the_old_larger_one(web):
+    web.pages["https://lh3.test/l1"] = BIG
+    web.pages["https://lh3.test/l2"] = BLUE
+    _book(_google(1, "Lionel Smith", "https://lh3.test/l1=s256"))
+    contacts_photos.refresh()
+    contacts_photos.photo(LIONEL, "large")
+    _book(_google(1, "Lionel Smith", "https://lh3.test/l2=s256"))
+    contacts_photos.refresh()
+    assert not list((contacts_photos.photos_dir() / "large").iterdir())
+
+
+def test_the_route_serves_the_larger_one(server, web):
+    web.pages["https://lh3.test/l"] = BIG
+    _book(_google(1, "Lionel Smith", "https://lh3.test/l=s256"))
+    contacts_photos.refresh()
+    tok = _paired()
+    res, _ = _get(server, f"/contacts/{LIONEL}/photo?size=large")
+    assert res.status in (401, 403)
+    res, body = _get(server, f"/contacts/{LIONEL}/photo?size=large&access_token={tok}")
+    assert res.status == 200 and body == contacts_photos.photo(LIONEL, "large")[0]
+    tag = res.getheader("ETag")
+    assert tag.startswith('"L')
+    res, _ = _get(server, f"/contacts/{LIONEL}/photo?size=large",
+                  {"Authorization": f"Bearer {tok}", "If-None-Match": tag})
+    assert res.status == 304
+    res, body = _get(server, f"/contacts/{LIONEL}/photo", {"Authorization": f"Bearer {tok}"})
+    assert body == _pic(LIONEL)                                # the small one as before
 
 
 # --- Find on Messenger (contacts_find.py) ----------------------------------------
