@@ -184,7 +184,7 @@ def test_callers_own_session_is_left_out(host, monkeypatch):
 def test_callers_other_tasks_refuse(host, monkeypatch, capsys):
     monkeypatch.setenv("MEDIA_SESSIOND_SESSION", "33333333-cccc")
     host.session("33333333-cccc", state="working", tasks=3)
-    assert _run("--only", "sessiond", "--after", "10") == 3
+    assert _run("--only", "sessiond", "--after", "10", "--no-drain") == 3
     assert "your own session has 2 other task(s)" in capsys.readouterr().out
 
 

@@ -133,7 +133,8 @@ def send(session: str, text: str, *, wait: float = 0.0) -> tuple[int, dict]:
             if r.get("ok"):
                 return RC_SENT, {"session": session, "queued": bool(r.get("queued")),
                                  "resumed": bool(r.get("resumed")),
-                                 "acked": bool(r.get("acked"))}
+                                 "acked": bool(r.get("acked")),
+                                 "held": bool(r.get("held"))}
             if r.get("code") != "pending":
                 return RC_FAILED, {"error": r.get("error") or "refused",
                                    "code": r.get("code") or "refused"}
@@ -211,7 +212,9 @@ def main(argv: list[str] | None = None) -> int:
     if a.json:
         print(json.dumps({"ok": rc == RC_SENT, **ans}))
     elif rc == RC_SENT:
-        print(f"sent to {ans['session']}" + (" (queued behind its turn)" if ans["queued"] else "")
+        print(f"sent to {ans['session']}" + (
+            " (held: the session host restarts first, then it is delivered)"
+            if ans.get("held") else " (queued behind its turn)" if ans["queued"] else "")
               + (" (resumed)" if ans["resumed"] else ""))
     else:
         print(f"media session send: {ans.get('error')}", file=sys.stderr)

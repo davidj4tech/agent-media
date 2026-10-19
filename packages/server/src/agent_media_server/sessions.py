@@ -378,7 +378,9 @@ def add_projects(rows: list[dict], folders: dict[str, str] | None = None) -> lis
     folders = _shelf_folders() if folders is None else folders
     from agent_media_core import layout
 
-    from . import moves
+    from . import moves, sessiond
+
+    restart = sessiond.restart_view()
 
     for r in rows:
         sid = str(r.get("session") or "")
@@ -392,6 +394,8 @@ def add_projects(rows: list[dict], folders: dict[str, str] | None = None) -> lis
         # when it ran (§6.15): only on a thread that has one.
         if sid:
             moves.add_status(r, sid)
+            # A restart of the session host waiting (§6.1): only while one is.
+            sessiond.add_restart_status(r, sid, restart)
     return rows
 
 
@@ -858,6 +862,11 @@ def targets(bearer: str, history: str = "") -> tuple[bool, dict]:
     if mail is not None:
         out["project_mail"] = mail
     out["project_groups"] = project_groups()
+    from . import sessiond
+
+    restart = sessiond.restart_view()
+    if restart:
+        out["restart_pending"] = restart
     return True, out
 
 

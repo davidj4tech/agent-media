@@ -252,6 +252,15 @@ Everything a message can be pointed at.
  "places": [{"name": "agent-media", "path": "/home/ryer/projects/agent-media", "at": 1790000000.1, "mail": 2}]}
 ```
 
+- **`restart_pending`** (19 Oct 2026; additive, only while there is one):
+  a restart of the session host is waiting for its busy sessions to finish
+  (§17 "Draining"): `{"since", "deadline": <epoch s>, "state": "waiting" |
+  "firing", "waiting_on": [{"session", "kind": "turn" | "agents" | "own" |
+  "speech", "label"}]}`. Each headless row, and a headless thread's
+  snapshot (§11), carries the same object plus `"held": <how many of this
+  thread's messages wait for it>`, so a held reply (§6.2.2 `held`) can say
+  "held until the server restarts". It goes when the restart is done or
+  given up, and the held messages are then delivered.
 - `sessions` is `sessions_index()`. Live sessions come first, titled from the
   pane (Claude's terminal title with the spinner stripped; Codex, pi and
   Hermes from their own session files, cut to 60 chars). A live session
@@ -1173,6 +1182,14 @@ headless thread is never revived in a pane), 503 `code: "busy"` when the
 host is at `MEDIA_SESSIOND_MAX`, or below `MEDIA_SESSIOND_MIN_FREE_MB` of
 free memory with one of its sessions running, and nothing is idle.
 
+**Held for a restart** (19 Oct 2026): while a restart of the session host
+is pending (`restart_pending`, §6.1, §17 "Restarts"), a reply is not given
+to the agent but kept: the answer adds `"held": true` (with `queued: true`,
+`acked: false`), and the message is delivered, in order, once the host has
+restarted (or the restart gives up). Show it as "held until the server
+restarts", not as failed. A new chat is refused meanwhile: 503 `code:
+"restart_pending"`, with a sentence.
+
 Errors: 400 `"empty reply"`. 404 when the item is not a conversation.
 **502 with `submitted: false` and `pane`**: the words are in the composer
 but were never taken — say so, don't show a typing indicator forever.
@@ -2017,10 +2034,10 @@ Gated by `may_admin`.
 
 ```
 POST /services/restart {"only"?: ["sessiond", "canvas"], "after"?: 10,
-                        "force"?: false, "dry_run"?: false}
+                        "force"?: false, "dry_run"?: false, "drain"?: true}
   → {"ok", "host", "rc", "lines": [...], "selected": [...], "busy": [...],
      "unknown": [...], "scheduled": {"how", "unit", "log"}|null,
-     "own": [...], "after"}
+     "own": [...], "after", "drain"?: {…the pending-restart record…}}
   → 400 an unknown name (`unknown`, and `lines` lists the known ones) or a
     bad body; 409 busy (`busy` holds the reasons); 500 a restart or its
     health check failed. A dry run answers 200, with `rc` and `busy` as the
@@ -2037,6 +2054,13 @@ answering the request (`own`: its main process is the server or one of its
 parents, or the server is in its systemd cgroup), it is always detached and
 `after` becomes 10 s if it was 0: restarted now, the server would be killed
 before it answered. This is how the phone's canvas (runit) restarts itself.
+
+`drain` (19 Oct 2026, default true): with `after` and sessiond selected, a
+busy host is not refused (409) but drained, as `media restart-services
+--after` does: 200, `scheduled` (or `{"how": "joined"}` when a restart was
+already waiting) and `drain`, the pending restart (`restart_pending`, §6.1;
+docs/reference/version-skew-monitoring.md). `"drain": false` refuses as
+before.
 
 ### 6.7 Share — gated
 
@@ -5456,7 +5480,7 @@ increasing `id`, and `retry: 2000` first.
 
 | Event | Data | When |
 | --- | --- | --- |
-| `snapshot` | `{"ok": true}`, the `/conversation/log?session=` envelope — `messages` (the newest **30**, or `?limit=`), `older`, `lines` (deprecated; only those of the page, below), `pending`, `working`, `approval`, `suggestion`, `recap` — plus `{"state", "session_live": bool, "live": bool (deprecated alias of `session_live`), "pane", "resumable"}`, and (22 Sep 2026) `"agents": {"running", "total"}` (§6.12), `"project"`, `"cwd"` (§6.1), and (19 Oct 2026) `"move_pending"?`, `"move_failed"?` (§6.15, only when there is one), `"title"` (the name `/targets` would give it, `""` when none) | first frame on every connection |
+| `snapshot` | `{"ok": true}`, the `/conversation/log?session=` envelope — `messages` (the newest **30**, or `?limit=`), `older`, `lines` (deprecated; only those of the page, below), `pending`, `working`, `approval`, `suggestion`, `recap` — plus `{"state", "session_live": bool, "live": bool (deprecated alias of `session_live`), "pane", "resumable"}`, and (22 Sep 2026) `"agents": {"running", "total"}` (§6.12), `"project"`, `"cwd"` (§6.1), and (19 Oct 2026) `"move_pending"?`, `"move_failed"?` (§6.15, only when there is one), `"title"` (the name `/targets` would give it, `""` when none), and `"restart_pending"?` (§6.1, a headless thread's, only while a restart of the session host is waiting) | first frame on every connection |
 | `message` | `{"op": "append" \| "replace", "message": <message>}` (§6.2.2) | a message appears, or one (matched by `id`) changes: grows a part, a tool finishes, its turn ends, it gains or loses `spoken` |
 | `live` | `{"id", "at", "sentences", "sentence", "offsets", "elapsed", "server_time", "delay", "paused"}` — the message being spoken, by `id` — or `null` when nothing is | a new reply starts, the sentence changes, pause or resume, or the clock jumps (more than 1 s from where it should be: a skip) — **not** at 1 Hz; the client runs the clock between frames |
 | `working` | the `working` object, or `null` | a step starts, or the turn ends |
@@ -5964,6 +5988,30 @@ writes nothing to tmux.
   of its own sessions, use `media restart-services --only sessiond --after
   10` (docs/reference/version-skew-monitoring.md). It waits until no other
   session is busy, and the asking turn ends first.
+- **Draining** (19 Oct 2026). That wait is a drain: while the restart is
+  pending (`$XDG_STATE_HOME/agent-media/restart-pending.json`, written by
+  `restart_services`), sessiond holds every new message (`send` answers
+  `held: true`; the message is kept in the session's record, so it
+  outlives the restart) and refuses new chats (`restart_pending`), so no
+  session becomes busy again; each busy session is told once, by its
+  context hook, to end its turn. A session whose only business is a
+  question or permission card does not hold the restart up: the agent
+  cannot finish it, only David can, and the card is lost with the restart
+  and asked again (next item). Answering a card is not held. The restart
+  fires the moment nothing is busy, or gives up after 30 min
+  (`MEDIA_RESTART_DRAIN_MAX_S`), and either way the held messages are then
+  delivered in order. A pending restart whose detached run stops checking
+  in (90 s) holds nothing.
+- **Resuming** (19 Oct 2026). Before a stop parks anything, sessiond notes
+  on each live Claude session what it was doing (`cut_off`: a turn under
+  way and its last message, a card up, its background tasks by
+  description, messages the CLI had queued); a crashed instance's records
+  say the same, and a child the stop's cgroup kill took first counts too.
+  At the next start each session cut off is resumed, once, with a message
+  from `[From the session host]` saying what was running and to pick up
+  where it left off and restart any background work it still needs (a
+  card-only session: to ask again). Idle sessions are not woken. Its held
+  messages follow.
 - **Permissions** (`MEDIA_HEADLESS_PERMISSIONS`, per host): `strict`
   (default) keeps every settings source — hooks, speech — and adds a
   `--settings` overlay whose `ask` rules name every tool but a read-only list

@@ -34,6 +34,18 @@ What makes it safe to run unattended (David, 18 Oct 2026):
   for up to `MEDIA_RESTART_WAIT_MAX_S` (600 s), then gives up and raises an
   alert. At that point the caller's own session counts like any other, so a
   turn still going is waited for rather than cut off.
+* **drain** (19 Oct 2026; the default for `after` with sessiond selected,
+  `drain=False` / `--no-drain` refuses as before): instead of refusing a
+  busy host, a pending restart is written (`pending_path()`), which sessiond
+  reads: it holds new messages (delivered after the restart) and refuses new
+  chats, and the busy sessions' context hook tells each, once, to end its
+  turn. The detached run (`--fire --drain`) restarts the moment nothing is
+  busy, checking every `MEDIA_RESTART_DRAIN_POLL_S` (3 s); a session whose
+  only business is a question card does not hold it up (the card is lost and
+  the session resumed to ask again). At `MEDIA_RESTART_DRAIN_MAX_S` (30 min)
+  it gives up: the record goes, the held messages are delivered, and the
+  host alert is raised. A second request while one waits joins it. Exit 0
+  for a drain scheduled or joined.
 * **health check**: each restarted service must be up within
   `MEDIA_RESTART_HEALTH_S` (20 s). A canvas must also answer HTTP. A failure
   raises the host alert `restart-services.<host>` (§6.17), which the phone
@@ -265,31 +277,264 @@ def speech_in_flight() -> bool:
     return cli._speech_in_flight()
 
 
-def busy(selected: list[Service], caller: str = "", *, now: bool = False) -> list[str]:
+def question_only(v: dict) -> bool:
+    """Whether all a session is busy with is a question or permission card
+    waiting on David: no task in flight, nothing queued. A drain does not
+    wait for one (the agent cannot finish it, only David can); the card is
+    lost with the restart and the session is resumed to ask again
+    (sessiond's `cut_off`)."""
+    return (busy_kind(v) == "question" and not int(v.get("tasks") or 0)
+            and not v.get("queued"))
+
+
+def waiting_on(selected: list[Service], caller: str = "", *, now: bool = False,
+               drain: bool = False) -> list[dict]:
+    """What restarting `selected` now would cut off, one dict each:
+    `{"session", "kind", "label", "why"}` — `kind` a `busy_kind`, or
+    `"speech"`, or `"own"` (the caller's own session, see the module doc).
+    `drain`: a session busy only with a question does not count."""
+    out: list[dict] = []
+    if any(is_sessiond(s) for s in selected):
+        for v in sessiond_sessions():
+            sid = str(v.get("session") or "")
+            if caller and sid == caller:
+                tasks = int(v.get("tasks") or 0)
+                if tasks > 1:
+                    out.append({"session": sid, "kind": "own", "label": "your own session",
+                                "why": f"has {tasks - 1} other task(s) in flight; they "
+                                       "would die with it"})
+                continue
+            why = session_busy(v)
+            if not why or (drain and question_only(v)):
+                continue
+            out.append({"session": sid, "kind": busy_kind(v) or "turn", "label": _label(v),
+                        "why": ", ".join(why)})
+        if now and caller:
+            out.append({"session": caller, "kind": "own", "label": "",
+                        "why": "restarting it now would end this chat (you run inside "
+                               "one of its sessions). Use --after 10"})
+    speech = [s.short for s in selected if is_speech(s)]
+    if speech and speech_in_flight():
+        out.append({"session": "", "kind": "speech", "label": "a reply is being spoken",
+                    "why": f"{', '.join(speech)} would cut it off"})
+    return out
+
+
+def _reason(w: dict) -> str:
+    if w["kind"] == "speech":
+        return f"speech: a reply is being spoken ({w['why']})"
+    return f"sessiond: {w['label'] + ' ' if w['label'] else ''}{w['why']}"
+
+
+def busy(selected: list[Service], caller: str = "", *, now: bool = False,
+         drain: bool = False) -> list[str]:
     """Why restarting `selected` now would cut something off ([] = clear).
 
     `caller` is the sessiond session asking (left out of the check, but see
-    the module doc). `now` means the restart would happen in this process."""
-    reasons: list[str] = []
-    if any(is_sessiond(s) for s in selected):
-        for v in sessiond_sessions():
-            if caller and v.get("session") == caller:
-                tasks = int(v.get("tasks") or 0)
-                if tasks > 1:
-                    reasons.append(f"sessiond: your own session has {tasks - 1} other "
-                                   "task(s) in flight; they would die with it")
-                continue
-            why = session_busy(v)
-            if why:
-                reasons.append(f"sessiond: {_label(v)} {', '.join(why)}")
-        if now and caller:
-            reasons.append("sessiond: restarting it now would end this chat (you run "
-                           "inside one of its sessions). Use --after 10")
-    speech = [s.short for s in selected if is_speech(s)]
-    if speech and speech_in_flight():
-        reasons.append(f"speech: a reply is being spoken ({', '.join(speech)} would "
-                       "cut it off)")
-    return reasons
+    the module doc). `now` means the restart would happen in this process.
+    `drain`: as `waiting_on`."""
+    return [_reason(w) for w in waiting_on(selected, caller, now=now, drain=drain)]
+
+
+# --- draining: a restart that waits, holding new work back -------------------------
+#
+# A restart of sessiond refused as busy used to wait (10 min at most) while
+# new messages kept the sessions busy, and mostly gave up (David, 19 Oct
+# 2026). Drained, it is a pending restart on disk (`pending_path()`):
+# sessiond holds new messages and refuses new chats while it is there, the
+# busy sessions are told to end their turn (intake/context.py's restart
+# note), and the detached run restarts the moment none is busy, or gives up
+# at the deadline. Held messages are delivered after (sessiond.py).
+
+#: A pending restart counts only while its detached run keeps saying it is
+#: there (`alive_until`): a run that died must not hold messages for half an hour.
+ALIVE_S = 90.0
+
+
+def drain_max_s() -> float:
+    return _env_f("MEDIA_RESTART_DRAIN_MAX_S", 1800.0)
+
+
+def drain_poll_s() -> float:
+    return _env_f("MEDIA_RESTART_DRAIN_POLL_S", 3.0)
+
+
+def pending_path() -> Path:
+    from ._paths import state_dir
+
+    return state_dir() / "restart-pending.json"
+
+
+def read_pending() -> "Optional[dict]":
+    """The pending-restart record as it is on disk, live or not; None."""
+    try:
+        rec = json.loads(pending_path().read_text())
+    except (OSError, ValueError):
+        return None
+    return rec if isinstance(rec, dict) and rec.get("id") else None
+
+
+def is_active(rec: "Optional[dict]", now: "Optional[float]" = None) -> bool:
+    if not rec:
+        return False
+    now = time.time() if now is None else now
+    return (rec.get("state") in ("waiting", "firing")
+            and now < float(rec.get("deadline") or 0)
+            and now < float(rec.get("alive_until") or 0))
+
+
+def pending(now: "Optional[float]" = None) -> "Optional[dict]":
+    """The pending restart while it holds: `{"id", "since", "deadline",
+    "alive_until", "only", "by", "state" ("waiting" | "firing"),
+    "waiting_on": [{"session", "kind", "label", "why"}], "unit", "log"}`;
+    None when there is none, or it ran out (its deadline, or its run went
+    quiet)."""
+    rec = read_pending()
+    return rec if is_active(rec, now) else None
+
+
+def _update_pending(fn: "Callable[[Optional[dict]], Optional[dict]]") -> "Optional[dict]":
+    """Read, change and write the record under a lock (the scheduler joining a
+    drain and the detached run both write it). `fn` returns the new record,
+    or None to remove it."""
+    from . import _lock
+
+    path = pending_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path.with_suffix(".lock"), "a+") as lk:
+        _lock.flock(lk, _lock.LOCK_EX)
+        try:
+            new = fn(read_pending())
+            if new is None:
+                path.unlink(missing_ok=True)
+            else:
+                tmp = path.with_name(f".{path.name}.{os.getpid()}")
+                tmp.write_text(json.dumps(new, indent=1))
+                os.replace(tmp, path)
+            return new
+        finally:
+            _lock.flock(lk, _lock.LOCK_UN)
+
+
+def clear_pending(rid: str = "") -> bool:
+    """Remove the pending restart (only `rid`'s, when given). Whether it went."""
+    gone = []
+
+    def fn(rec):
+        if rec and (not rid or rec.get("id") == rid):
+            gone.append(rec)
+            return None
+        return rec
+    _update_pending(fn)
+    return bool(gone)
+
+
+def _hhmm(t: float) -> str:
+    return time.strftime("%H:%M", time.localtime(t))
+
+
+def _start_drain(selected: list[Service], after: float, waits: list[dict],
+                 caller: str, emit: Callable[[str], None], res: dict) -> dict:
+    """The non-fire half of a drained restart: join a pending one, or write
+    the record (holding starts now) and schedule the detached run."""
+    import uuid
+
+    names = [s.name for s in selected]
+    now = time.time()
+    joined: list[dict] = []
+
+    def fn(rec):
+        if is_active(rec, now):
+            joined.append(rec)
+            return {**rec, "only": sorted(set(rec.get("only") or []) | set(names))}
+        return {"id": uuid.uuid4().hex[:12], "since": round(now, 3),
+                "deadline": round(now + after + drain_max_s(), 3),
+                "alive_until": round(now + after + ALIVE_S, 3), "only": names,
+                "by": caller, "state": "waiting", "waiting_on": waits,
+                "host": host(), "unit": "", "log": ""}
+    rec = _update_pending(fn)
+    if joined:
+        old = joined[0]
+        emit(f"a restart is already waiting (since {_hhmm(float(old.get('since') or now))}, "
+             f"until {_hhmm(float(old.get('deadline') or now))}); joined it: "
+             f"{' '.join(names)}")
+        res["scheduled"] = {"how": "joined", "unit": old.get("unit") or "",
+                            "log": old.get("log") or ""}
+        res["drain"] = rec
+        return res
+    try:
+        sch = schedule(selected, after, False, drain=True)
+    except (OSError, RuntimeError, subprocess.SubprocessError) as e:
+        clear_pending(rec["id"])
+        emit(f"could not schedule the restart: {e}")
+        res["rc"] = FAILED
+        return res
+    _update_pending(lambda r: {**r, "unit": sch["unit"], "log": sch["log"]}
+                    if r and r.get("id") == rec["id"] else r)
+    res["scheduled"] = sch
+    res["drain"] = rec
+    for w in waits:
+        emit(f"waiting on: {_reason(w)}")
+    emit(f"scheduled: {' '.join(names)} in {int(round(after))} s ({sch['how']} "
+         f"{sch['unit']}; log: {sch['log']})")
+    emit(f"draining until {_hhmm(rec['deadline'])}: new messages to sessiond's sessions "
+         "are held (delivered after the restart) and new chats refused; busy sessions "
+         "are asked to end their turn. It restarts as soon as none is busy "
+         "(`media restart-services --cancel` drops it)")
+    return res
+
+
+def _fire_drain(emit: Callable[[str], None], res: dict) -> dict:
+    """The detached run of a drained restart: wait for nothing to be busy
+    (a session busy only with a question does not count), keeping the
+    record's `waiting_on` and `alive_until` current, then restart what the
+    record names; or give up at its deadline, which releases the held
+    messages, and alert."""
+    rec = read_pending()
+    if not rec:
+        emit("no pending restart: nothing to do (cancelled?)")
+        return res
+    rid = rec["id"]
+    while True:
+        rec = read_pending()
+        if not rec or rec.get("id") != rid:
+            emit("the pending restart was cancelled")
+            res["rc"] = BUSY
+            return res
+        selected, _unknown = resolve(rec.get("only") or None, services())
+        res["selected"] = [s.name for s in selected]
+        waits = waiting_on(selected, "", now=False, drain=True)
+        now = time.time()
+        if not waits:
+            _update_pending(lambda r: {**r, "state": "firing", "waiting_on": [],
+                                       "alive_until": round(now + ALIVE_S + health_s()
+                                                            + 120, 3)}
+                            if r and r.get("id") == rid else r)
+            emit(f"nothing busy after {(now - float(rec.get('since') or now)) / 60:.1f} min:"
+                 " restarting")
+            try:
+                res["rc"] = restart(selected, emit)
+            finally:
+                clear_pending(rid)
+            return res
+        if now >= float(rec.get("deadline") or 0):
+            reasons = [_reason(w) for w in waits]
+            for r in reasons:
+                emit(f"gave up, still busy: {r}")
+            clear_pending(rid)
+            names = " ".join(s.name for s in selected)
+            alert("warn", f"restart of {names} on {host()} gave up: still busy after "
+                  f"{(now - float(rec.get('since') or now)) / 60:.0f} min of draining",
+                  "\n".join(reasons), f"media restart-services --only {names} --after 10")
+            res.update(rc=BUSY, busy=reasons)
+            return res
+        if waits != rec.get("waiting_on"):
+            emit(f"draining, waiting on: {'; '.join(_reason(w) for w in waits)}")
+        _update_pending(lambda r: {**r, "waiting_on": waits,
+                                   "alive_until": round(now + ALIVE_S, 3),
+                                   "checked": round(now, 3)}
+                        if r and r.get("id") == rid else r)
+        _sleep(drain_poll_s())
 
 
 # --- restarting, checking, alerting ------------------------------------------------
@@ -529,13 +774,14 @@ PASS_ENV = ("PATH", "HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOM
             "MEDIA_SESSIOND_TASK_STALE_S", "MEDIA_CANVAS_URL", "MEDIA_VISUAL_URL",
             "MEDIA_VISUAL_PORT", "MEDIA_VISUAL_MAGICDNS_HOST", "AGENT_ALERT_URL",
             "MEDIA_RESTART_HEALTH_S", "MEDIA_RESTART_RETRY_S",
-            "MEDIA_RESTART_WAIT_MAX_S")
+            "MEDIA_RESTART_WAIT_MAX_S", "MEDIA_RESTART_DRAIN_MAX_S",
+            "MEDIA_RESTART_DRAIN_POLL_S")
 
 
-def fire_argv(selected: list[Service], force: bool) -> list[str]:
+def fire_argv(selected: list[Service], force: bool, drain: bool = False) -> list[str]:
     argv = [sys.executable, "-m", "agent_media_core.restart_services", "--fire",
             "--only", *[s.name for s in selected]]
-    return argv + (["--force"] if force else [])
+    return argv + (["--force"] if force else []) + (["--drain"] if drain else [])
 
 
 def _unit_name() -> str:
@@ -548,12 +794,13 @@ def log_path() -> Path:
     return state_dir() / "restart-services.log"
 
 
-def schedule(selected: list[Service], after: float, force: bool) -> dict:
+def schedule(selected: list[Service], after: float, force: bool,
+             drain: bool = False) -> dict:
     """Start the detached run `after` seconds from now. Under systemd: a
     transient user unit, out of every caller's cgroup. Elsewhere, or when
     systemd-run is missing: a detached child in its own session, logging to
     `log_path()`."""
-    argv = fire_argv(selected, force)
+    argv = fire_argv(selected, force, drain)
     n = max(1, int(round(after)))
     systemd = any(s.kind == "systemd" for s in selected) and shutil.which("systemd-run")
     if systemd:
@@ -604,8 +851,15 @@ def schedule(selected: list[Service], after: float, force: bool) -> dict:
 def run(only: "Optional[list[str]]" = None, *, after: float = 0, force: bool = False,
         dry_run: bool = False, fire: bool = False, caller: "Optional[str]" = None,
         echo: "Optional[Callable[[str], None]]" = None,
-        detach_own: bool = False) -> dict:
+        detach_own: bool = False, drain: "Optional[bool]" = None,
+        cancel: bool = False) -> dict:
     """Restart `only` (default all), now or `after` seconds from now.
+
+    `drain` (the default, None, means on whenever it applies: `after`, not
+    `force`, sessiond selected): a busy host is not refused but drained —
+    `_start_drain`, then `_fire_drain` in the detached run. `drain=False`
+    refuses as before. `cancel` drops a pending drained restart, releasing
+    what it holds.
 
     Returns {"rc", "lines", "selected", "busy", "unknown", "scheduled",
     "own", "after"}, with `rc` the exit code and `lines` what was said.
@@ -627,6 +881,19 @@ def run(only: "Optional[list[str]]" = None, *, after: float = 0, force: bool = F
 
     res = {"rc": OK, "lines": lines, "selected": [], "busy": [], "unknown": [],
            "scheduled": None, "own": [], "after": after}
+    if cancel:
+        rec = read_pending()
+        if rec and clear_pending(rec["id"]):
+            emit(f"cancelled the restart waiting since {_hhmm(float(rec.get('since') or 0))} "
+                 f"({' '.join(rec.get('only') or [])}); held messages go out now")
+        else:
+            emit("no restart is waiting")
+        return res
+    if fire and drain:
+        delay = _env_f("MEDIA_RESTART_DELAY_S", 0.0)
+        if delay > 0:
+            _sleep(delay)
+        return _fire_drain(emit, res)
     if fire:
         caller = ""
         delay = _env_f("MEDIA_RESTART_DELAY_S", 0.0)
@@ -654,6 +921,8 @@ def run(only: "Optional[list[str]]" = None, *, after: float = 0, force: bool = F
                  f"{int(after)} s, detached, so the answer gets out first")
     res["after"] = after
     now = after <= 0 and not fire
+    draining = (drain is not False and not force and not fire and after > 0
+                and any(is_sessiond(s) for s in selected))
 
     if dry_run:
         for s in selected:
@@ -671,15 +940,28 @@ def run(only: "Optional[list[str]]" = None, *, after: float = 0, force: bool = F
                    if any(s.kind == "systemd" for s in selected) and shutil.which("systemd-run")
                    else "a detached child")
             emit(f"would schedule in {int(round(after))} s via {how}")
-        res["rc"] = BUSY if reasons else OK
+            if draining:
+                emit("would drain: new messages held and new chats refused until the "
+                     "restart; it fires when nothing above is busy (a session only "
+                     "waiting on a question does not count), at most "
+                     f"{drain_max_s() / 60:.0f} min")
+        # As the real run would answer: a drain is scheduled, not refused.
+        res["rc"] = BUSY if reasons and not draining else OK
         return res
+
+    if draining:
+        waits = waiting_on(selected, "", now=False, drain=True)
+        res["busy"] = [_reason(w) for w in waits]
+        return _start_drain(selected, after, waits, caller or "", emit, res)
 
     if not fire:
         reasons = [] if force else busy(selected, caller or "", now=now)
         if reasons:
             for r in reasons:
                 emit(f"refused, busy: {r}")
-            emit("nothing restarted (--force restarts anyway)")
+            emit("nothing restarted (--force restarts anyway"
+                 + ("; --after 10 drains sessiond: waits for it, holding new work back)"
+                    if any(is_sessiond(s) for s in selected) and after <= 0 else ")"))
             res.update(rc=BUSY, busy=reasons)
             return res
         if after > 0:
@@ -916,6 +1198,7 @@ def main(argv: "Optional[list[str]]" = None) -> int:
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--after", type=float, default=0)
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--drain", action="store_true")
     a = ap.parse_args(argv)
     if a.json:
         res = run(a.only, after=max(0.0, a.after), force=a.force, dry_run=a.dry_run,
@@ -923,8 +1206,9 @@ def main(argv: "Optional[list[str]]" = None) -> int:
                   echo=lambda line: print(line, file=sys.stderr, flush=True))
         print(json.dumps({**res, "host": host()}), flush=True)
         return int(res["rc"])
-    print(f"restart-services: detached run for {' '.join(a.only or ['all'])}", flush=True)
-    res = run(a.only, force=a.force, fire=a.fire,
+    print(f"restart-services: detached run for {' '.join(a.only or ['all'])}"
+          + (" (draining)" if a.drain else ""), flush=True)
+    res = run(a.only, force=a.force, fire=a.fire, drain=a.drain or None,
               echo=lambda line: print(line, flush=True))
     return int(res["rc"])
 

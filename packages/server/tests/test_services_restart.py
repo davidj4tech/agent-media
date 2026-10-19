@@ -49,7 +49,7 @@ def host(monkeypatch):
     monkeypatch.setattr(rs, "_own_cgroup", lambda: "")
     monkeypatch.setattr(rs, "_main_pid", lambda s: log["own_pid"].get(s.name, 0))
 
-    def schedule(selected, after, force):
+    def schedule(selected, after, force, drain=False):
         log["scheduled"].append(([s.name for s in selected], after, force))
         return {"how": "systemd-run", "unit": "media-restart-test", "log": "-"}
 
@@ -124,8 +124,12 @@ def test_no_session_is_the_callers(server, host, dev, monkeypatch):
     MEDIA_SESSIOND_SESSION (if any) must not excuse a busy session."""
     monkeypatch.setenv("MEDIA_SESSIOND_SESSION", "11111111-aaaa")
     host["sessions"].append({"session": "11111111-aaaa", "state": "working", "live": True})
-    res, got = _post(server, {"only": ["sessiond"], "after": 10}, dev)
+    res, got = _post(server, {"only": ["sessiond"], "after": 10, "drain": False}, dev)
     assert res.status == 409 and host["scheduled"] == []
+    # Drained (the default), the session is waited on, not excused.
+    res, got = _post(server, {"only": ["sessiond"], "after": 10}, dev)
+    assert res.status == 200 and got["rc"] == 0 and len(host["scheduled"]) == 1
+    assert [w["session"] for w in got["drain"]["waiting_on"]] == ["11111111-aaaa"]
 
 
 def test_restarting_its_own_server_is_forced_detached(server, host, dev):
@@ -173,10 +177,16 @@ def test_dry_run_touches_nothing_and_answers_200_with_the_checks(server, host, d
     host["sessions"].append({"session": "22222222-bbbb", "state": "approval",
                              "pending": [{"request_id": "r"}], "live": True})
     res, got = _post(server, {"only": ["sessiond", "canvas"], "dry_run": True}, dev)
-    assert res.status == 200 and got["rc"] == rs.BUSY and not got["ok"]
+    # Its own canvas makes it detached, so sessiond would be drained: the
+    # dry run answers as that run would (0), still naming what is busy.
+    assert res.status == 200 and got["rc"] == rs.OK and got["ok"]
     assert any("approval(s) pending" in b for b in got["busy"])
     assert any("would schedule in 10 s" in line for line in got["lines"])
+    assert any("would drain" in line for line in got["lines"])
     assert host["restarted"] == [] and host["scheduled"] == []
+    res, got = _post(server, {"only": ["sessiond", "canvas"], "dry_run": True,
+                              "drain": False}, dev)
+    assert res.status == 200 and got["rc"] == rs.BUSY and not got["ok"]
 
 
 def test_a_failed_restart_is_500(server, host, dev, monkeypatch):

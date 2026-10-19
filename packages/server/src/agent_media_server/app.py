@@ -1592,8 +1592,12 @@ def _services_restart(h: BaseHTTPRequestHandler) -> None:
         _json(h, 400, {"ok": False, "error": "after: seconds, 0 to 86400"})
         return
     dry_run = body.get("dry_run") is True
+    # `drain` (default on, as on the command line): with `after`, a busy
+    # sessiond is drained rather than refused (restart_services.py); false
+    # refuses it.
     res = rs.run(only or None, after=after, force=body.get("force") is True,
-                 dry_run=dry_run, caller="", detach_own=True)
+                 dry_run=dry_run, caller="", detach_own=True,
+                 drain=False if body.get("drain") is False else None)
     rc = int(res["rc"])
     status = {rs.OK: 200, rs.UNKNOWN: 400, rs.BUSY: 409}.get(rc, 500)
     if dry_run and rc != rs.UNKNOWN:

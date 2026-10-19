@@ -1,0 +1,193 @@
+"""Draining and resuming around a restart of media-sessiond (19 Oct 2026).
+
+While a restart is pending (core restart_services' record) sessiond holds new
+messages, refuses new chats and delivers what it held after; a stop notes
+what each live session was doing, and the next start resumes the ones cut
+off, once, with a note. Against the fake `claude` (test_headless.py's
+`host`: sessiond in-process on a throwaway socket, a throwaway state dir).
+Nothing here reaches a real session.
+"""
+
+from __future__ import annotations
+
+import json
+import time
+
+import pytest
+
+from agent_media_core import restart_services as rs
+from agent_media_server import driver, sessiond
+
+from test_headless import _task, host, start, starts, state, wait_for  # noqa: F401
+
+
+def _pend(**kw) -> dict:
+    now = time.time()
+    rec = {"id": "r1", "since": now, "deadline": now + 600, "alive_until": now + 600,
+           "only": ["agent-media-sessiond"], "state": "waiting", "waiting_on": [], **kw}
+    rs._update_pending(lambda r: rec)
+    return rec
+
+
+def _fresh(sup) -> None:
+    sup._restart_read_at = None          # past its one-second cache
+
+
+def _said(sup, sid) -> str:
+    return next((e.get("result") for e in reversed(sup.sessions[sid].events)
+                 if e.get("type") == "result"), "")
+
+
+def test_messages_are_held_while_a_restart_is_pending_then_delivered(host):
+    sid = start(host, "reply: a")
+    wait_for(lambda: _said(host.sup, sid) == "a")
+    _pend()
+    _fresh(host.sup)
+    ok, d = driver.headless_driver().send(sid, "", "reply: held")
+    assert ok and d["held"] is True
+    time.sleep(0.3)
+    assert _said(host.sup, sid) == "a" and state(host, sid) == "waiting"
+    assert [m["text"] for m in sessiond.read_record(sid)["held"]] == ["reply: held"]
+    assert host.sup.deliver_due() == []
+    # No new chat while it is pending.
+    ok, d = driver.headless_driver().start(agent="claude", cwd=str(host.work), text="hi")
+    assert not ok and d["code"] == "restart_pending"
+    # It gave up (or was cancelled): what it held goes out, in order.
+    rs.clear_pending()
+    _fresh(host.sup)
+    assert host.sup.deliver_due() == [sid]
+    wait_for(lambda: _said(host.sup, sid) == "held")
+    assert sessiond.read_record(sid)["held"] == []
+
+
+def test_another_sessions_mail_is_not_held_over_a_card(host):
+    sid = start(host, "tool: touch q")
+    wait_for(lambda: state(host, sid) == "approval")
+    _pend()
+    _fresh(host.sup)
+    with pytest.raises(sessiond.Refused) as e:
+        host.sup.send(sid, "[From X] hi", keep_pending=True)
+    assert e.value.code == "pending"
+
+
+def test_held_messages_outlive_the_restart(host):
+    sid = start(host, "reply: a")
+    wait_for(lambda: _said(host.sup, sid) == "a")
+    _pend()
+    _fresh(host.sup)
+    host.sup.send(sid, "reply: after")
+    rs._update_pending(lambda r: {**r, "state": "firing"})
+    sessiond.stop(host.srv)
+    wait_for(lambda: not host.sup.sessions[sid].live)
+    sup2 = sessiond.Supervisor()
+    sup2.load()
+    try:
+        assert rs.read_pending() is None           # the firing restart was this one
+        assert [m["text"] for m in sup2.sessions[sid].held] == ["reply: after"]
+        assert sup2.deliver_due() == [sid]
+        wait_for(lambda: _said(sup2, sid) == "after")
+        assert "--resume" in starts(host)[-1]["argv"]
+    finally:
+        sup2.shutdown()
+
+
+def test_a_session_cut_off_mid_turn_is_resumed_once_and_an_idle_one_is_not(host):
+    busy = start(host, "slow: 20")
+    idle = start(host, "reply: b")
+    wait_for(lambda: state(host, busy) == "working" and _said(host.sup, idle) == "b")
+    _task(host, busy, "task_started", description="Rebuild the index",
+          task_type="local_agent", is_backgrounded=True)
+    sessiond.stop(host.srv)
+    wait_for(lambda: not host.sup.sessions[busy].live)
+    cut = sessiond.read_record(busy)["cut_off"]
+    assert cut["why"] == "restart" and cut["turn"] is True
+    assert "Rebuild the index" in [t["description"] for t in cut["tasks"]]
+    assert sessiond.read_record(idle)["cut_off"] is None
+    n = len(starts(host))
+    sup2 = sessiond.Supervisor()
+    sup2.load()
+    try:
+        assert sup2.sessions[busy].cut_off["due"] is True
+        assert sup2.sessions[idle].cut_off is None
+        note = sessiond.resume_note(sup2.sessions[busy], sup2.sessions[busy].cut_off)
+        assert sup2.deliver_due() == [busy]
+        assert sup2.sessions[busy].last_text == " ".join(note.split())[:300]
+        assert note.startswith("[From the session host] The session host restarted while "
+                               "you were working")
+        assert "slow: 20" in note and "Rebuild the index (local_agent, a3f6)" in note
+        assert "restart any you still need" in note
+        assert [s["argv"][-1] for s in starts(host)[n:]] == [busy]   # the idle one sleeps
+        assert sessiond.read_record(busy)["cut_off"] is None
+        assert sup2.deliver_due() == [] and len(starts(host)) == n + 1   # never twice
+    finally:
+        sup2.shutdown()
+
+
+def test_a_question_only_session_is_resumed_to_ask_again(host):
+    sid = start(host, "tool: touch q")
+    wait_for(lambda: state(host, sid) == "approval")
+    sessiond.stop(host.srv)
+    wait_for(lambda: not host.sup.sessions[sid].live)
+    sup2 = sessiond.Supervisor()
+    sup2.load()
+    try:
+        cut = sup2.sessions[sid].cut_off
+        assert cut["question"] and not cut["turn"] and cut["due"]
+        note = sessiond.resume_note(sup2.sessions[sid], cut)
+        assert "waiting for David's answer" in note and "ask it again" in note
+    finally:
+        sup2.shutdown()
+
+
+def _record(sid, cwd, **kw):
+    root = sessiond.state_root()
+    root.mkdir(parents=True, exist_ok=True)
+    (root / f"{sid}.json").write_text(json.dumps({"session": sid, "cwd": cwd, **kw}))
+
+
+def test_a_crashed_host_resumes_from_what_the_record_says(host):
+    sid = "6a1e0000-0000-4000-8000-000000000001"
+    _record(sid, str(host.work), state="working", last_text="fix the build",
+            task_list=[{"id": "b1", "description": "npm test", "type": "local_bash"}],
+            tasks=1)
+    sup = sessiond.Supervisor()
+    sup.load()
+    cut = sup.sessions[sid].cut_off
+    assert cut["why"] == "crash" and cut["due"] and cut["turn"]
+    note = sessiond.resume_note(sup.sessions[sid], cut)
+    assert "fix the build" in note and "npm test (local_bash, b1)" in note
+
+
+def test_an_agent_that_ended_by_itself_is_resumed_only_if_the_stop_killed_it(host):
+    now = time.time()
+    old, raced = ("6a1e0000-0000-4000-8000-000000000002",
+                  "6a1e0000-0000-4000-8000-000000000003")
+    for sid, at in ((old, now - 3600), (raced, now - 2)):
+        _record(sid, str(host.work), state="ended",
+                cut_off={"why": "exit", "at": at, "turn": True, "question": False,
+                         "tasks": [], "queued": 0, "last_text": "x"})
+    sessiond._write_atomic(sessiond.state_root() / "sessiond.stopped.json", {"at": now})
+    sup = sessiond.Supervisor()
+    sup.load()
+    assert sup.sessions[old].cut_off is None
+    assert sup.sessions[raced].cut_off["due"] is True
+    assert not (sessiond.state_root() / "sessiond.stopped.json").exists()
+
+
+def test_threads_and_targets_show_the_pending_restart(host):
+    sid = start(host, "reply: a")
+    wait_for(lambda: _said(host.sup, sid) == "a")
+    assert sessiond.restart_view() is None
+    _pend(waiting_on=[{"session": "x", "kind": "turn", "label": "session x", "why": "w"}])
+    _fresh(host.sup)
+    host.sup.send(sid, "reply: later")
+    view = sessiond.restart_view()
+    assert view["waiting_on"] == [{"session": "x", "kind": "turn", "label": "session x"}]
+    from agent_media_server import sessions
+
+    row = {"session": sid}
+    sessions.add_projects([row])
+    assert row["restart_pending"]["held"] == 1 and row["restart_pending"]["state"] == "waiting"
+    rs.clear_pending()
+    sessions.add_projects([row])
+    assert "restart_pending" not in row

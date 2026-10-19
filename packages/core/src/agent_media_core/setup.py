@@ -1544,13 +1544,28 @@ def _row_context(args, *, check_only: bool):
     path = _settings_path(args)
     if check_only:
         return ("ok" if _hook_installed(path, CONTEXT_HOOK_COMMAND)
-                else "missing"), str(path)
+                and _hook_installed(path, RESTART_HOOK_MATCH) else "missing"), str(path)
     merged, changed = _merge_hook_entry(
         _load_json(path), "UserPromptSubmit", hook_command(CONTEXT_HOOK_COMMAND),
         CONTEXT_HOOK_COMMAND, 5, False)
-    if changed:
+    merged, also = _merge_hook_entry(
+        merged, "PostToolUse", restart_hook_command(), RESTART_HOOK_MATCH, 5, False)
+    if changed or also:
         _write_settings(path, merged, dry_run=args.dry_run)
-    return ("installed" if changed else "ok"), str(path)
+    return ("installed" if changed or also else "ok"), str(path)
+
+
+#: The restart note mid-turn (intake/context.py `_restart_note`): a
+#: PostToolUse hook, not async (its note has to reach the turn), that runs
+#: Python only while a restart is pending and the session is sessiond's —
+#: otherwise a shell `test` per tool call, nothing more.
+RESTART_HOOK_MATCH = "media-hook-context --restart"
+
+
+def restart_hook_command() -> str:
+    return ('[ -n "$MEDIA_SESSIOND_SESSION" ] && [ -e "${XDG_STATE_HOME:-$HOME/.local/state}'
+            f'/agent-media/restart-pending.json" ] && {hook_command(CONTEXT_HOOK_COMMAND)} '
+            "--restart || true")
 
 
 def _row_statusline(args, *, check_only: bool):

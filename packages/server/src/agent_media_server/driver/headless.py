@@ -340,7 +340,9 @@ class HeadlessDriver:
         return True, {"session": session, "pane": None, "opened": bool(r.get("resumed")),
                       "submitted": True, "driver": HEADLESS,
                       "queued": bool(r.get("queued")), "acked": bool(r.get("acked")),
-                      "uuid": r.get("uuid")}
+                      "uuid": r.get("uuid"),
+                      # Held for a pending restart of the session host (§6.1).
+                      **({"held": True} if r.get("held") else {})}
 
     def resume(self, session):
         from .. import rest

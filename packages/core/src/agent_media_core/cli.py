@@ -8432,6 +8432,8 @@ def cmd_restart_services(a) -> int:
         return int(res["rc"])
     res = restart_services.run(a.only or None, after=float(a.after or 0),
                                force=a.force, dry_run=a.dry_run,
+                               drain=False if getattr(a, "no_drain", False) else None,
+                               cancel=bool(getattr(a, "cancel", False)),
                                echo=lambda line: print(line, flush=True))
     return int(res["rc"])
 
@@ -9716,10 +9718,14 @@ def _build_parser() -> argparse.ArgumentParser:
                     "inside one of its sessions. From a phone chat use "
                     "`--only sessiond --after 10`: the restart runs in a "
                     "transient systemd unit (a detached child without systemd), "
-                    "checks again before acting, waits out a busy host (every "
-                    "15 s, up to 10 min, then alerts), and your turn ends first. "
-                    "Exit codes: 0 done or scheduled, 1 failed, 2 unknown name, "
-                    "3 busy.")
+                    "checks again before acting, and your turn ends first. With "
+                    "sessiond selected it drains a busy host: new messages are "
+                    "held and new chats refused, busy sessions are told to end "
+                    "their turn, and it restarts the moment none is busy (up to "
+                    "30 min, then releases the held messages and alerts); held "
+                    "messages are delivered and cut-off sessions resumed after. "
+                    "Exit codes: 0 done, scheduled or draining, 1 failed, 2 "
+                    "unknown name, 3 busy.")
     rs.add_argument("--only", nargs="+", metavar="NAME", default=None,
                     help="just these services; short names work (sessiond, "
                          "canvas, tts-shim, sink-speech, …). Unknown names: "
@@ -9731,6 +9737,12 @@ def _build_parser() -> argparse.ArgumentParser:
                          "chat. Default 0: now")
     rs.add_argument("--force", action="store_true",
                     help="skip the busy checks")
+    rs.add_argument("--no-drain", action="store_true",
+                    help="with --after: refuse a busy sessiond (exit 3) instead "
+                         "of draining it")
+    rs.add_argument("--cancel", action="store_true",
+                    help="drop a restart that is waiting (draining), releasing "
+                         "the messages it holds")
     rs.add_argument("--dry-run", action="store_true",
                     help="name what would be restarted and show the busy "
                          "checks, touch nothing (exit 3 if busy)")

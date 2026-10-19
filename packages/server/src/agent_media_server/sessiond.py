@@ -76,6 +76,16 @@ the tool. At startup any child left running from a crashed instance (matched
 by `MEDIA_SESSIOND_SESSION` in its environment) is terminated, so a session
 never has two writers.
 
+**Drain, then resume** (19 Oct 2026). While a restart is pending (core
+restart_services' record, `draining`), `send` holds each message on the
+session (`held`, in its record, so it outlives the restart) instead of
+starting a turn, and `start` is refused `restart_pending`; `deliver_due`
+sends them, in order, once none is pending. A stop first notes on each live
+session what it was doing (`begin_stop` → `cut_off`; a crash leaves the
+record saying it), and the next start resumes each session cut off — mid-
+turn, a card up, background work — once, with `resume_note`. Idle ones are
+not woken.
+
 Ops (request `{"op", …}` → `{"ok": true, …}` or `{"ok": false, "error",
 "code"}`): `ping`, `list`, `get`, `start`, `send`, `resume`, `interrupt`,
 `answer`, `close`, `park`, `events`, `configure` (model and plan mode;
@@ -189,6 +199,9 @@ SETTLE_S = 3.0
 #: The deny a pending request gets when the user types a message instead.
 TYPED_INSTEAD = ("The user answered by typing a message instead of choosing; "
                  "their message follows. Take it as the answer.")
+#: Why a new chat is refused while a restart is pending (Supervisor.start).
+RESTART_REFUSED = ("the session host is about to restart and is waiting for the "
+                   "busy sessions to finish; start the chat again once it has")
 #: Why a `keep_pending` send was refused (Supervisor.send).
 PENDING_KEPT = ("it has a question or permission waiting for an answer; "
                 "a message from another session would answer it, so it was not sent")
@@ -272,6 +285,35 @@ def _write_atomic(path: Path, data: dict) -> None:
     os.replace(tmp, path)
 
 
+def restart_view() -> dict | None:
+    """A pending restart of the session host as the app is told it (§6.1,
+    `restart_pending`): `{"since", "deadline", "state", "waiting_on":
+    [{"session", "kind", "label"}]}`, or None when none is pending."""
+    try:
+        from agent_media_core import restart_services as rs
+    except ImportError:
+        return None
+    rec = rs.pending()
+    if not rec:
+        return None
+    return {"since": rec.get("since"), "deadline": rec.get("deadline"),
+            "state": rec.get("state") or "waiting",
+            "waiting_on": [{"session": w.get("session") or "", "kind": w.get("kind") or "",
+                            "label": w.get("label") or ""}
+                           for w in rec.get("waiting_on") or [] if isinstance(w, dict)]}
+
+
+def add_restart_status(row: dict, session: str, view: dict | None) -> None:
+    """`restart_pending` on a headless thread's row or envelope, in place,
+    only while a restart is pending (`view`, restart_view's): its `held`
+    is how many of this thread's messages wait for it."""
+    rec = read_record(session) if view and session else None
+    if rec is None:
+        row.pop("restart_pending", None)
+        return
+    row["restart_pending"] = {**view, "held": len(rec.get("held") or [])}
+
+
 class Refused(Exception):
     """A request this host will not carry out; `code` is for the canvas."""
 
@@ -319,6 +361,18 @@ class Session:
         #: background Bash): task_id → when last heard of (`task_started`,
         #: `task_progress`, `task_updated`). A session with one is not idle.
         self.tasks: dict[str, float] = {}
+        #: What each task is (its `task_started`): task_id → {"description",
+        #: "type"}, so a restart can say what it cut off.
+        self.task_info: dict[str, dict] = {}
+        #: Messages held while a restart is pending (`Supervisor.draining`),
+        #: each `{"uuid", "text", "at", "keep_pending"}`; delivered after it.
+        self.held: list[dict] = []
+        #: The last message sent in (its start, for a restart's resume note).
+        self.last_text = ""
+        #: What a restart (or the process ending by itself) cut off:
+        #: `work()` plus `at` and `why`; `due` once the next sessiond start
+        #: has judged it worth resuming (`Supervisor.load`).
+        self.cut_off: dict | None = None
         #: The task count park_idle last logged holding this session for.
         self.park_held = 0
         self.background_rids: set[str] = set()
@@ -357,6 +411,25 @@ class Session:
         """When it last did anything: its last event or its newest task's."""
         return max([self.last_event_at, *self.tasks.values()])
 
+    def task_list(self, now: float | None = None) -> list[dict]:
+        """The tasks that count (`active_tasks`), with what each is."""
+        now = now or time.time()
+        stale = task_stale_s()
+        return [{"id": k, **self.task_info.get(k, {})} for k, at in self.tasks.items()
+                if now - at < stale]
+
+    def work(self) -> dict | None:
+        """What it is doing that a restart would cut off, or None when it is
+        idle: `{"state", "turn" (a turn under way), "question" (a card up),
+        "tasks" (task_list), "queued" (messages the CLI holds), "last_text"}`."""
+        turn = self.state in ("starting", "working")
+        question = bool(self.pending) or self.state == "approval"
+        tasks = self.task_list()
+        if not (turn or question or tasks or self.queued):
+            return None
+        return {"state": self.state, "turn": turn, "question": question, "tasks": tasks,
+                "queued": len(self.queued), "last_text": self.last_text}
+
     def set_state(self, state: str) -> None:
         if state != self.state:
             self.state = state
@@ -375,7 +448,8 @@ class Session:
                 "pending": list(self.pending.values()), "lost": self.lost,
                 "queued": sorted(self.queued), "first_text": self.first_text,
                 "turns": self.turns, "seq": self.seq, "last_result": self.last_result,
-                "tasks": self.active_tasks()}
+                "tasks": self.active_tasks(), "task_list": self.task_list(),
+                "last_text": self.last_text, "held": self.held, "cut_off": self.cut_off}
 
     def view(self) -> dict:
         return {**self.record(), "live": self.live}
@@ -400,6 +474,9 @@ class Session:
         s.seq = int(rec.get("seq") or 0)
         s.last_result = rec.get("last_result")
         s.lost = list(rec.get("lost") or [])
+        s.last_text = str(rec.get("last_text") or "")
+        s.held = [m for m in rec.get("held") or [] if isinstance(m, dict) and m.get("text")]
+        s.cut_off = rec.get("cut_off") if isinstance(rec.get("cut_off"), dict) else None
         for p in rec.get("pending") or []:
             if isinstance(p, dict) and p.get("request_id"):
                 s.pending[str(p["request_id"])] = p
@@ -431,6 +508,89 @@ def _result_summary(obj: dict) -> dict:
                                     "num_turns", "ttft_ms", "duration_ms", "total_cost_usd")}
 
 
+def _work_of_record(rec: dict) -> dict | None:
+    """`Session.work()` as a record a crashed instance left says it."""
+    state = str(rec.get("state") or "")
+    turn = state in ("starting", "working")
+    question = bool(rec.get("pending")) or state == "approval"
+    tasks = [t for t in rec.get("task_list") or [] if isinstance(t, dict)]
+    if not tasks and int(rec.get("tasks") or 0):
+        tasks = [{"id": "", "description": "", "type": ""}] * int(rec["tasks"])
+    queued = len(rec.get("queued") or [])
+    if not (turn or question or tasks or queued):
+        return None
+    return {"state": state, "turn": turn, "question": question, "tasks": tasks,
+            "queued": queued, "last_text": str(rec.get("last_text") or "")}
+
+
+#: How long before the host's stop a session that ended by itself still
+#: counts as killed with it (systemd signals the whole cgroup at once).
+STOP_RACE_S = 60.0
+
+
+def _judge_cut_off(s: "Session", stopped_at: float | None) -> dict | None:
+    """At start: the cut-off to resume `s` for (marked `due`), or None.
+    Claude sessions only. Due: one the stop (`restart`) or a crash
+    (`crash`) cut off; one that ended by itself (`exit`) only when that
+    was the host's stop killing it — within `STOP_RACE_S` of it."""
+    cut = s.cut_off
+    if not cut or s.agent != "claude":
+        return None
+    if cut.get("due"):
+        return cut
+    why = cut.get("why")
+    at = float(cut.get("at") or 0)
+    if why in ("restart", "crash") or (
+            why == "exit" and stopped_at is not None and at >= stopped_at - STOP_RACE_S):
+        return {**cut, "due": True}
+    return None
+
+
+def resume_note(s: "Session", cut: dict) -> str:
+    """The message a session cut off by a restart is resumed with: what was
+    running, and what to do about it."""
+    tag = "[From the session host] "
+    only_question = cut.get("question") and not cut.get("turn") and not cut.get("tasks")
+    if only_question:
+        return (tag + "The session host restarted while your question (or permission "
+                "request) was waiting for David's answer, and it was lost with the "
+                "restart. If you still need the answer, ask it again the same way.")
+    what = []
+    if cut.get("turn"):
+        last = " ".join(str(cut.get("last_text") or "").split())
+        if len(last) > 160:
+            last = last[:159] + "…"
+        what.append("a turn" + (f" (the last message in was: \u201c{last}\u201d)"
+                                if last else ""))
+    if cut.get("question"):
+        what.append("a question or permission request waiting for David (lost; ask "
+                    "again if you still need it)")
+    tasks = [t for t in cut.get("tasks") or [] if isinstance(t, dict)]
+    if tasks:
+        named = [f"{t.get('description') or 'a task'}"
+                 + (f" ({t.get('type')}{', ' + t['id'] if t.get('id') else ''})"
+                    if t.get("type") else "") for t in tasks]
+        what.append(f"{len(tasks)} background task{'s' if len(tasks) != 1 else ''}: "
+                    + "; ".join(named))
+    if int(cut.get("queued") or 0):
+        n = int(cut["queued"])
+        what.append(f"{n} message{'s' if n != 1 else ''} sent to you mid-turn that may "
+                    "not have reached you (check the thread's last messages)")
+    where = ""
+    try:
+        from . import agents
+
+        d = agents.subagents_dir(s.id)
+        if d is not None:
+            where = f" (subagent transcripts are in {d})"
+    except Exception:  # noqa: BLE001 — a path is a nicety
+        where = ""
+    return (tag + "The session host restarted while you were working: "
+            + "; ".join(what or ["work in progress"]) + ". Pick up where you left off. "
+            "Background agents and commands that were running were stopped — restart "
+            f"any you still need{where}.")
+
+
 # --- the supervisor -----------------------------------------------------------------
 
 class Supervisor:
@@ -447,6 +607,11 @@ class Supervisor:
         self.lock = threading.RLock()
         self.cond = threading.Condition(self.lock)
         self.sessions: dict[str, Session] = {}
+        #: Set once this instance is stopping (`begin_stop`).
+        self.stopping = False
+        #: The pending-restart record as last read, and when (`draining`).
+        self._restart_rec: dict | None = None
+        self._restart_read_at: float | None = None
         from .sessiond_opencode import Host
 
         #: The shared `opencode serve` (sessiond_opencode.py).
@@ -457,13 +622,27 @@ class Supervisor:
     def load(self) -> None:
         """Take over the records a previous instance left. Nothing it ran is
         still ours: a session it left live is `ended`, and a permission
-        request it left pending is `lost` (the CLI will not re-send it)."""
+        request it left pending is `lost` (the CLI will not re-send it).
+
+        A session the stop cut off — mid-turn, a card up, background work
+        running — is marked `due` (`_judge_cut_off`), and `deliver_due`
+        resumes it with a note saying what was cut off; so are messages held
+        for a restart delivered. A record still live is one a crashed
+        instance never parked: its record says what it was doing."""
+        stopped_at = self._take_stop_mark()
+        self._clear_fired_restart()
         self._kill_orphans({r["session"] for r in records(self.root)})
         with self.lock:
             for rec in records(self.root):
                 s = Session.from_record(rec)
                 if s.state in LIVE_STATES:
+                    if s.cut_off is None:
+                        w = _work_of_record(rec)
+                        if w:
+                            s.cut_off = {**w, "at": rec.get("last_event_at"),
+                                         "why": "crash"}
                     s.set_state("ended")
+                s.cut_off = _judge_cut_off(s, stopped_at)
                 if s.pending:
                     now = time.time()
                     s.lost.extend({**p, "lost_at": round(now, 3),
@@ -517,8 +696,130 @@ class Supervisor:
                 except OSError:
                     pass
 
+    # -- a restart: what it cut off, and what waits for it --
+
+    def _stop_mark_path(self) -> Path:
+        return self.root / "sessiond.stopped.json"
+
+    def begin_stop(self) -> None:
+        """Before anything is parked for a stop: note on each live Claude
+        session what it is doing (`cut_off`, why "restart"), and when the
+        host stopped, so the next start resumes the ones cut off. Again is
+        harmless."""
+        now = time.time()
+        with self.lock:
+            first = not self.stopping
+            self.stopping = True
+            for s in self.sessions.values():
+                if s.agent == "claude" and s.live and s.cut_off is None:
+                    w = s.work()
+                    if w:
+                        s.cut_off = {**w, "at": round(now, 3), "why": "restart"}
+                        self._save(s)
+        if first:
+            try:
+                _write_atomic(self._stop_mark_path(), {"at": round(now, 3),
+                                                       "pid": os.getpid()})
+            except OSError as e:
+                log.warning("sessiond: could not write the stop mark (%s)", e)
+
+    def _take_stop_mark(self) -> float | None:
+        """When the previous instance began stopping, once; None after a crash."""
+        path = self._stop_mark_path()
+        try:
+            at = float(json.loads(path.read_text()).get("at") or 0) or None
+        except (OSError, ValueError, AttributeError, TypeError):
+            at = None
+        path.unlink(missing_ok=True)
+        return at
+
+    def _clear_fired_restart(self) -> None:
+        """A pending restart that was firing when this started is this very
+        start: it is over, and what it held goes out."""
+        try:
+            from agent_media_core import restart_services as rs
+        except ImportError:
+            return
+        rec = rs.read_pending()
+        if rec and rec.get("state") == "firing":
+            rs.clear_pending(str(rec["id"]))
+            log.info("sessiond: the pending restart %s is done", rec["id"])
+
+    def draining(self) -> dict | None:
+        """The pending restart while it holds (core restart_services.pending),
+        read at most once a second; None when there is none."""
+        try:
+            from agent_media_core import restart_services as rs
+        except ImportError:
+            return None
+        now = time.monotonic()
+        if self._restart_read_at is None or now - self._restart_read_at >= 1.0:
+            self._restart_rec = rs.read_pending()
+            self._restart_read_at = now
+        return self._restart_rec if rs.is_active(self._restart_rec) else None
+
+    def deliver_due(self) -> list[str]:
+        """Unless a restart is pending: resume each session a restart cut off
+        (`resume_note`), then deliver the messages held for it, in order.
+        One that cannot go yet (no room, a card up for another session's
+        mail) waits for the next call. The sessions acted on."""
+        if self.draining():
+            return []
+        with self.lock:
+            todo = [s.id for s in self.sessions.values()
+                    if s.held or (s.cut_off or {}).get("due")]
+        done = []
+        for sid in todo:
+            try:
+                self._deliver(sid)
+                done.append(sid)
+            except Exception:  # noqa: BLE001 — one session must not stop the rest
+                log.exception("sessiond: delivering to %s", sid[:8])
+        return done
+
+    def _deliver(self, sid: str) -> None:
+        with self.lock:
+            s = self.sessions.get(sid)
+            if s is None:
+                return
+            cut = s.cut_off if (s.cut_off or {}).get("due") else None
+            text = resume_note(s, cut) if cut and s.agent == "claude" else ""
+            if cut:
+                s.cut_off = None      # never resumed twice
+                self._save(s)
+        if text:
+            try:
+                self.send(sid, text, _internal=True)
+                log.info("sessiond: %s resumed after the restart", sid[:8])
+            except Refused as e:
+                if e.code == "busy":
+                    with self.lock:
+                        s.cut_off = cut   # no room yet: the next call
+                        self._save(s)
+                    return
+                log.warning("sessiond: %s not resumed after the restart: %s", sid[:8],
+                            e.error)
+        while True:
+            with self.lock:
+                if not s.held:
+                    return
+                m = s.held[0]
+            try:
+                self.send(sid, str(m.get("text") or ""), uid=str(m.get("uuid") or ""),
+                          keep_pending=bool(m.get("keep_pending")), _internal=True)
+            except Refused as e:
+                if e.code in ("pending", "busy"):
+                    return
+                log.warning("sessiond: %s: a held message could not be delivered (%s); "
+                            "dropped", sid[:8], e.error)
+            with self.lock:
+                if s.held and s.held[0] is m:
+                    s.held.pop(0)
+                    self._save(s)
+
     def shutdown(self) -> None:
         """Park everything live, as gently as a close: stdin, then signals."""
+        self.begin_stop()
         with self.lock:
             for s in self.sessions.values():
                 if s.agent == "opencode" and s.live:
@@ -644,6 +945,8 @@ class Supervisor:
         s.queued.clear()
         s.acked.clear()
         s.tasks.clear()
+        s.task_info.clear()
+        s.cut_off = None
         s.park_held = 0
         s.set_state("starting")
         s.last_event_at = time.time()
@@ -747,17 +1050,22 @@ class Supervisor:
                 key = _task_key(obj)
                 if key:
                     s.tasks[key] = now
+                    s.task_info[key] = {"description": str(obj.get("description") or "")[:200],
+                                        "type": str(obj.get("task_type") or ""),
+                                        "background": bool(obj.get("is_backgrounded"))}
             elif t == "system" and sub in ("task_progress", "task_updated"):
                 key = _task_key(obj)
                 status = ((obj.get("patch") or {}).get("status")
                           if sub == "task_updated" else None)
                 if key and status in _TASK_DONE:
                     s.tasks.pop(key, None)
+                    s.task_info.pop(key, None)
                 elif key and (key in s.tasks or sub == "task_progress"):
                     s.tasks[key] = now
             elif t == "system" and sub == "task_notification":
                 s.foreground.pop(str(obj.get("tool_use_id") or ""), None)
                 s.tasks.pop(_task_key(obj), None)
+                s.task_info.pop(_task_key(obj), None)
             elif t == "user":
                 content = (obj.get("message") or {}).get("content")
                 for block in content if isinstance(content, list) else ():
@@ -883,6 +1191,14 @@ class Supervisor:
                 return            # a newer process has already replaced it
             s.proc = None
             s.exit_code = rc
+            if s.cut_off is None and not s.closing and not s.parking:
+                # Ended by itself, or killed with the host (systemd signals
+                # the whole cgroup at once, so a child can go before the
+                # SIGTERM handler here has looked): what it was doing, for
+                # `load` to judge against the host's stop.
+                w = s.work()
+                if w:
+                    s.cut_off = {**w, "at": round(time.time(), 3), "why": "exit"}
             if s.pending:
                 now = time.time()
                 why = ("the session was closed" if s.closing else
@@ -893,6 +1209,7 @@ class Supervisor:
             s.queued.clear()
             s.foreground.clear()
             s.tasks.clear()
+            s.task_info.clear()
             s.park_held = 0
             s.set_state("closed" if s.closing else "parked" if s.parking else "ended")
             self._save(s)
@@ -974,8 +1291,12 @@ class Supervisor:
         if not (text or "").strip():
             raise Refused("empty message", "empty_text")
         if agent == "opencode":
+            if self.draining():
+                raise Refused(RESTART_REFUSED, "restart_pending")
             return self._oc_start(cwd, text, workspace=workspace,
                                   permissions=perms.mode(permissions), model=model)
+        if self.draining():
+            raise Refused(RESTART_REFUSED, "restart_pending")
         session = session or str(uuid.uuid4())
         with self.lock:
             if session in self.sessions:
@@ -999,14 +1320,32 @@ class Supervisor:
                 raise Refused(f"session {s.id[:8]} is still shutting down", "busy")
 
     def send(self, session: str, text: str, *, uid: str = "", _fresh: bool = False,
-             keep_pending: bool = False) -> dict:
+             keep_pending: bool = False, _internal: bool = False) -> dict:
         """`keep_pending`: a message that is not David's (another session's
         mail, headless_mail.py) must not answer his question or permission
         card the way typing does, so it is refused `pending` instead — under
-        the lock, so a card that comes up between a look and the send is kept."""
+        the lock, so a card that comes up between a look and the send is kept.
+
+        While a restart is pending (`draining`) a message is **held**: kept
+        on the session (and its record, so it outlives the restart), no turn
+        started, answered `held: true`; `deliver_due` sends it after.
+        `_internal` is that delivery, and a resume note."""
         if not (text or "").strip():
             raise Refused("empty message", "empty_text")
         uid = uid or str(uuid.uuid4())
+        if not _fresh and not _internal and self.draining():
+            with self.lock:
+                s = self._get(session)
+                if keep_pending and (s.pending or s.state == "approval"):
+                    raise Refused(PENDING_KEPT, "pending")
+                s.held.append({"uuid": uid, "text": text, "at": round(time.time(), 3),
+                               "keep_pending": keep_pending})
+                self._save(s)
+                log.info("sessiond: %s: message held for the pending restart (%d held)",
+                         s.id[:8], len(s.held))
+                return {"session": session, "uuid": uid, "fresh": False, "resumed": False,
+                        "queued": True, "held": True, "acked": False, "state": s.state,
+                        "live": s.live, "pid": s.proc.pid if s.live else None}
         if self._agent(session) == "opencode":
             if keep_pending:
                 with self.lock:
@@ -1043,6 +1382,7 @@ class Supervisor:
             s.turns += 1
             if not s.first_text:
                 s.first_text = " ".join(text.split())[:200]
+            s.last_text = " ".join(text.split())[:300]
             self._save(s)
             acked = self.cond.wait_for(lambda: uid in s.acked or not s.live, ACK_S)
             acked = uid in s.acked
@@ -1572,7 +1912,8 @@ class Supervisor:
         try:
             if op == "ping":
                 # `system_prompt`: `start` takes a `system_prompt_file`.
-                return {"ok": True, "pid": os.getpid(), "system_prompt": True}
+                # `held`: messages are held while a restart is pending.
+                return {"ok": True, "pid": os.getpid(), "system_prompt": True, "held": True}
             if op == "list":
                 return {"ok": True, "sessions": self.list()}
             if op == "get":
@@ -1707,9 +2048,11 @@ class TcpServer(socketserver.ThreadingTCPServer):
 
 
 def serve(path: Path | None = None, supervisor: Supervisor | None = None,
-          *, tick: float = 30.0) -> tuple[Server, threading.Thread]:
+          *, tick: float = 30.0, release_tick: float = 2.0) -> tuple[Server, threading.Thread]:
     """Start sessiond in this process (for tests and for `main`): the socket
-    served on a thread, and the idle-parking tick on another."""
+    served on a thread, the idle-parking tick on another, and on a third,
+    every `release_tick` seconds, `deliver_due` (what a restart held or cut
+    off, once no restart is pending)."""
     sup = supervisor or Supervisor()
     srv = (TcpServer if use_tcp() else Server)(path or socket_path(), sup)
     t = threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.2},
@@ -1724,6 +2067,17 @@ def serve(path: Path | None = None, supervisor: Supervisor | None = None,
             except Exception:  # noqa: BLE001
                 log.exception("sessiond: idle sweep")
     threading.Thread(target=idle, daemon=True, name="sessiond-idle").start()
+
+    def release() -> None:
+        while not getattr(srv, "_stopped", False):
+            time.sleep(release_tick)
+            if getattr(srv, "_stopped", False) or sup.stopping:
+                break
+            try:
+                sup.deliver_due()
+            except Exception:  # noqa: BLE001
+                log.exception("sessiond: delivering held work")
+    threading.Thread(target=release, daemon=True, name="sessiond-release").start()
     return srv, t
 
 
@@ -1758,6 +2112,9 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, on_term)
     signal.signal(signal.SIGINT, on_term)
     done.wait()
+    # First, before the socket closes: what each live session was doing, for
+    # the next start to resume (systemd's cgroup kill is racing this).
+    sup.begin_stop()
     log.info("sessiond: stopping; parking %d live session(s)",
              sum(1 for s in sup.sessions.values() if s.live))
     stop(srv)

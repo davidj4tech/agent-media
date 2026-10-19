@@ -580,10 +580,13 @@ def test_a_restart_with_a_pending_approval_loses_it_explicitly(host):
     # A fresh instance takes over the records.
     sup2 = sessiond.Supervisor()
     sup2.load()
-    srv2, _ = sessiond.serve(host.sock, sup2, tick=3600)
+    # Not the resume that asks the question again (test_sessiond_restart.py):
+    # this is about the lost request itself.
+    srv2, _ = sessiond.serve(host.sock, sup2, tick=3600, release_tick=3600)
     try:
         rec = sup2.get(sid)
         assert rec["state"] in ("parked", "ended") and rec["pending"] == []
+        assert rec["cut_off"]["question"] and rec["cut_off"]["due"]
         assert rec["lost"][0]["request_id"] == appr["id"]
         # Not live, so nothing to answer; the thread shows no approval.
         assert driver.headless_driver().approval(sid) is None

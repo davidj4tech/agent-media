@@ -287,6 +287,7 @@ function that a server route on any host could call as well.
 
 ```
 media restart-services [--only NAME …] [--after SECONDS] [--force] [--dry-run]
+                       [--no-drain] [--cancel]
 ```
 
 - `--only` restarts just those services. Short names work (`sessiond`,
@@ -313,7 +314,46 @@ media restart-services [--only NAME …] [--after SECONDS] [--force] [--dry-run]
   When it fires it checks again, and this time the caller's session counts
   too, so a turn still going is waited for. While busy it retries every 15 s
   (`MEDIA_RESTART_RETRY_S`) for up to 10 min (`MEDIA_RESTART_WAIT_MAX_S`),
-  then gives up and raises the alert below.
+  then gives up and raises the alert below. With sessiond selected it
+  drains instead (next item).
+- **Draining** (19 Oct 2026; the default for `--after` with sessiond
+  selected, `--no-drain` refuses a busy host as before). Waiting alone
+  mostly failed: new messages kept sessions busy past the 10 min. Now a
+  busy (or not) host gets a pending restart,
+  `$XDG_STATE_HOME/agent-media/restart-pending.json`, and exit 0:
+  - sessiond **holds** every new message to its sessions (kept in the
+    session's record, so it outlives the restart; the app is answered
+    `held: true`) and refuses new chats, so nothing becomes busy again.
+    Answering a question card is not held.
+  - each busy session is **told once** to finish the step it is on and
+    end its turn, without starting background agents or commands
+    (intake/context.py `_restart_note`). A running turn sees no
+    UserPromptSubmit, so the note rides on a PostToolUse hook,
+    `media-hook-context --restart`, added by `media setup`'s context row
+    behind a shell test that runs nothing unless a restart is pending in a
+    sessiond session. Subagents' tool calls are not told.
+  - the detached run (`--fire --drain`) checks every 3 s
+    (`MEDIA_RESTART_DRAIN_POLL_S`) and restarts **the moment nothing is
+    busy**. A session busy only with a question or permission card does
+    not count: the agent cannot finish it; the card is lost with the
+    restart and the session is resumed to ask again.
+  - after 30 min (`MEDIA_RESTART_DRAIN_MAX_S`) it gives up: the record
+    goes, the held messages are delivered, the alert is raised. A run that
+    stops checking in for 90 s holds nothing.
+  - a second request while one waits **joins** it (its services added);
+    `--cancel` drops it, releasing what it held. `--dry-run` says whether
+    it would drain.
+  The phone sees it as `restart_pending` on `/targets` and the thread
+  (server-contract §6.1).
+- **Resuming** (19 Oct 2026, any restart of sessiond, `--force` and a crash
+  included). Before a stop parks anything, sessiond writes on each live
+  session's record what it was doing (`cut_off`); a crashed instance's
+  records still say it. At start it resumes each session that was cut off
+  mid-turn, with a card up, or with background work, once, with a message
+  from `[From the session host]` naming what was running and saying to pick
+  up where it left off and restart any background agent or command it
+  still needs (subagent transcripts' folder named). Idle sessions are not
+  woken. Held messages are delivered after.
 - **Health check:** every restarted service must be up within 20 s
   (`MEDIA_RESTART_HEALTH_S`), and a canvas must also answer HTTP. A timer's
   job is not checked. A failure raises the host alert
@@ -328,8 +368,9 @@ allow) is:
 media restart-services --only sessiond --after 10
 ```
 
-The turn ends, and ten seconds later sessiond restarts. The chat resumes on
-its next message.
+The turn ends, and ten seconds later, or once the other busy sessions have
+ended their turns (draining), sessiond restarts. A chat that was cut off is
+resumed by itself; an idle one resumes on its next message.
 
 ### Restarting another host
 

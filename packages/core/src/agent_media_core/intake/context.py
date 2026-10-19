@@ -28,6 +28,18 @@ writes its window into its transcript; Gemini's is counted to the point
 where it compresses its history (``gemini_compression_threshold``), and
 Grok's to where it compacts (``grok_compaction_point``).
 
+It also carries the **restart note** (``_restart_note``): while a drained
+restart of sessiond is pending (restart_services.py), a headless session it
+waits on is told, once, to end its turn. A turn under way sees no
+UserPromptSubmit — and new prompts are held while a restart is pending — so
+the note rides on Claude Code's **PostToolUse** too: ``media-hook-context
+--restart``, installed by the same setup row behind a shell test that costs
+nothing until a restart is pending in a sessiond session (``RESTART_HOOK``).
+PostToolUse is the one hook that runs inside a turn and adds context to it
+(its ``additionalContext`` follows the tool's result). A subagent's tool
+calls fire it too (``agent_id`` in the input): those are not told, since a
+subagent told to end its turn would stop its parent's work half done.
+
 Neither prints anything on anything unexpected, and both exit 0: a prompt
 must never be blocked, nor a status line broken, by this.
 """
@@ -279,7 +291,8 @@ def note_for(hook: dict) -> str:
 
     load_env_file("hook")  # the switches below may be set in the env files
     d = state_dir()
-    note = " ".join(n for n in (_band_note(hook, d), _notes_note(hook, d), _link_note(hook, d)) if n)
+    note = " ".join(n for n in (_restart_note(hook, d), _band_note(hook, d),
+                                _notes_note(hook, d), _link_note(hook, d)) if n)
     event = hook.get("hook_event_name")
     if note and event:
         note = json.dumps({"hookSpecificOutput": {
@@ -395,8 +408,53 @@ def _link_note(hook: dict, d: Path) -> str:
     return LINK_NOTE.format(link=base + sid, base=base)
 
 
+#: What a session a drained restart waits on is told (restart_services.py).
+RESTART_NOTE = ("A restart of the session host is waiting. Finish the step you're on "
+                "and end your turn; don't start new background agents or background "
+                "commands until it's done. You'll be resumed automatically.")
+
+
+def _restart_note(hook: dict, d: Path) -> str:
+    """`RESTART_NOTE`, once per pending restart, to a sessiond session it is
+    waiting on (not for a question card only: that waits on David, not on
+    the agent), and never to a subagent."""
+    sid = (os.environ.get("MEDIA_SESSIOND_SESSION") or "").strip()
+    if not sid or hook.get("agent_id"):
+        return ""
+    try:
+        from .. import restart_services as rs
+
+        rec = rs.pending()
+    except Exception:  # noqa: BLE001 — a note is never worth failing a hook
+        return ""
+    if not rec or not any(isinstance(w, dict) and w.get("session") == sid
+                          and w.get("kind") != "question"
+                          for w in rec.get("waiting_on") or []):
+        return ""
+    marker = d / f"{sid}.restart"
+    try:
+        if marker.read_text().strip() == str(rec["id"]):
+            return ""
+    except OSError:
+        pass
+    marker.write_text(str(rec["id"]))
+    return RESTART_NOTE
+
+
+def restart_note_for(hook: dict) -> str:
+    """`media-hook-context --restart` (Claude Code's PostToolUse): the
+    restart note alone, as the hook JSON."""
+    note = _restart_note(hook, state_dir())
+    if not note:
+        return ""
+    return json.dumps({"hookSpecificOutput": {
+        "hookEventName": hook.get("hook_event_name") or "PostToolUse",
+        "additionalContext": note}})
+
+
 def _hook() -> None:
-    note = note_for(json.load(sys.stdin))
+    hook = json.load(sys.stdin)
+    note = restart_note_for(hook) if "--restart" in sys.argv[1:] else note_for(hook)
     if note:
         print(note)
 

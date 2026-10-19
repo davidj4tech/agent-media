@@ -12,7 +12,10 @@ See README.md for the packages and docs/server-contract.md for the server.
   working, a reply being spoken), runs detached so it outlives your turn,
   re-checks before acting, health-checks each unit and raises the
   `restart-services.<host>` alert on failure. Add `--dry-run` to see the busy
-  checks. Details: docs/reference/version-skew-monitoring.md ("Restarting
+  checks. With `--after`, a busy sessiond is drained rather than refused:
+  new messages are held, busy sessions are told to end their turn, it
+  restarts once none is busy, and cut-off sessions are resumed. If you are
+  told "A restart of the session host is waiting", end your turn. Details: docs/reference/version-skew-monitoring.md ("Restarting
   safely, and from inside a chat") and
   packages/core/src/agent_media_core/restart_services.py.
 - Never `systemctl restart agent-media-sessiond` (or any direct restart of
