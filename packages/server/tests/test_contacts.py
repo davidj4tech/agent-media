@@ -500,13 +500,14 @@ def test_routes_shape_and_auth(server, signed_in, rooms):
     assert res.status == 200 and set(obj) == {"ok", "contacts", "total", "synced_at", "sources",
                                                 "sort", "talked"}
     assert [set(r) for r in obj["contacts"]] == [{"id", "name", "phones", "emails", "labels",
-                                                 "last", "count_90d"}]
+                                                 "last", "count_90d", "photo"}]
     mel = obj["contacts"][0]["id"]
     res, obj = call(server, "GET", f"/contacts/{mel}", headers=AUTH)
     assert res.status == 200 and set(obj) == {"ok", "contact"}
     assert set(obj["contact"]) == {"id", "name", "names", "phones", "emails", "addresses",
                                    "organizations", "notes", "sources", "updated", "rooms",
-                                   "crm", "labels", "handles", "suggestions", "mail", "old_addresses"}
+                                   "crm", "labels", "handles", "suggestions", "mail", "old_addresses",
+                                   "photo", "find"}
     assert obj["contact"]["crm"] is None             # no CRM connection here
     assert [x["room"] for x in obj["contact"]["rooms"]] == ["!b:ryer.org"]
     res, obj = call(server, "GET", "/contacts/00000000-0000-0000-0000-000000000000", headers=AUTH)

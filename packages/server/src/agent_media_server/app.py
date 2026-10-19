@@ -374,6 +374,10 @@ CONTACT_TIMELINE = re.compile(r"/contacts/([0-9a-f-]{36})/timeline")
 CONTACT_NOTES = re.compile(r"/contacts/([0-9a-f-]{36})/notes")
 # "Same person?" answered: one person, or not (contacts.py, §6.25).
 CONTACT_SAME = re.compile(r"/contacts/([0-9a-f-]{36})/(same|different)")
+# Their picture (contacts_photos.py, §6.25).
+CONTACT_PHOTO = re.compile(r"/contacts/([0-9a-f-]{36})/photo")
+# One search for them on a network, and the pick (contacts_find.py, §6.25).
+CONTACT_FIND = re.compile(r"/contacts/([0-9a-f-]{36})/find")
 # A bridge's icon, its sign-ins and signing out (bridges.py, §6.26).
 BRIDGE_ICON = re.compile(r"/bridges/([A-Za-z0-9_.-]+)/icon")
 BRIDGE_LOGIN = re.compile(r"/bridges/([A-Za-z0-9_.-]+)/login")
@@ -390,7 +394,8 @@ def cors_path(path: str) -> bool:
                                      for r in (THREAD_EVENTS, THREAD_AGENTS, AGENT_LOG,
                                                         AGENT_ACT, CONTACT,
                                                         CONTACT_TIMELINE, CONTACT_NOTES,
-                                                        CONTACT_SAME,
+                                                        CONTACT_SAME, CONTACT_PHOTO,
+                                                        CONTACT_FIND,
                                                         *BRIDGE_ROUTES))
 
 
@@ -636,6 +641,83 @@ def _contacts(h: BaseHTTPRequestHandler, path: str, query: str) -> None:
     _json_z(h, 200, {"ok": True, **contacts.listing(arg("q"), arg("limit"), qs.get("label") or [],
                                                      arg("labels_mode") or "any", arg("sort"),
                                                      arg("since"), arg("service"))})
+
+
+def _contact_photo(h: BaseHTTPRequestHandler, cid: str, query: str) -> None:
+    """`GET /contacts/<id>/photo` (§6.25): their picture from the caller's
+    book, gated as the card is; `?access_token=` for an <img>, which cannot
+    set a header. An ETag (the picture's hash) and Last-Modified; a matching
+    If-None-Match is 304; none to have is 404."""
+    from email.utils import formatdate
+
+    from . import contacts_photos
+
+    bearer = _bearer(h)
+    if not bearer:
+        bearer = ((parse_qs(query).get("access_token") or [""])[0]).strip()
+        auth.set_request_bearer(bearer)
+    user, err = auth.gate(bearer)
+    if not user:
+        _json(h, err.pop("status", 403), {"ok": False, **err})
+        return
+    got = contacts_photos.photo(cid)
+    if got is None:
+        _json(h, 404, {"ok": False, "error": "no picture"})
+        return
+    data, ctype, etag, mtime = got
+    tag = f'"{etag}"'
+    if tag in (h.headers.get("If-None-Match") or ""):
+        h.send_response(304)
+        h.send_header("ETag", tag)
+        _cors(h)
+        h.end_headers()
+        return
+    h.send_response(200)
+    h.send_header("Content-Type", ctype)
+    h.send_header("Content-Length", str(len(data)))
+    h.send_header("ETag", tag)
+    h.send_header("Last-Modified", formatdate(mtime, usegmt=True))
+    h.send_header("Cache-Control", "private, max-age=86400")
+    h.send_header("X-Content-Type-Options", "nosniff")
+    _cors(h)
+    h.end_headers()
+    h.wfile.write(data)
+
+
+def _contact_find(h: BaseHTTPRequestHandler, cid: str) -> None:
+    """`POST /contacts/<id>/find {"network"[, "confirm": <id> | "none":
+    true]}` (§6.25): one search on that network's bridge, the pick, or "None
+    of these"; gated as the card is, the owner's book only."""
+    from . import contacts_find
+
+    user, err = auth.gate(_bearer(h))
+    if not user:
+        _json(h, err.pop("status", 403), {"ok": False, **err})
+        return
+    body = _read_json(h)
+    body = body if isinstance(body, dict) else {}
+    network = str(body.get("network") or "")
+    try:
+        if body.get("none") is True:
+            got = contacts_find.none_of_these(cid, network)
+        elif body.get("confirm"):
+            got = contacts_find.confirm(cid, network, str(body["confirm"]))
+        else:
+            got = contacts_find.search(cid, network)
+    except KeyError:
+        _json(h, 404, {"ok": False, "error": "no such contact"})
+    except contacts_find.NotOwner as e:
+        _json(h, 403, {"ok": False, "error": str(e)})
+    except contacts_find.TooSoon as e:
+        _json(h, 429, {"ok": False, "error": str(e), "retry_after": e.retry_after})
+    except contacts_find.Unavailable as e:
+        _json(h, 503, {"ok": False, "error": str(e)})
+    except LookupError as e:
+        _json(h, 409, {"ok": False, "error": str(e)})
+    except ValueError as e:
+        _json(h, 400, {"ok": False, "error": str(e)})
+    else:
+        _json(h, 200, {"ok": True, **got})
 
 
 def _contact_same(h: BaseHTTPRequestHandler, cid: str, act: str) -> None:
@@ -1072,6 +1154,8 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
             _json(h, detail.pop("status", 400), {"ok": False, **detail})
     elif CONTACT_TIMELINE.fullmatch(path):
         _contact_timeline(h, CONTACT_TIMELINE.fullmatch(path).group(1), query)
+    elif CONTACT_PHOTO.fullmatch(path):
+        _contact_photo(h, CONTACT_PHOTO.fullmatch(path).group(1), query)
     elif path == "/contacts/timeline/backfill":
         _timeline_backfill(h, start=False)
     elif path == "/contacts/google":
@@ -1780,6 +1864,8 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
     elif CONTACT_SAME.fullmatch(path):
         m = CONTACT_SAME.fullmatch(path)
         _contact_same(h, m.group(1), m.group(2))
+    elif CONTACT_FIND.fullmatch(path):
+        _contact_find(h, CONTACT_FIND.fullmatch(path).group(1))
     elif path in ("/contacts/google/login", "/contacts/google/finish",
                   "/contacts/google/signout"):
         _contacts_google(h, path.rsplit("/", 1)[1])

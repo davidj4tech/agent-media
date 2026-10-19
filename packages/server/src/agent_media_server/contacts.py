@@ -117,7 +117,8 @@ SCOPE = "https://www.googleapis.com/auth/contacts.readonly"
 #: can say whose Google it reads.
 LOGIN_SCOPE = "openid email " + SCOPE
 PEOPLE = "https://people.googleapis.com/v1"
-PERSON_FIELDS = "names,phoneNumbers,emailAddresses,addresses,biographies,metadata,memberships"
+PERSON_FIELDS = ("names,phoneNumbers,emailAddresses,addresses,biographies,metadata,memberships,"
+                 "photos")
 #: Google's own groups that are not a label: left out. "My Contacts" is one
 #: (David, 19 Oct 2026), so it is not here; starred is.
 _GOOGLE_HIDDEN = {"contactGroups/starred", "contactGroups/all",
@@ -406,10 +407,20 @@ CREATE TABLE IF NOT EXISTS aliases (
   contact TEXT NOT NULL, address TEXT NOT NULL, real TEXT,
   first_seen REAL, last_seen REAL,
   PRIMARY KEY (contact, address));
+CREATE TABLE IF NOT EXISTS found (
+  sid TEXT PRIMARY KEY, contact TEXT NOT NULL, network TEXT NOT NULL,
+  card TEXT NOT NULL, meta TEXT NOT NULL, at REAL);
+CREATE TABLE IF NOT EXISTS photo_src (
+  kind TEXT NOT NULL, sid TEXT NOT NULL, ref TEXT NOT NULL DEFAULT '',
+  file TEXT NOT NULL DEFAULT '', ctype TEXT NOT NULL DEFAULT '',
+  at REAL, tries INTEGER NOT NULL DEFAULT 0, next_at REAL NOT NULL DEFAULT 0,
+  PRIMARY KEY (kind, sid));
 """
 #: What a schema bump keeps: David's own decisions, not what a source said,
-#: and the old chat addresses (`aliases`), which outlive their sources.
-_KEPT = {"overrides", "drupal_links", "merges", "aliases"}
+#: the old chat addresses (`aliases`), which outlive their sources, and the
+#: pictures fetched (`photo_src`, contacts_photos.py), costly to fetch again,
+#: and who David picked from a search on a network (`found`, contacts_find.py).
+_KEPT = {"overrides", "drupal_links", "merges", "aliases", "photo_src", "found"}
 #: Bump when the cards are made differently from the same records: the
 #: next sync rebuilds them (records kept, nothing read again).
 CARDS_VERSION = "gateways-1"
@@ -479,6 +490,10 @@ def _source(kind: str, sid: str, meta: dict) -> dict:
     if kind == "import":
         return {"kind": "import", "id": sid, "export": meta.get("export") or "",
                 "lists": meta.get("lists") or []}
+    if kind == "found":
+        return {"kind": "found", "id": sid, "network": meta.get("network") or "",
+                "network_name": meta.get("network_name") or "",
+                "why": meta.get("why") or ""}
     return {"kind": kind, "id": sid, "etag": meta.get("etag") or ""}
 
 
@@ -848,6 +863,16 @@ def _rebuild_bridges(conn: sqlite3.Connection, recs: list, book: dict) -> None:
         later = waiting
     for kind, sid, c, meta, _cid in later:
         place(kind, sid, c, meta, None)
+    # Who David picked from a search on a network (contacts_find.py): onto
+    # the contact he searched from. A ghost a bridge also knows from a room
+    # is placed there already (the pick is a kept Join too): not twice.
+    placed = {s.get("id") for e in book.values() for s in e["sources"]
+              if s.get("kind") in WEAK}
+    for sid, cid, card, meta in conn.execute(
+            "SELECT sid, contact, card, meta FROM found ORDER BY at"):
+        if sid in placed:
+            continue
+        place("found", sid, json.loads(card), json.loads(meta), cid if cid in book else None)
 
 
 def _rebuild_drupal(conn: sqlite3.Connection, recs: list, book: dict) -> None:
@@ -1308,6 +1333,7 @@ def sync_google(full: bool = False) -> dict:
             raise
         groups = _groups() if any(p.get("memberships") for p in people) else {}
         reg = region()
+        from . import contacts_photos
         changed = deleted = 0
         with _WRITE:
             conn = _connect()
@@ -1326,7 +1352,8 @@ def sync_google(full: bool = False) -> dict:
                     conn.execute("INSERT OR REPLACE INTO records (kind, sid, card, meta) "
                                  "VALUES ('google', ?, ?, ?)",
                                  (rn, json.dumps(card_of(p, reg, groups)),
-                                  json.dumps({"etag": p.get("etag") or ""})))
+                                  json.dumps({"etag": p.get("etag") or "",
+                                              "photo": contacts_photos.google_url(p)})))
                     changed += 1
                 if token is None:
                     # Everything was read: what is not in it is gone.
@@ -1867,10 +1894,13 @@ def listing(q: str = "", limit: int | str | None = None,
         log.exception("contacts: the timeline's activity")
         acts = {}
     cutoff = (dt.date.today() - dt.timedelta(days=days)).isoformat() if days > 0 else ""
+    from . import contacts_photos
+
     conn = _connect(create=False)
     rows: list[tuple] = []
     try:
         if conn is not None:
+            pics = contacts_photos.index(conn)
             for cid, name, raw in conn.execute("SELECT id, name, card FROM contacts"):
                 card = json.loads(raw)
                 if want:
@@ -1886,6 +1916,7 @@ def listing(q: str = "", limit: int | str | None = None,
                 score = _matches(q, name, card) if q else 2
                 if score:
                     row = _row(cid, name, card)
+                    row["photo"] = contacts_photos.field(cid, card, pics)
                     row["last"] = last
                     row["count_90d"] = (act or {}).get("count_90d", 0)
                     rows.append((score, fold(name), row))
@@ -1952,17 +1983,23 @@ def mail_link(emails: list, aliases: list | None = None) -> dict | None:
 def card(cid: str) -> dict | None:
     """`GET /contacts/<id>`'s contact: the merged card, its sources, and the
     rooms that are this person's."""
+    from . import contacts_find, contacts_photos
+
     conn = _connect(create=False)
     if conn is None:
         return None
     try:
         got = conn.execute("SELECT name, card, updated FROM contacts WHERE id=?", (cid,)).fetchone()
+        pics = contacts_photos.index(conn) if got else {}
+        said_none = contacts_find.dismissed_for(conn, cid) if got else set()
     finally:
         conn.close()
     if not got:
         return None
     c = json.loads(got[1])
     return {"id": cid, "crm": _crm_of(c), "name": got[0], "names": c.get("names") or [],
+            "photo": contacts_photos.field(cid, c, pics),
+            "find": contacts_find.findable(c, said_none),
             "phones": c.get("phones") or [], "emails": c.get("emails") or [],
             "addresses": c.get("addresses") or [], "organizations": c.get("organizations") or [],
             "notes": c.get("notes") or "", "sources": c.get("sources") or [],
@@ -2372,6 +2409,9 @@ def _reset_for_tests() -> None:
     _ACCESSES.clear()
     _ACCESSES[""] = _ACCESS
     _PENDING.clear()
+    from . import contacts_find
+
+    contacts_find._reset_for_tests()
 
 
 # --- the background sync --------------------------------------------------------
@@ -2416,6 +2456,14 @@ def _sync_book(key: str) -> None:
         for s, e in got["errors"].items():
             # The phone off Wi-Fi is the usual one: the last copy serves.
             print(f"{who}: {s} unread ({e})", file=sys.stderr)
+        if (os.environ.get("MEDIA_CONTACTS_PHOTOS") or "1").strip() != "0":
+            # People's pictures (contacts_photos.py): what is new or due.
+            from . import contacts_photos
+
+            ph = contacts_photos.refresh()
+            if ph["fetched"] or ph["dropped"]:
+                print(f"{who}: pictures: {ph['kept']} kept, {ph['none']} none, "
+                      f"{ph['failed']} failed, {ph['waiting']} waiting", file=sys.stderr)
         if not key:
             # The export cycle (contacts_exports.py): files in Downloads,
             # the "ready" mail, the reminder. The owner's book only.

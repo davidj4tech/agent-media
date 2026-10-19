@@ -4687,6 +4687,74 @@ import <file>`.
 
 Every label on someone in the caller's book, by name, with how many have it.
 
+#### Pictures — `GET /contacts/<id>/photo` — gated (19 Oct 2026)
+
+Every `GET /contacts` row and every card carries `photo`: `{"url":
+"/contacts/<id>/photo", "etag": "<16 hex>"}`, or `null` when there is none.
+The route answers the picture's bytes from the caller's book only (a JPEG at
+most 256 px a side when the server has Pillow), with `ETag` (the etag above,
+quoted), `Last-Modified` and `Cache-Control: private, max-age=86400`; a
+matching `If-None-Match` is 304; none to have, or a person not in the
+caller's book, is 404. An `<img>` that cannot set a header may put the
+token in `?access_token=` (as `/bridges/<id>/icon`).
+
+Where a picture comes from (contacts_photos.py), the first that has one:
+
+1. **Google** — the People API's `photos` (`personFields` asks for them; a
+   default letter is no picture), for a book signed in to Google. The
+   phone's own contacts are Google's, so this is their picture too: the
+   phone cannot give it — its thumbnails are database blobs adb's `content`
+   prints only as `BLOB`, and `content read` has no file for them.
+2. **A bridge's ghost** — its own `avatar_url` on the homeserver, fetched as
+   a thumbnail through authenticated media (the owner's book only). This is
+   where Messenger, Instagram, WhatsApp and Teams pictures come from: never
+   from a network's own pages.
+3. **A ghost David picked** with "Find on" (below).
+
+The server looks after each book's sync (every 15 min): a Google URL that
+changed, a ghost not looked at for 7 days, at most 60 fetches a pass; a
+failure waits longer each time (15 min doubling, at most a week). Kept as
+`<state>/photos/<sha256>` (0600, the folder 0700); nothing else of the
+source is kept. `MEDIA_CONTACTS_PHOTOS=0` turns it off.
+
+#### Find on a network — `POST /contacts/<id>/find` — gated, owner only (19 Oct 2026)
+
+A card's `find` lists the networks it may be searched on: `["messenger"]`
+when the person has no handle there and "None of these" was not said for
+them (always `[]` outside the owner's book). It is David's own act: one
+search per tap, never batched, scheduled or in the background, and at most
+one search every 10 s across the server.
+
+- `{"network": "messenger"}` — ONE search for the person's name through the
+  network's bridge (bridgev2 provisioning `POST /v3/search_users`; the
+  Messenger bridge is appservice `facebook`,
+  `MEDIA_CONTACTS_FIND_MESSENGER_BRIDGE` names another):
+
+  ```json
+  {"ok": true, "network": "messenger", "query": "Lionel Smith",
+   "candidates": [{"id": "1001", "name": "Lionel Smith",
+                   "handle": "@facebook_1001:ryer.org",
+                   "avatar": "data:image/jpeg;base64,…"}],
+   "pick": "1001"}
+  ```
+
+  At most 5 candidates; `avatar` a small picture from the homeserver or
+  `null`; `pick` names a candidate only when exactly one has exactly the
+  person's name — the app shows it chosen, and David still confirms.
+- `{"network": "messenger", "confirm": "<candidate id>"}` — that candidate
+  (one of this person's last search, within 15 min) is them: kept (`found`,
+  through every rebuild and schema change) with a kept Join, so the card
+  gains the handle (`sources` a `found` entry, `why` "found on Messenger"),
+  the same ghost met in a room later lands on them too, and its avatar is
+  their picture. `{"ok", "id", "handle"}`; 409 when it is not one of the
+  last search's (search again).
+- `{"network": "messenger", "none": true}` — "None of these": kept, and the
+  card stops offering it.
+
+404 no such person; 403 another account's book; 429 `{retry_after}` within
+10 s of the last search; 503 the bridge cannot search now (none, signed
+out, down); 400 another network or no name.
+
 ### 6.25a A contact's timeline — gated (18 Oct 2026)
 
 "When did I last talk to them?" (proposal, "Timeline"). Daily rollups —
