@@ -287,7 +287,8 @@ def test_as_you_type(google):
 
 def test_no_store_is_no_contacts_and_makes_none():
     out = contacts.listing("x")
-    assert out == {"contacts": [], "total": 0, "synced_at": None, "sources": []}
+    assert out == {"contacts": [], "total": 0, "synced_at": None, "sources": [], "sort": "name",
+                   "talked": False}
     assert contacts.card("3f0c0000-0000-0000-0000-000000000000") is None
     assert not contacts.db_path().exists()
 
@@ -496,8 +497,10 @@ def test_a_card_carries_its_rooms_newest_first(rooms):
 def test_routes_shape_and_auth(server, signed_in, rooms):
     # No bearer, ABS down, a guest: test_contract's GATED_GETS.
     res, obj = call(server, "GET", "/contacts?q=mel", headers=AUTH)
-    assert res.status == 200 and set(obj) == {"ok", "contacts", "total", "synced_at", "sources"}
-    assert [set(r) for r in obj["contacts"]] == [{"id", "name", "phones", "emails", "labels"}]
+    assert res.status == 200 and set(obj) == {"ok", "contacts", "total", "synced_at", "sources",
+                                                "sort", "talked"}
+    assert [set(r) for r in obj["contacts"]] == [{"id", "name", "phones", "emails", "labels",
+                                                 "last", "count_90d"}]
     mel = obj["contacts"][0]["id"]
     res, obj = call(server, "GET", f"/contacts/{mel}", headers=AUTH)
     assert res.status == 200 and set(obj) == {"ok", "contact"}

@@ -84,6 +84,7 @@ import argparse
 import base64
 import contextlib
 import contextvars
+import datetime as dt
 import hashlib
 import io
 import json
@@ -1765,21 +1766,60 @@ def _source_states(conn: sqlite3.Connection | None) -> list[dict]:
     return out
 
 
+#: `GET /contacts`'s orders: `name` (the default), `recent` (last talked to
+#: first) and `most` (most talked to over the last 90 days first); a person
+#: never talked to comes after everyone who was, by name.
+SORTS = ("name", "recent", "most")
+
+
+def _services_of(card: dict, act: dict | None) -> set[str]:
+    """The timeline's channels a person is on: their days in the ledger and
+    the bridged networks their handles are on."""
+    from . import timeline
+
+    got = set((act or {}).get("channels") or {})
+    for h in card.get("handles") or []:
+        ch = timeline._NETWORKS.get(str(h.get("network") or ""))
+        if ch:
+            got.add(ch)
+    return got
+
+
 def listing(q: str = "", limit: int | str | None = None,
-            label: str | list[str] | tuple = "", mode: str = "any") -> dict:
+            label: str | list[str] | tuple = "", mode: str = "any",
+            sort: str = "", since: int | str | None = None, service: str = "") -> dict:
     """`GET /contacts`: everyone, or those `q` matches as it is typed (name,
     a phone's digits as written or dialled at home, an email); `label`, one
     label or several, only the people with any of them (`mode` "any", the
-    default) or with every one (`mode` "all")."""
+    default) or with every one (`mode` "all"); `since`, only those talked to
+    in the last that many days; `service`, only those on that channel (a
+    timeline channel: sms, messenger, …). Each row carries `last` {day,
+    channel} and `count_90d` from the book's ledger (timeline.activity);
+    `sort` is one of SORTS, after how well `q` matches when there is one."""
+    from . import timeline
+
     try:
         n = max(1, min(int(limit or LIMIT), LIMIT_MAX))
     except (TypeError, ValueError):
         n = LIMIT
+    try:
+        days = int(since) if since not in (None, "") else 0
+    except (TypeError, ValueError):
+        days = 0
+    order = (sort or "").strip().lower()
+    order = order if order in SORTS else "name"
+    service = (service or "").strip().lower()
     picked = [label] if isinstance(label, str) else list(label or [])
     want = {fold(x) for x in picked if x and fold(x)}
     every = (mode or "").strip().lower() == "all"
+    try:
+        acts = timeline.activity()
+    except Exception:  # noqa: BLE001 — a ledger that cannot be read is no activity
+        log.exception("contacts: the timeline's activity")
+        acts = {}
+    cutoff = (dt.date.today() - dt.timedelta(days=days)).isoformat() if days > 0 else ""
     conn = _connect(create=False)
-    rows: list[tuple[int, str, dict]] = []
+    rows: list[tuple] = []
     try:
         if conn is not None:
             for cid, name, raw in conn.execute("SELECT id, name, card FROM contacts"):
@@ -1788,16 +1828,32 @@ def listing(q: str = "", limit: int | str | None = None,
                     has = {fold(x) for x in card.get("labels") or []}
                     if not (want <= has if every else want & has):
                         continue
+                act = acts.get(cid)
+                last = (act or {}).get("last")
+                if cutoff and not (last and last["day"] >= cutoff):
+                    continue
+                if service and service not in _services_of(card, act):
+                    continue
                 score = _matches(q, name, card) if q else 2
                 if score:
-                    rows.append((score, fold(name), _row(cid, name, card)))
+                    row = _row(cid, name, card)
+                    row["last"] = last
+                    row["count_90d"] = (act or {}).get("count_90d", 0)
+                    rows.append((score, fold(name), row))
         states = _source_states(conn)
     finally:
         if conn is not None:
             conn.close()
-    rows.sort(key=lambda r: (-r[0], r[1]))
+    rows.sort(key=lambda r: r[1])
+    if order == "recent":
+        rows.sort(key=lambda r: (r[2]["last"] or {}).get("day") or "", reverse=True)
+    elif order == "most":
+        rows.sort(key=lambda r: (r[2]["count_90d"], (r[2]["last"] or {}).get("day") or ""),
+                  reverse=True)
+    rows.sort(key=lambda r: -r[0])
     synced = [s["synced_at"] for s in states if s["synced_at"]]
-    return {"contacts": [r[2] for r in rows[:n]], "total": len(rows),
+    return {"contacts": [r[2] for r in rows[:n]], "total": len(rows), "sort": order,
+            "talked": bool(acts),
             "synced_at": max(synced) if synced else None, "sources": states}
 
 

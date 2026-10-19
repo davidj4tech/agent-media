@@ -217,3 +217,83 @@ def test_labels_from_both_are_one_list():
     a = {"name": "L", "labels": ["Family", "book club"]}
     b = {"name": "L", "labels": ["Book Club", "Work"]}
     assert contacts._merge(a, b)["labels"] == ["book club", "Family", "Work"]
+
+
+# --- Show and Sort: the ledger's activity on each row ---------------------------------
+
+def _talk(cid, channel, day, n_in=1, n_out=0, duration=0):
+    from agent_media_server import timeline
+
+    conn = timeline._connect()
+    try:
+        conn.execute("INSERT OR REPLACE INTO entries (key, contact, channel, day, count_in,"
+                     " count_out, duration, summary, at) VALUES (?,?,?,?,?,?,?,?,?)",
+                     (timeline.key_of(channel, day, cid), cid, channel, day, n_in, n_out,
+                      duration, "", 0.0))
+    finally:
+        conn.close()
+
+
+def _ago(n):
+    import datetime as dt
+
+    return (dt.date.today() - dt.timedelta(days=n)).isoformat()
+
+
+def test_rows_carry_last_and_count_and_sort_by_them(phone):
+    contacts.sync_android()
+    ids = {c["name"]: c["id"] for c in contacts.listing()["contacts"]}
+    names = lambda got: [c["name"] for c in got["contacts"]]  # noqa: E731
+    got = contacts.listing()
+    assert got["talked"] is False and got["sort"] == "name"
+    assert all(c["last"] is None and c["count_90d"] == 0 for c in got["contacts"])
+    _talk(ids["Lionel Smith"], "sms", _ago(40), n_in=9, n_out=9)
+    _talk(ids["Mel Jones"], "messenger", _ago(2), n_in=1)
+    _talk(ids["Mel Jones"], "note", _ago(0))            # a note is not talk
+    _talk(ids["Lionel Smith"], "sms", _ago(200), n_in=50)  # outside the 90 days
+    got = contacts.listing(sort="recent")
+    assert got["talked"] is True and names(got) == ["Mel Jones", "Lionel Smith"]
+    mel = got["contacts"][0]
+    assert mel["last"] == {"day": _ago(2), "channel": "messenger"} and mel["count_90d"] == 1
+    assert got["contacts"][1]["count_90d"] == 18
+    assert names(contacts.listing(sort="most")) == ["Lionel Smith", "Mel Jones"]
+    assert names(contacts.listing(sort="name")) == ["Lionel Smith", "Mel Jones"]
+    assert names(contacts.listing(sort="nonsense")) == ["Lionel Smith", "Mel Jones"]
+
+
+def test_since_and_service_narrow_the_list(phone):
+    contacts.sync_android()
+    ids = {c["name"]: c["id"] for c in contacts.listing()["contacts"]}
+    names = lambda got: [c["name"] for c in got["contacts"]]  # noqa: E731
+    _talk(ids["Lionel Smith"], "sms", _ago(40))
+    _talk(ids["Mel Jones"], "messenger", _ago(2))
+    assert names(contacts.listing(since=30)) == ["Mel Jones"]
+    assert names(contacts.listing(since="365", sort="recent")) == ["Mel Jones", "Lionel Smith"]
+    assert names(contacts.listing(since="")) == ["Lionel Smith", "Mel Jones"]
+    assert names(contacts.listing(service="sms")) == ["Lionel Smith"]
+    assert names(contacts.listing(service="messenger", since=30)) == ["Mel Jones"]
+    assert names(contacts.listing(service="teams")) == []
+    assert names(contacts.listing("mel", sort="recent")) == ["Mel Jones"]
+
+
+def test_the_activity_is_kept_until_the_ledger_changes(phone):
+    from agent_media_server import timeline
+
+    contacts.sync_android()
+    cid = contacts.listing()["contacts"][0]["id"]
+    _talk(cid, "sms", _ago(3))
+    first = timeline.activity()
+    assert timeline.activity() is first
+    _talk(cid, "sms", _ago(1))
+    again = timeline.activity()
+    assert again is not first and again[cid]["last"]["day"] == _ago(1)
+
+
+def test_the_route_takes_sort_since_service(server, signed_in, phone):
+    contacts.sync_android()
+    ids = {c["name"]: c["id"] for c in contacts.listing()["contacts"]}
+    _talk(ids["Mel Jones"], "messenger", _ago(2))
+    res, obj = call(server, "GET", "/contacts?sort=recent&since=30&service=messenger", headers=AUTH)
+    assert res.status == 200 and [c["name"] for c in obj["contacts"]] == ["Mel Jones"]
+    assert obj["sort"] == "recent" and obj["talked"] is True
+    assert obj["contacts"][0]["last"]["channel"] == "messenger"

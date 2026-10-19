@@ -4394,6 +4394,28 @@ multiple Google contact labels at once", with a switch between the two).
 Pinned by
 `packages/server/tests/test_contacts_labels.py`.
 
+**Show and Sort** (19 Oct 2026; David: "a recent setting … a similar kind
+of show and sort filter like the threads list"). Each `GET /contacts` row
+also carries **`last`** (`{day, channel}`, the newest day in the book's
+timeline ledger, §6.25a, live rollups and imported days alike; `null` when
+never) and **`count_90d`** (messages in and out over the last 90 days).
+Notes are not talk: they count for neither. Parameters, each combining
+with `q` and the labels:
+
+- `sort=name` (the default), `recent` (last talked to first) or `most`
+  (`count_90d` first); people never talked to come after, by name; with a
+  `q`, how well it matches still comes first. Anything else is `name`.
+- `since=<days>`: only people talked to within that many days.
+- `service=<channel>`: only people on that channel (`sms`, `signal`,
+  `messenger`, `instagram`, `teams`, `whatsapp`, `call`, `email`, `chat`):
+  a day of theirs in the ledger on it, or a bridged handle on its network.
+
+The answer gains `sort` (the order used) and `talked` (whether the book
+has any activity at all, so the app can default to `recent` once there is
+some). The activity is one grouped query over the ledger, kept until the
+ledger changes or the day turns (`timeline.activity`). Pinned by
+`test_contacts_labels.py`.
+
 **Exports** (19 Oct 2026; David: "a full list of my bridged contacts"). A
 bridge knows only who is in a chat, so whole lists come from each
 network's own data download, the `import` source, per book: a **Facebook**

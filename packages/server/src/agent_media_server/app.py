@@ -620,7 +620,8 @@ def _contacts(h: BaseHTTPRequestHandler, path: str, query: str) -> None:
     qs = parse_qs(query)
     arg = lambda k: (qs.get(k) or [""])[0]  # noqa: E731
     _json_z(h, 200, {"ok": True, **contacts.listing(arg("q"), arg("limit"), qs.get("label") or [],
-                                                     arg("labels_mode") or "any")})
+                                                     arg("labels_mode") or "any", arg("sort"),
+                                                     arg("since"), arg("service"))})
 
 
 def _contact_same(h: BaseHTTPRequestHandler, cid: str, act: str) -> None:

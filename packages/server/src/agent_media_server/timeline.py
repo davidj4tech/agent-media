@@ -576,6 +576,55 @@ def timeline(cid: str, limit: int | str | None = 100) -> dict:
             "crm": None if not uuid else {"id": uuid, "error": crm_error}}
 
 
+#: The window `count_90d` sums over, in days.
+RECENT_DAYS = 90
+
+#: A book's activity, kept while its ledger and the day are unchanged:
+#: {path: ((ledger summary, today), {contact: {...}})}.
+_ACTIVITY: dict = {}
+_ACTIVITY_LOCK = threading.Lock()
+
+
+def activity() -> dict:
+    """Per contact of the current book, from its ledger (the live rollups and
+    the imported days alike; notes are not talk): `{contact: {"last": {day,
+    channel}, "count_90d": n, "channels": {channel: last day}}}`. One grouped
+    query, kept until the ledger or the day changes."""
+    path = db_path()
+    if not path.exists():
+        return {}
+    today = dt.date.today()
+    since = (today - dt.timedelta(days=RECENT_DAYS)).isoformat()
+    out: dict = {}
+    conn = _connect()
+    try:
+        # What changes with any write (a file's times are too coarse for two
+        # writes close together): one pass, far cheaper than the grouping.
+        key = (tuple(conn.execute(
+            "SELECT COUNT(*), TOTAL(at), TOTAL(count_in + count_out + duration),"
+            " MAX(day) FROM entries").fetchone()), today.isoformat())
+        with _ACTIVITY_LOCK:
+            got = _ACTIVITY.get(str(path))
+            if got and got[0] == key:
+                return got[1]
+        rows = conn.execute(
+            "SELECT contact, channel, MAX(day), "
+            "SUM(CASE WHEN day >= ? THEN count_in + count_out ELSE 0 END) "
+            "FROM entries WHERE channel != 'note' AND (count_in + count_out + duration) > 0 "
+            "GROUP BY contact, channel", (since,)).fetchall()
+    finally:
+        conn.close()
+    for contact, channel, day, n in rows:
+        a = out.setdefault(contact, {"last": None, "count_90d": 0, "channels": {}})
+        a["channels"][channel] = day
+        a["count_90d"] += int(n or 0)
+        if a["last"] is None or day > a["last"]["day"]:
+            a["last"] = {"day": day, "channel": channel}
+    with _ACTIVITY_LOCK:
+        _ACTIVITY[str(path)] = (key, out)
+    return out
+
+
 # --- the command line (under `… contacts`) --------------------------------------
 
 def _who(q: str) -> tuple[str | None, list[dict]]:
