@@ -1287,6 +1287,17 @@ ahead.
     and sort are asked of the server (§6.14 `sort`, `since`, `who`,
     `rooms`), so a page is full of what is shown. **Built 19 Oct 2026**,
     not yet deployed (the server change needs a canvas restart).
+31. **Card links open in the app** (David, 19 Oct 2026: "yeah queue it").
+    The contacts write-back (agent-media `contacts_writeback.py`, `9042e77`)
+    puts a link per bridged account on the person's Google entry,
+    `https://<server>/app/people/<id>?account=<matrix id>`; the app's App
+    Links claim only `/app/t/`, so on the phone a tap opens the browser. Add
+    `pathPrefix="/app/people/"` beside it in AndroidManifest.xml (the
+    server's assetlinks.json already vouches for the host), let
+    threadLinks.ts treat a card link as the app's (open `/people/<id>` in
+    place), and have the card note `?account=` (scroll to, or highlight,
+    that account's row). Check a cold start and a warm one from Google
+    Contacts.
 
 ## Loose ends
 
