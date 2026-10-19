@@ -204,12 +204,12 @@ def test_state_and_suggestion_events(server, signed_in, convo, monkeypatch):
     st.event()
     monkeypatch.setattr(panes, "classify", lambda cap, agent="claude": "input")
     assert st.next("state") == {"state": "waiting", "session_live": True, "live": True,
-                                "pane": "%7"}
+                                "pane": "%7", "background": None}
     monkeypatch.setattr(sessions, "_followup", lambda s: {"text": "Ship it?", "key": ""})
     assert st.next("suggestion") == {"text": "Ship it?"}
     live.pop(SID)
     assert st.next("state") == {"state": "ended", "session_live": False, "live": False,
-                                "pane": None}
+                                "pane": None, "background": None}
     st.close()
 
 

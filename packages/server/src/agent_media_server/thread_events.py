@@ -10,7 +10,9 @@ sends only what changed:
     approval    the dialog the session is stopped on, or null
     suggestion  {"text"}
     state       {"state": "working" | "waiting" | "approval" | "ended",
-                 "session_live": bool, "live": bool (deprecated alias), "pane"}
+                 "session_live": bool, "live": bool (deprecated alias), "pane",
+                 "background": {"agents", "commands"} | null — work still
+                 running once the turn is over (background.py, §6.1)}
     pending     {"pending": bool} — a reply is in and no answer has landed
     recap       the latest recap, or null
     agents      {"running", "total"} — the thread's background agents (§6.12)
@@ -61,7 +63,7 @@ import threading
 import time
 import zlib
 
-from . import agents, driver, retract, sessions, threads, transcript
+from . import agents, background, driver, retract, sessions, threads, transcript
 
 log = logging.getLogger("agent-media.server.thread_events")
 
@@ -123,11 +125,13 @@ def _plain(obj, drop=("server_time",)):
     return obj
 
 
-def _state(state: str, live: bool, pane) -> dict:
+def _state(state: str, live: bool, pane, bg: dict | None = None) -> dict:
     # `live` here is "the session is running", which is not the `live` event
     # (the follow-along clock). `session_live` says so; `live` stays one
-    # release as a deprecated alias (server-contract.md §11).
-    return {"state": state, "session_live": live, "live": live, "pane": pane}
+    # release as a deprecated alias (server-contract.md §11). `background`:
+    # agents or commands still running once the turn is over (§6.1), else null.
+    return {"state": state, "session_live": live, "live": live, "pane": pane,
+            "background": bg if state == "waiting" else None}
 
 
 def session_state(session: str) -> dict:
@@ -138,10 +142,12 @@ def session_state(session: str) -> dict:
     if not pane:
         hl = driver.headless_state(session)
         if hl is not None:
-            return _state(hl["state"], hl["live"], None)
+            bg = (background.of_session(session, live=hl["live"], tasks=hl.get("task_list") or [])
+                  if hl["state"] == "waiting" else None)
+            return _state(hl["state"], hl["live"], None, bg)
         return _state("ended", False, None)
     st = sessions.activity_of(session, pane).get("state") or "waiting"
-    return _state(st, True, pane)
+    return _state(st, True, pane, background.of_session(session) if st == "waiting" else None)
 
 
 def snapshot(session: str, limit: int | None = None) -> tuple[bool, dict]:
@@ -164,6 +170,7 @@ def snapshot(session: str, limit: int | None = None) -> tuple[bool, dict]:
                         if (l.get("at") or 0.0) >= cutoff or l.get("live")]
     env.update({"state": st["state"], "session_live": st["session_live"],
                 "live": st["session_live"], "pane": st["pane"],
+                "background": st["background"],
                 "resumable": sessions.session_exists(session),
                 "agents": agent_counts(session, st["session_live"]),
                 "title": sessions.title_of(session)})

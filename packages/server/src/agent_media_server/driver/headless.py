@@ -238,8 +238,9 @@ class HeadlessDriver:
 
     def view(self, session: str) -> dict:
         """`{"state", "live", "pane": None, "approval", "pid", "raw", "tasks",
-        "queued"}` — `tasks`: background work sessiond still hears from (a
-        subagent, a background Bash); `queued`: messages waiting behind the
+        "task_list", "queued"}` — `tasks`: background work sessiond still
+        hears from (a subagent, a background Bash), `task_list` what each is
+        (background.of_tasks); `queued`: messages waiting behind the
         turn (both what a move waits out, moves.py)."""
         v = self._get(session)
         pending = v.get("pending") or []
@@ -249,6 +250,7 @@ class HeadlessDriver:
                 "pid": v.get("pid"), "raw": v.get("state"),
                 "lost": v.get("lost") or [], "down": bool(v.get("down")),
                 "tasks": int(v.get("tasks") or 0) if live else 0,
+                "task_list": list(v.get("task_list") or []) if live else [],
                 "queued": bool(v.get("queued")) if live else False}
 
     def rows(self) -> list[dict]:

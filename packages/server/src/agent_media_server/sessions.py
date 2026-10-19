@@ -983,6 +983,8 @@ def _live_states() -> list[dict]:
         except (OSError, ValueError):
             continue
         tails[str(data.get("session") or f.stem)] = _tail(data.get("folder") or "")
+    from . import background
+
     out = []
     live = live_sessions()
     # Memory per session: the agent process the sweep just found and all of
@@ -997,8 +999,14 @@ def _live_states() -> list[dict]:
         state = activity_of(sid, pane)["state"] or "waiting"
         title = (_display_title(sid, titles[pane]) if pane in titles
                  else _live_title(sid))
-        out.append({"session": sid, "tail": tails.get(sid, ""),
-                    "state": state, "mem_mb": mem.get(sid), "title": title})
+        row = {"session": sid, "tail": tails.get(sid, ""),
+               "state": state, "mem_mb": mem.get(sid), "title": title}
+        # A turn over with background agents still at work (§6.1).
+        if state == "waiting":
+            bg = background.of_session(sid)
+            if bg:
+                row["background"] = bg
+        out.append(row)
     # Headless sessions sessiond is running (MEDIA_HEADLESS): the state is
     # sessiond's, from the agent's own events, and the memory is its process
     # tree the same way. Marked `driver: "headless"`; pane rows are unchanged.
@@ -1012,9 +1020,15 @@ def _live_states() -> list[dict]:
         hmem = procmem.tree_mem_mb({v["session"]: v.get("pid") for v in hl})
         for v in hl:
             sid = str(v["session"])
-            out.append({"session": sid, "tail": tails.get(sid, ""),
-                        "state": contract_state(v), "mem_mb": hmem.get(sid),
-                        "title": _headless_title(sid, v), "driver": "headless"})
+            row = {"session": sid, "tail": tails.get(sid, ""),
+                   "state": contract_state(v), "mem_mb": hmem.get(sid),
+                   "title": _headless_title(sid, v), "driver": "headless"}
+            # Its tasks sessiond still hears from, once the turn is over (§6.1).
+            if row["state"] == "waiting":
+                bg = background.of_session(sid, tasks=v.get("task_list") or [])
+                if bg:
+                    row["background"] = bg
+            out.append(row)
     return out
 
 
