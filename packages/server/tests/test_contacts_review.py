@@ -105,6 +105,18 @@ def test_numbers_of_their_own_are_two_people(book):
     assert contacts.suggestions(B(ANA)) == []
 
 
+def test_a_placeholder_name_suggests_no_one(book):
+    # Facebook shows every deleted or deactivated account as "Facebook User"
+    _book(_google(5, "Facebook User"),
+          _ghost("@facebook_5:ryer.org", "Facebook User"),
+          _ghost("@facebook_6:ryer.org", "Facebook User"),
+          _ghost("@instagram_7:ryer.org", "Instagram User", "instagramgo", "Instagram"))
+    assert contacts.suggestions(B("@facebook_5:ryer.org")) == []
+    assert contacts.suggestions(G(5)) == []
+    assert all("Facebook User" not in (p["a"]["name"], p["b"]["name"])
+               for p in contacts_review.pairs()["suggestions"])
+
+
 def test_every_pair_once(book):
     got = contacts_review.pairs()
     pairs = {(p["a"]["id"], p["b"]["id"], p["why"]) for p in got["suggestions"]}

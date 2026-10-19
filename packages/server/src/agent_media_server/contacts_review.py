@@ -90,6 +90,8 @@ def _derived(idx: dict) -> dict:
     nicks: dict[str, set] = {}
     for cid, names in idx.get("card_names", {}).items():
         for n in names:
+            if n in PLACEHOLDER_NAMES:
+                continue
             for k in nick_keys(n):
                 nicks.setdefault(k, set()).add(cid)
     phones: dict[str, set] = {}
@@ -101,11 +103,22 @@ def _derived(idx: dict) -> dict:
     return out
 
 
+#: Names a network gives an account it no longer shows (deleted,
+#: deactivated, blocked): hundreds of different people share each one, so
+#: they never suggest anyone. Folded, as the matcher's names are.
+PLACEHOLDER_NAMES = frozenset({
+    "facebook user", "facebook member", "messenger user", "instagram user",
+    "instagram member", "whatsapp user", "deleted user", "deleted account",
+    "unknown", "unknown user", "user",
+})
+
+
 def candidates(idx: dict, cid: str) -> list[tuple[str, str]]:
     """`[(other, why)]` for contact `cid`, by the matcher's index
-    (contacts._index): "same name" first, then "nickname"."""
+    (contacts._index): "same name" first, then "nickname". A placeholder
+    name (`PLACEHOLDER_NAMES`) suggests no one."""
     d = _derived(idx)
-    names = idx["card_names"].get(cid, set())
+    names = {n for n in idx["card_names"].get(cid, set()) if n not in PLACEHOLDER_NAMES}
     same = {o for n in names for o in idx["names"].get(n, ())}
     nick = {o for n in names for k in nick_keys(n) for o in d["nicks"].get(k, ())}
     out = []
