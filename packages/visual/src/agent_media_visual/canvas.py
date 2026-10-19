@@ -2293,6 +2293,10 @@ def main() -> None:
     # MEDIA_CONTACTS=0 leaves it off.
     from agent_media_server import contacts as _contacts
     _contacts.start()
+    # Each bridge's sign-ins as alerts, every 10 min: bridge.<id> at warn while
+    # one needs signing in again (agent_media_server.bridges, §6.26).
+    from agent_media_server import bridges as _bridges
+    _bridges.start_watch()
     # One spoken catch-up when David is free again (agent_media_core.catchup,
     # roadmap item 14): watches free.answer(); MEDIA_CATCHUP=0 leaves it off.
     from agent_media_core import catchup as _catchup

@@ -462,3 +462,40 @@ def test_only_the_owner(server, fake):
         res, _ = call(server, method, path, {} if method == "POST" else None)
         assert res.status in (401, 403), path
     assert [c for c in fake.calls if "logout" in c[1] or "login" in c[1]] == []
+
+
+# --- streamlining: the code step's page, and the watch (19 Oct 2026) -------------
+
+def test_a_code_step_names_the_page_to_open():
+    step = {"type": "display_and_wait",
+            "instructions": "Open https://login.microsoft.com/device in a browser and enter "
+                            "the code below.\n\nThe code expires in 15 minutes.",
+            "display_and_wait": {"type": "code", "data": "GGEDSKP64"}}
+    assert bridges.open_url(step) == "https://login.microsoft.com/device"
+    assert bridges.open_url({**step, "instructions": "Visit https://x.example/a."}) == "https://x.example/a"
+    assert bridges.open_url({**step, "instructions": "Enter the code."}) is None
+    assert bridges.open_url({**step, "display_and_wait": {"type": "qr", "data": "x"}}) is None
+    assert bridges.open_url({"type": "user_input", "instructions": "https://x.example"}) is None
+    assert bridges.open_url(None) is None
+
+
+def test_the_watch_raises_a_sign_in_that_needs_you_and_clears_it():
+    def entry(bid, name, states, reachable=True):
+        return {"id": bid, "name": name, "reachable": reachable,
+                "logins": [{"id": str(i), "name": f"acct{i}", "state": s,
+                            "message": "Logged out" if s == "BAD_CREDENTIALS" else None}
+                           for i, s in enumerate(states)]}
+
+    got = bridges.watch_reports([
+        entry("meta", "Facebook Messenger", ["BAD_CREDENTIALS"]),
+        entry("instagram", "Instagram", ["CONNECTED"]),
+        entry("msteams", "Microsoft Teams", []),
+        entry("gmessages", "Google Messages", ["LOGGED_OUT"], reachable=False)])
+    by = {b["id"]: b for b in got}
+    assert set(by) == {"bridge.meta", "bridge.instagram", "bridge.msteams"}
+    assert by["bridge.meta"]["level"] == "warn"
+    assert by["bridge.meta"]["title"] == "Facebook Messenger needs you to sign in again"
+    assert "acct0" in by["bridge.meta"]["detail"] and "Logged out" in by["bridge.meta"]["detail"]
+    assert by["bridge.instagram"]["level"] == "ok"
+    assert by["bridge.msteams"]["level"] == "ok"
+    assert all(b["every_s"] == int(bridges.WATCH_INTERVAL_S * 3) for b in got)

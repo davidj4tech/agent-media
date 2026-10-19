@@ -4775,6 +4775,22 @@ every route below answers:
 
 `POST /bridges/<id>/login {"flow"}` — starts `flow` (one of the bridge's
 `flows[].id`); answers the process. 404 for no such bridge, 400 for no
+- **`open_url`** (19 Oct 2026, "streamline … also for teams"): for a
+  `display_and_wait` step of type `code`, the first http(s) URL in its
+  `instructions` (Teams: `https://login.microsoft.com/device`), else null.
+  The app opens it in one tap with the code copied and filled in.
+
+**One flow first.** A bridge lists its recommended flow first (Teams:
+`device_code`), so the app offers `flows[0]` as the main button and the
+rest under "Other ways to sign in", and starts it directly when there is
+only one.
+
+**The watch** (`bridges.start_watch`, run by the canvas; off with
+`MEDIA_BRIDGES_WATCH=0`): every 10 min each bridge's sign-ins become an
+alert (§6.17), `bridge.<id>`, at `warn` while any of its sign-ins needs
+you (title "<name> needs you to sign in again", the login names and the
+bridge's message as detail), `ok` otherwise. A bridge that does not answer
+reports nothing, so its last word stands; `every_s` is 30 min.
 such flow, 502 when the bridge refuses (its message in `error`).
 
 `GET /bridges/<id>/login/<process>` — the process now. 404 when the server

@@ -24,6 +24,8 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
+import sys
 import threading
 import time
 import urllib.error
@@ -376,7 +378,26 @@ class Proc:
     def view(self) -> dict:
         with self.lock:
             return {"id": self.id, "bridge": self.bridge.id, "status": self.status,
-                    "error": self.error, "step": self.step}
+                    "error": self.error, "step": self.step,
+                    "open_url": open_url(self.step)}
+
+
+_URL_RE = re.compile(r"https?://[^\s<>\"')]+")
+
+
+def open_url(step: dict | None) -> str | None:
+    """The page a code step sends the user to (Teams: "Open
+    https://login.microsoft.com/device … and enter the code below"): the
+    first http(s) URL in a `display_and_wait` code step's instructions, its
+    trailing full stop or comma left off, so the app can open it in one tap
+    with the code filled in. None for any other step."""
+    if not isinstance(step, dict) or step.get("type") != "display_and_wait":
+        return None
+    daw = step.get("display_and_wait") if isinstance(step.get("display_and_wait"), dict) else {}
+    if daw.get("type") != "code":
+        return None
+    m = _URL_RE.search(str(step.get("instructions") or ""))
+    return m.group(0).rstrip(".,;:") if m else None
 
 
 _PROCS: dict[tuple[str, str], Proc] = {}
@@ -547,6 +568,69 @@ def logout(bridge_id: str, login_id: str) -> dict:
         raise LookupError("no such bridge")
     _call(b, "POST", f"/logout/{_q(login_id)}", body={})
     return entry(b)
+
+
+# --- the watch: a sign-in that needs you is an alert ---------------------------
+
+#: How often the canvas asks every bridge for its sign-ins (s).
+WATCH_INTERVAL_S = 600.0
+_WATCH_STARTED = threading.Event()
+
+
+def _alert_id(bridge_id: str) -> str:
+    return "bridge." + re.sub(r"[^a-z0-9._:-]", "-", bridge_id.lower())[:100]
+
+
+def watch_reports(entries: list[dict]) -> list[dict]:
+    """The alert reports (§6.17) for one look at the bridges: `bridge.<id>`
+    at warn while any of its sign-ins needs you (NEEDS_YOU), ok otherwise.
+    A bridge that did not answer says nothing, so its last word stands."""
+    out = []
+    for e in entries:
+        if not e.get("reachable"):
+            continue
+        bad = [x for x in e.get("logins") or [] if x.get("state") in NEEDS_YOU]
+        body = {"id": _alert_id(e["id"]), "every_s": int(WATCH_INTERVAL_S * 3)}
+        if bad:
+            who = ", ".join(x["name"] for x in bad if x.get("name"))
+            body.update(level="warn",
+                        title=f"{e['name']} needs you to sign in again",
+                        detail="; ".join(filter(None, [who] + [x.get("message") or "" for x in bad])),
+                        fix="Sasonica app: Settings → Bridges → Sign in again")
+        else:
+            body["level"] = "ok"
+        out.append(body)
+    return out
+
+
+def _watch_once() -> None:
+    from . import alerts
+
+    for body in watch_reports(listing()):
+        ok, got = alerts.report(body)
+        if not ok:
+            print(f"bridges: alert refused ({got.get('error')})", file=sys.stderr)
+
+
+def start_watch() -> None:
+    """The canvas's watch, once per process: every WATCH_INTERVAL_S, each
+    bridge's sign-ins as alerts. Idle on a host with no bridges or no owner
+    (MATRIX_OWNER_ID); `MEDIA_BRIDGES_WATCH=0` leaves it off."""
+    if _WATCH_STARTED.is_set() or (os.environ.get("MEDIA_BRIDGES_WATCH") or "1").strip() == "0":
+        return
+    _WATCH_STARTED.set()
+
+    def _run() -> None:
+        time.sleep(30)  # let the bridges and the homeserver settle after a restart
+        while True:
+            try:
+                if _owner() and discover():
+                    _watch_once()
+            except Exception as e:  # noqa: BLE001 — a watch never takes the canvas down
+                print(f"bridges: watch failed ({e})", file=sys.stderr)
+            time.sleep(WATCH_INTERVAL_S)
+
+    threading.Thread(target=_run, name="bridges-watch", daemon=True).start()
 
 
 def _reset_for_tests() -> None:
