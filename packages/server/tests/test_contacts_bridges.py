@@ -294,3 +294,13 @@ def test_the_routes_are_gated(server, rooms, monkeypatch):
     res, _ = call(server, "POST", f"/contacts/{fb}/same", {"other": LIONEL})
     assert res.status in (401, 403)
     assert contacts.card(fb) is not None                            # nothing joined
+
+
+def test_whatsapp_ghosts_number_or_lid():
+    """mautrix-whatsapp names a ghost by the phone number (`@whatsapp_61412…`)
+    or, for a contact WhatsApp hides behind a LID, `@whatsapp_lid-<digits>`:
+    the first is a number, the second never is (David, 19 Oct 2026)."""
+    from agent_media_server import contacts
+
+    assert "+61412345678" in contacts.identities("@whatsapp_61412345678:ryer.org")["phones"]
+    assert not contacts.identities("@whatsapp_lid-123456789012345:ryer.org")["phones"]
