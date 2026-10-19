@@ -200,6 +200,14 @@ device gets its token):
   GET  /contacts/<id>/mail[?limit=] → their newest mail (from, subject,
                   date, a link to the message), live from notmuch
                   (contacts_mail.py, §6.25)
+  POST /contacts/<id>/notify {"channel", "mode"} → their own notification
+                  setting, chats or email: default, priority or quiet
+                  (contacts_notify.py, §6.25)
+  GET  /mail/message?id=[&images=1][&format=html] → one email from notmuch:
+                  headers, a body made safe, its attachments (mail_read.py)
+  GET  /mail/attachment?id=&part= → one attachment's bytes
+                  (`?access_token=` for a plain link)
+  POST /mail/say {"id"} → read that email aloud, only when asked
   GET  /contacts/<id>/timeline[?limit=] → their texts, calls, mail and
                   notes by day, from the CRM's daily rollups (timeline.py)
   POST /contacts/<id>/notes {"text"} → a note on them, today, kept in the CRM
@@ -319,6 +327,7 @@ CORS_PATHS = frozenset({
     "/contacts/google", "/contacts/google/login", "/contacts/google/finish",
     "/contacts/google/signout", "/contacts/labels", "/contacts/suggestions",
     "/contacts/import", "/contacts/timeline/backfill", "/bridges",
+    "/mail/message", "/mail/attachment", "/mail/say",
     "/mic/ask", "/mic/cancel",
     "/phone/ask", "/phone/answer", "/phone/cancel",
     "/notes", "/notes/clear",
@@ -389,6 +398,8 @@ CONTACT_MAIL = re.compile(r"/contacts/([0-9a-f-]{36})/mail")
 ROOM_AVATAR = re.compile(r"/rooms/([0-9a-f-]{36})/avatar")
 # An edit from the card, written back to Google (contacts_edit.py, §6.25).
 CONTACT_EDIT = re.compile(r"/contacts/([0-9a-f-]{36})/edit")
+# Their own notification setting (contacts_notify.py, §6.25).
+CONTACT_NOTIFY = re.compile(r"/contacts/([0-9a-f-]{36})/notify")
 # One search for them on a network, and the pick (contacts_find.py, §6.25).
 CONTACT_FIND = re.compile(r"/contacts/([0-9a-f-]{36})/find")
 # A bridge's icon, its sign-ins and signing out (bridges.py, §6.26).
@@ -411,7 +422,7 @@ def cors_path(path: str) -> bool:
                                                         CONTACT_TIMELINE, CONTACT_NOTES,
                                                         CONTACT_SAME, CONTACT_PHOTO, CONTACT_MAIL,
                                                         CONTACT_FIND, ROOM_AVATAR,
-                                                        CONTACT_EDIT,
+                                                        CONTACT_EDIT, CONTACT_NOTIFY,
                                                         *BRIDGE_ROUTES))
 
 
@@ -770,6 +781,153 @@ def _contact_edit(h: BaseHTTPRequestHandler, cid: str) -> None:
         _json(h, 400, {"ok": False, "error": str(e)})
     else:
         _json(h, 200, got)
+
+
+def _contact_notify(h: BaseHTTPRequestHandler, cid: str) -> None:
+    """`POST /contacts/<id>/notify {"channel", "mode"}` (§6.25): their own
+    notification setting in the caller's book; the card's `notify` after.
+    Gated as the card is; 400 for a channel or mode not known, 404 for no
+    such contact."""
+    from . import contacts_notify
+
+    user, err = auth.gate(_bearer(h))
+    if not user:
+        _json(h, err.pop("status", 403), {"ok": False, **err})
+        return
+    body = _read_json(h)
+    body = body if isinstance(body, dict) else {}
+    try:
+        got = contacts_notify.set_mode(cid, str(body.get("channel") or ""),
+                                       str(body.get("mode") or ""))
+    except KeyError:
+        _json(h, 404, {"ok": False, "error": "no such contact"})
+    except ValueError as e:
+        _json(h, 400, {"ok": False, "error": str(e)})
+    else:
+        _json(h, 200, {"ok": True, "notify": got})
+
+
+def _mail_gate(h: BaseHTTPRequestHandler, bearer: str) -> bool:
+    """The mail routes' gate: a device of this server's, and the owner's
+    book (it is this host's mail); answers and returns False otherwise."""
+    from . import contacts
+
+    user, err = auth.gate(bearer)
+    if not user:
+        _json(h, err.pop("status", 403), {"ok": False, **err})
+        return False
+    if not contacts.is_owner():
+        _json(h, 403, {"ok": False, "error": "this host's mail is its owner's"})
+        return False
+    return True
+
+
+def _mail_message(h: BaseHTTPRequestHandler, query: str) -> None:
+    """`GET /mail/message?id=<notmuch id>[&images=1][&format=html]` (§6.25):
+    one email read live from notmuch, nothing kept or logged."""
+    from . import mail_read
+
+    if not _mail_gate(h, _bearer(h)):
+        return
+    q = parse_qs(query)
+    mid = ((q.get("id") or [""])[0]).strip()
+    if not mail_read.valid_id(mid):
+        _json(h, 400, {"ok": False, "error": "expected ?id=<message id>"})
+        return
+    try:
+        got = mail_read.message(mid, images=(q.get("images") or [""])[0] == "1",
+                                fmt=((q.get("format") or [""])[0]).strip())
+    except mail_read.NotFound as e:
+        _json(h, 404, {"ok": False, "error": str(e)})
+    except (RuntimeError, OSError) as e:
+        _json(h, 503, {"ok": False, "error": str(e) if isinstance(e, RuntimeError)
+                       else "the message could not be read"})
+    else:
+        _json_z(h, 200, {"ok": True, **got})
+
+
+def _mail_attachment(h: BaseHTTPRequestHandler, query: str) -> None:
+    """`GET /mail/attachment?id=&part=` (§6.25): one attachment, as a
+    download; `?access_token=` for a plain link, which sets no header."""
+    from . import mail_read
+
+    q = parse_qs(query)
+    bearer = _bearer(h)
+    if not bearer:
+        bearer = ((q.get("access_token") or [""])[0]).strip()
+        auth.set_request_bearer(bearer)
+    if not _mail_gate(h, bearer):
+        return
+    mid = ((q.get("id") or [""])[0]).strip()
+    try:
+        part = int((q.get("part") or [""])[0])
+    except ValueError:
+        part = -1
+    if not mail_read.valid_id(mid) or part < 0:
+        _json(h, 400, {"ok": False, "error": "expected ?id=&part="})
+        return
+    try:
+        data, ctype, name = mail_read.attachment(mid, part)
+    except mail_read.NotFound as e:
+        _json(h, 404, {"ok": False, "error": str(e)})
+        return
+    except (RuntimeError, OSError):
+        _json(h, 503, {"ok": False, "error": "the message could not be read"})
+        return
+    from urllib.parse import quote as _q
+
+    h.send_response(200)
+    h.send_header("Content-Type", ctype)
+    h.send_header("Content-Length", str(len(data)))
+    h.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{_q(name, safe='')}")
+    h.send_header("X-Content-Type-Options", "nosniff")
+    h.send_header("Cache-Control", "private, no-store")
+    _cors(h)
+    h.end_headers()
+    h.wfile.write(data)
+
+
+def _mail_say(h: BaseHTTPRequestHandler) -> None:
+    """`POST /mail/say {"id"}` (§6.25): read one email aloud through
+    `media say`, as `/org/say` reads a note; only on David's tap, never by
+    itself. Gated as the speech bar is (it makes the phone talk)."""
+    import subprocess
+
+    from . import mail_read
+
+    bearer = _bearer(h)
+    ok, detail = auth.may_control_speech(bearer)
+    if not ok:
+        _json(h, detail.pop("status", 403), {"ok": False, **detail})
+        return
+    if not _mail_gate(h, bearer):
+        return
+    body = _read_json(h)
+    mid = str((body if isinstance(body, dict) else {}).get("id") or "").strip()
+    if not mail_read.valid_id(mid):
+        _json(h, 400, {"ok": False, "error": 'expected {"id"}'})
+        return
+    try:
+        text = mail_read.spoken(mid)
+    except mail_read.NotFound as e:
+        _json(h, 404, {"ok": False, "error": str(e)})
+        return
+    except (RuntimeError, OSError):
+        _json(h, 503, {"ok": False, "error": "the message could not be read"})
+        return
+    if not text.strip():
+        _json(h, 422, {"ok": False, "error": "nothing in that email to read"})
+        return
+    try:
+        p = subprocess.Popen([sys.executable, "-m", "agent_media_core.cli", "say"],
+                             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+        p.stdin.write(text.encode())
+        p.stdin.close()
+    except OSError as e:
+        _json(h, 503, {"ok": False, "error": f"could not start speech ({e})"})
+        return
+    _json(h, 200, {"ok": True, "chars": len(text)})
 
 
 def _contact_find(h: BaseHTTPRequestHandler, cid: str) -> None:
@@ -1284,6 +1442,10 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         _contact_photo(h, CONTACT_PHOTO.fullmatch(path).group(1), query)
     elif CONTACT_MAIL.fullmatch(path):
         _contact_mail(h, CONTACT_MAIL.fullmatch(path).group(1), query)
+    elif path == "/mail/message":
+        _mail_message(h, query)
+    elif path == "/mail/attachment":
+        _mail_attachment(h, query)
     elif ROOM_AVATAR.fullmatch(path):
         _room_avatar(h, ROOM_AVATAR.fullmatch(path).group(1), query)
     elif path == "/contacts/timeline/backfill":
@@ -2007,6 +2169,10 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         _contact_find(h, CONTACT_FIND.fullmatch(path).group(1))
     elif CONTACT_EDIT.fullmatch(path):
         _contact_edit(h, CONTACT_EDIT.fullmatch(path).group(1))
+    elif CONTACT_NOTIFY.fullmatch(path):
+        _contact_notify(h, CONTACT_NOTIFY.fullmatch(path).group(1))
+    elif path == "/mail/say":
+        _mail_say(h)
     elif path in ("/contacts/google/login", "/contacts/google/finish",
                   "/contacts/google/signout"):
         _contacts_google(h, path.rsplit("/", 1)[1])

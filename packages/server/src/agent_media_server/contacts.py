@@ -410,6 +410,9 @@ CREATE TABLE IF NOT EXISTS aliases (
 CREATE TABLE IF NOT EXISTS found (
   sid TEXT PRIMARY KEY, contact TEXT NOT NULL, network TEXT NOT NULL,
   card TEXT NOT NULL, meta TEXT NOT NULL, at REAL);
+CREATE TABLE IF NOT EXISTS notify (
+  contact TEXT NOT NULL, channel TEXT NOT NULL, mode TEXT NOT NULL, at REAL,
+  PRIMARY KEY (contact, channel));
 CREATE TABLE IF NOT EXISTS photo_src (
   kind TEXT NOT NULL, sid TEXT NOT NULL, ref TEXT NOT NULL DEFAULT '',
   file TEXT NOT NULL DEFAULT '', ctype TEXT NOT NULL DEFAULT '',
@@ -419,8 +422,9 @@ CREATE TABLE IF NOT EXISTS photo_src (
 #: What a schema bump keeps: David's own decisions, not what a source said,
 #: the old chat addresses (`aliases`), which outlive their sources, and the
 #: pictures fetched (`photo_src`, contacts_photos.py), costly to fetch again,
-#: and who David picked from a search on a network (`found`, contacts_find.py).
-_KEPT = {"overrides", "drupal_links", "merges", "aliases", "photo_src", "found"}
+#: and who David picked from a search on a network (`found`, contacts_find.py),
+#: and each person's notification setting (`notify`, contacts_notify.py).
+_KEPT = {"overrides", "drupal_links", "merges", "aliases", "photo_src", "found", "notify"}
 #: Bump when the cards are made differently from the same records: the
 #: next sync rebuilds them (records kept, nothing read again).
 CARDS_VERSION = "gateways-1"
@@ -2017,7 +2021,7 @@ def _card_mail(c: dict) -> dict | None:
 def card(cid: str) -> dict | None:
     """`GET /contacts/<id>`'s contact: the merged card, its sources, and the
     rooms that are this person's."""
-    from . import contacts_edit, contacts_find, contacts_photos
+    from . import contacts_edit, contacts_find, contacts_notify, contacts_photos
 
     conn = _connect(create=False)
     if conn is None:
@@ -2026,6 +2030,7 @@ def card(cid: str) -> dict | None:
         got = conn.execute("SELECT name, card, updated FROM contacts WHERE id=?", (cid,)).fetchone()
         pics = contacts_photos.index(conn) if got else {}
         said_none = contacts_find.dismissed_for(conn, cid) if got else set()
+        notify = contacts_notify.of(conn, cid) if got else {}
     finally:
         conn.close()
     if not got:
@@ -2043,6 +2048,8 @@ def card(cid: str) -> dict | None:
             "mail": _card_mail(c),
             # Edit from the card (contacts_edit.py), and the person in Google.
             "edit": contacts_edit.editable(c), "google_url": contacts_edit.google_url(c) or None,
+            # Their own notification setting per channel (contacts_notify.py).
+            "notify": notify,
             "updated": round(got[2], 3) if got[2] else None, "rooms": rooms_of(cid)}
 
 
@@ -2486,7 +2493,12 @@ def start() -> None:
     """The canvas's sync loop, once per process: the phone every
     `MEDIA_CONTACTS_INTERVAL_S` (900), Google and the CRM too when set up,
     then the timeline's rollup (timeline.py; `MEDIA_TIMELINE=0` leaves it
-    off); idle on a host with no source; off with `MEDIA_CONTACTS=0`."""
+    off); idle on a host with no source; off with `MEDIA_CONTACTS=0`. The
+    intake asks this book for a person's notification setting from here on
+    (contacts_notify.register)."""
+    from . import contacts_notify
+
+    contacts_notify.register()
     if _STARTED.is_set() or (os.environ.get("MEDIA_CONTACTS") or "1").strip() == "0":
         return
     _STARTED.set()

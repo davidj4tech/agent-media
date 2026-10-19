@@ -124,3 +124,25 @@ def test_a_held_voice_note_is_kept_unplayed(said, monkeypatch):
     (row,), = [store.rows]
     assert row["extras"]["held"] and row["extras"]["matrix_event"] == "$e"
     assert row["extras"]["session"] == intake.matrix.thread_of(ROOM)
+
+
+@pytest.mark.parametrize("level,held,how,want", [
+    ("quiet", False, "default", "hold"),
+    ("quiet", False, "priority", "toast"),
+    ("normal", False, "quiet", "hold"),
+    ("normal", False, "default", "play"),
+    ("normal", True, "default", "toast"),
+])
+def test_a_persons_setting_turns_the_decision(monkeypatch, level, held, how, want):
+    """The room's speech level decides, then the sender's own setting
+    (agent_media_core.contact_notify) turns it."""
+    from agent_media_core import contact_notify, speak_priority
+    from agent_media_core.intake import toast
+
+    monkeypatch.setattr(speak_priority, "level_of", lambda thread: level)
+    monkeypatch.setattr(toast, "should_hold", lambda thread: held)
+    contact_notify.set_resolver(lambda key, ch: how if (key, ch) == ("t1", "chats") else None)
+    try:
+        assert intake._decide("t1") == want
+    finally:
+        contact_notify.set_resolver(None)

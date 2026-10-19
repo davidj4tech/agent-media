@@ -88,7 +88,7 @@ def _query(addrs: list[str]) -> str:
 
 def recent(c: dict, limit: int = 5) -> list[dict]:
     """The newest mail to and from the person on card `c`, at most `limit`:
-    `[{date, from, mine, subject, gmail_url}]`, newest first. Raises
+    `[{id, date, from, mine, subject, gmail_url}]`, newest first. Raises
     RuntimeError when notmuch does not answer."""
     from . import timeline
 
@@ -121,7 +121,8 @@ def recent(c: dict, limit: int = 5) -> list[dict]:
         head = timeline._header_block(m.get("filename") or [])
         if head is not None and timeline._bulk(head):
             continue
-        out.append({"date": int(float(m.get("timestamp") or 0)),
+        out.append({"id": str(m.get("id") or ""),   # GET /mail/message (mail_read.py)
+                    "date": int(float(m.get("timestamp") or 0)),
                     "from": name.strip() or frm.partition("@")[0],
                     "mine": frm in mine,
                     "subject": str(h.get("Subject") or "").strip(),

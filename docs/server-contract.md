@@ -4345,7 +4345,8 @@ hold (and for any path that is not a uuid, as an unknown route).
 
   **Their newest mail**: `GET /contacts/<id>/mail[?limit=5]` (gated as the
   card; limit at most 20) → `{"ok": true, "available": true, "limit",
-  "items": [{"date": <epoch s>, "from": "Lionel Smith", "mine": false,
+  "items": [{"id": "<notmuch message id>", "date": <epoch s>,
+  "from": "Lionel Smith", "mine": false,
   "subject": "Lunch?", "gmail_url": "https://mail.google.com/mail/u/0/#search/rfc822msgid%3A…"}]}`,
   newest first, read live from this host's notmuch index (contacts_mail.py:
   `search --output=messages --sort=newest-first`, then `show --body=false`)
@@ -4933,6 +4934,75 @@ one search every 10 s across the server.
 404 no such person; 403 another account's book; 429 `{retry_after}` within
 10 s of the last search; 503 the bridge cannot search now (none, signed
 out, down); 400 another network or no name.
+
+#### Reading one email — `GET /mail/message`, `GET /mail/attachment`, `POST /mail/say` — gated, owner only (20 Oct 2026)
+
+Step 1 of docs/proposals/2026-10-20-mail-in-sasonica.md: a person's email
+opens inside Sasonica (mail_read.py). The `id` is notmuch's message id, as
+the card's newest-mail `items` carry it. It is this host's mail: another
+account's book is 403. Nothing is kept: the file is read and dropped, and
+no subject, address or body is logged or written.
+
+`GET /mail/message?id=<id>[&images=1][&format=html]` → `{"ok", "id",
+"from", "to", "cc": [{"name", "address"}], "subject", "date": <epoch s>,
+"mine", "formats": ["text"?, "html"?], "text", "html", "images_blocked",
+"truncated", "attachments": [{"part", "name", "type", "size"}],
+"gmail_url"}`.
+- The body is `text` (the text/plain part) when there is one, and `html`
+  when there is no plain part or `format=html` asks for it and there is
+  one; the other is `null`. `formats` says which the message has.
+- `html` is made safe on the server with an allow-list: only p, br, div,
+  span, b, strong, i, em, u, s, small, sub, sup, a, lists, blockquote, pre,
+  code, hr, headings, tables, dl and img; script, style, head, form,
+  frames, svg, math and the like go with their contents; no attribute but
+  a link's href (http, https, mailto, tel; with `rel="noopener
+  noreferrer"` and `target="_blank"`), an image's src, alt, width and
+  height, and a cell's colspan and rowspan. No class, id, style or event
+  handler survives.
+- Pictures: from the web they are a placeholder (`<span
+  class="mail-image-off">[alt or image]</span>`) unless `images=1` ("Show
+  images", for this one message), and even then only https; one carried in
+  the mail (cid:) is put in as a `data:` URL then. `images_blocked` counts
+  the pictures left out.
+- A body over 512 KB is cut (`truncated`). 400 for a missing or malformed
+  id, 404 for one notmuch does not know, 503 when notmuch does not answer.
+
+`GET /mail/attachment?id=&part=` → the attachment's bytes, with its
+Content-Type, `Content-Disposition: attachment` and its name, `nosniff`
+and `no-store`. `?access_token=` stands in for the bearer, so a plain link
+can download it. `part` is from `attachments`; 404 for a part that is not
+an attachment of the message, or one over 25 MB.
+
+`POST /mail/say {"id"}` — `auth.may_control_speech`, as `/org/say` →
+`{"ok", "chars"}`. The email is read aloud through `media say` only on
+David's tap, never by itself: "From <name>. <subject>." then its words
+(the plain part, else the HTML's words), with quoted lines (`> …`) left
+out and at most 6,000 characters. 422 when nothing readable is left.
+
+#### Notifications — `POST /contacts/<id>/notify` — gated (20 Oct 2026)
+
+A person's own notification setting (contacts_notify.py; David, 20 Oct
+2026: "a little more control over specific contact's notifications"). The
+card carries `notify: {"chats": <mode>, "email": <mode>}`, where each mode
+is `"default"`, `"priority"` or `"quiet"`:
+- `default`: the room's own speech level decides, as before.
+- `priority`: a message that would have been held quietly is a notice
+  (a toast) instead; one that plays still plays.
+- `quiet`: kept in the lists with a Play, never a notice and never read
+  out, whatever the room's level.
+
+`chats` covers their Matrix rooms (SMS, Messenger, Instagram, WhatsApp,
+Teams …), turned at the speech intake (agent_media_intake_matrix `_decide`
+through agent_media_core.contact_notify, whose resolver the server
+registers when its contacts start). A host without the server never asks,
+and everyone is `default` there. `email` is kept and answered now
+(`contact_notify.mode(<address>, "email")`), for the mail notices still to
+come. Calls raise no notice anywhere, so there is no calls channel. The
+setting is the caller's book's, kept through schema bumps.
+
+`POST /contacts/<id>/notify {"channel": "chats" | "email", "mode"}` →
+`{"ok", "notify"}`. Setting `default` removes the row. 400 for an unknown
+channel or mode, 404 for no such contact.
 
 ### 6.25a A contact's timeline — gated (18 Oct 2026)
 
