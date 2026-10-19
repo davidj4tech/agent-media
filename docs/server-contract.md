@@ -412,7 +412,22 @@ Everything a message can be pointed at.
   phone's contacts — so Messages can group a person's rooms without asking
   again. **Absent** when no contact matches (a group, a stranger, a server
   that has never read the phone): treat absent as "a room, as before". `id` is the one
-  `GET /contacts/<id>` takes.
+  `GET /contacts/<id>` takes. **Pictures** (20 Oct 2026): a row whose room
+  has its own picture (`m.room.avatar`) carries `"avatar": {"url":
+  "/rooms/<session>/avatar", "etag"}` (absent when none; a person's row
+  shows the contact's picture first, §6.25 "Pictures"). In the timeline,
+  an incoming message's `sender` adds `avatar: {url, etag}` — the member's
+  own picture on the homeserver, `/rooms/<session>/avatar?user=<mxid>` —
+  and `contact: {id, name}`, the person that member is (matched as a room
+  with them alone is: their bridged account, number, address, or a
+  trusted network's name; the owner's book only), so a group chat shows
+  each sender's picture and a tap opens their card; either is absent when
+  there is none. `GET /rooms/<session>/avatar[?user=<mxid>]` — gated, the
+  owner's (403-free: anyone else gets 404) — answers that picture as a 256
+  px thumbnail from the homeserver's authenticated media, fetched once and
+  kept by its mxc's hash (0600; a failure is not asked again for an hour),
+  with `ETag`, 304 and `?access_token=` for an `<img>`; none, an unknown
+  room or member, 404.
 
 Clients: S (`utils/sasonicaTargets.js`, drawer and ask page), on open.
 
@@ -4785,6 +4800,40 @@ thumbnail. Its ETag starts `L`; If-None-Match, `Last-Modified`, the gate and
 a fetch that fails, answers the thumbnail (its own etag), and a failed one
 is not tried again for a day. No `photo` field changes: the app adds
 `size=large` to the `url` it has.
+
+#### Editing from the card — `POST /contacts/<id>/edit` — gated, owner only (20 Oct 2026)
+
+A card says `"edit": true` when it can be edited here — the owner's book,
+write-back on (`MEDIA_CONTACTS_WRITEBACK`), and a Google entry on the phone
+behind it — and carries `"google_url"`, the person in Google Contacts
+(`https://contacts.google.com/person/c…`, from a Google source's resource
+name), or null. Edits go through the phone, as the read does: `content`
+updates, inserts and deletes on the person's `com.google` raw contact,
+which Android syncs to Google (contacts_edit.py). (A POST, not a PATCH:
+the server routes GET and POST.)
+
+```json
+{"base": {"name": "Peter Ryan", "notes": "old note"},
+ "set":  {"name": "Pete Ryan",  "notes": "met at the springs",
+          "phones": ["0412 345 678", "0400 111 222"],
+          "emails": ["pete@example.test"], "labels": ["Family", "Work"]}}
+```
+
+- `set` — the fields to change, any of `name`, `phones`, `emails`,
+  `notes`, `labels`; `phones`, `emails` and `labels` are the whole list
+  wanted (a value gone is deleted, a new one added — a mobile number, an
+  "other" address — the rest left as they are). A label joins or leaves
+  the Google group of that name; one Google has no group for is not made
+  and comes back in `skipped`.
+- `base` — what the app showed for those fields. A field whose value now
+  differs was changed elsewhere since (in Google Contacts, by a sync):
+  **409** `{"error", "conflict": {field: {"yours", "theirs"}}}`, nothing
+  written. (The phone write has no People API etag; the card is the guard.)
+- **200** `{"ok": true, "done": [fields], "skipped": [labels]}`; the phone
+  is read again straight after, so the card shows Google's copy within
+  moments. Nothing to change: `done: []`. **400** a field that cannot be
+  edited or a bad shape; **403** not editable here; **404** no such
+  contact; **503** the phone cannot be reached; **502** it refused.
 
 #### Find on a network — `POST /contacts/<id>/find` — gated, owner only (19 Oct 2026)
 

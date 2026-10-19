@@ -378,6 +378,10 @@ CONTACT_NOTES = re.compile(r"/contacts/([0-9a-f-]{36})/notes")
 CONTACT_SAME = re.compile(r"/contacts/([0-9a-f-]{36})/(same|different)")
 # Their picture (contacts_photos.py, §6.25).
 CONTACT_PHOTO = re.compile(r"/contacts/([0-9a-f-]{36})/photo")
+# A Matrix room's picture, or a member's (matrix.py, §6.1, 20 Oct 2026).
+ROOM_AVATAR = re.compile(r"/rooms/([0-9a-f-]{36})/avatar")
+# An edit from the card, written back to Google (contacts_edit.py, §6.25).
+CONTACT_EDIT = re.compile(r"/contacts/([0-9a-f-]{36})/edit")
 # One search for them on a network, and the pick (contacts_find.py, §6.25).
 CONTACT_FIND = re.compile(r"/contacts/([0-9a-f-]{36})/find")
 # A bridge's icon, its sign-ins and signing out (bridges.py, §6.26).
@@ -398,7 +402,8 @@ def cors_path(path: str) -> bool:
                                                         AGENT_ACT, CONTACT,
                                                         CONTACT_TIMELINE, CONTACT_NOTES,
                                                         CONTACT_SAME, CONTACT_PHOTO,
-                                                        CONTACT_FIND,
+                                                        CONTACT_FIND, ROOM_AVATAR,
+                                                        CONTACT_EDIT,
                                                         *BRIDGE_ROUTES))
 
 
@@ -646,6 +651,47 @@ def _contacts(h: BaseHTTPRequestHandler, path: str, query: str) -> None:
                                                      arg("since"), arg("service"))})
 
 
+def _room_avatar(h: BaseHTTPRequestHandler, thread: str, query: str) -> None:
+    """`GET /rooms/<thread>/avatar[?user=<mxid>]` (§6.1): the room's own
+    picture, or a member's, as a thumbnail; the owner's (the rooms are);
+    `?access_token=` for an <img>; ETag and 304 as a contact's picture."""
+    from . import matrix as mx
+
+    bearer = _bearer(h)
+    q = parse_qs(query)
+    if not bearer:
+        bearer = ((q.get("access_token") or [""])[0]).strip()
+        auth.set_request_bearer(bearer)
+    user, err = auth.gate(bearer)
+    if not user:
+        _json(h, err.pop("status", 403), {"ok": False, **err})
+        return
+    if auth.request_account() != "":
+        _json(h, 404, {"ok": False, "error": "no picture"})
+        return
+    got = mx.avatar(thread, ((q.get("user") or [""])[0]).strip())
+    if got is None:
+        _json(h, 404, {"ok": False, "error": "no picture"})
+        return
+    data, ctype, etag = got
+    tag = f'"{etag}"'
+    if tag in (h.headers.get("If-None-Match") or ""):
+        h.send_response(304)
+        h.send_header("ETag", tag)
+        _cors(h)
+        h.end_headers()
+        return
+    h.send_response(200)
+    h.send_header("Content-Type", ctype)
+    h.send_header("Content-Length", str(len(data)))
+    h.send_header("ETag", tag)
+    h.send_header("Cache-Control", "private, max-age=86400")
+    h.send_header("X-Content-Type-Options", "nosniff")
+    _cors(h)
+    h.end_headers()
+    h.wfile.write(data)
+
+
 def _contact_photo(h: BaseHTTPRequestHandler, cid: str, query: str) -> None:
     """`GET /contacts/<id>/photo` (§6.25): their picture from the caller's
     book, gated as the card is; `?access_token=` for an <img>, which cannot
@@ -687,6 +733,35 @@ def _contact_photo(h: BaseHTTPRequestHandler, cid: str, query: str) -> None:
     _cors(h)
     h.end_headers()
     h.wfile.write(data)
+
+
+def _contact_edit(h: BaseHTTPRequestHandler, cid: str) -> None:
+    """`POST /contacts/<id>/edit {"base": {…}, "set": {…}}` (§6.25): the
+    card's edit, written back to Google through the phone; gated as the card
+    is, the owner's book only. 409 with both values when a field changed
+    since the app showed it; 503 when the phone cannot be reached."""
+    from . import contacts_android, contacts_edit, contacts_writeback
+
+    user, err = auth.gate(_bearer(h))
+    if not user:
+        _json(h, err.pop("status", 403), {"ok": False, **err})
+        return
+    body = _read_json(h)
+    try:
+        got = contacts_edit.edit(cid, body if isinstance(body, dict) else {})
+    except contacts_edit.NotEditable as e:
+        _json(h, 404 if "no such" in str(e) else 403, {"ok": False, "error": str(e)})
+    except contacts_edit.Conflict as e:
+        _json(h, 409, {"ok": False, "error": "changed since you opened it",
+                       "conflict": e.fields})
+    except contacts_android.Unreachable as e:
+        _json(h, 503, {"ok": False, "error": "the phone cannot be reached"})
+    except contacts_writeback.WriteError:
+        _json(h, 502, {"ok": False, "error": "the phone refused the change"})
+    except ValueError as e:
+        _json(h, 400, {"ok": False, "error": str(e)})
+    else:
+        _json(h, 200, got)
 
 
 def _contact_find(h: BaseHTTPRequestHandler, cid: str) -> None:
@@ -1166,6 +1241,8 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         _contact_timeline(h, CONTACT_TIMELINE.fullmatch(path).group(1), query)
     elif CONTACT_PHOTO.fullmatch(path):
         _contact_photo(h, CONTACT_PHOTO.fullmatch(path).group(1), query)
+    elif ROOM_AVATAR.fullmatch(path):
+        _room_avatar(h, ROOM_AVATAR.fullmatch(path).group(1), query)
     elif path == "/contacts/timeline/backfill":
         _timeline_backfill(h, start=False)
     elif path == "/contacts/google":
@@ -1885,6 +1962,8 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         _contact_same(h, m.group(1), m.group(2))
     elif CONTACT_FIND.fullmatch(path):
         _contact_find(h, CONTACT_FIND.fullmatch(path).group(1))
+    elif CONTACT_EDIT.fullmatch(path):
+        _contact_edit(h, CONTACT_EDIT.fullmatch(path).group(1))
     elif path in ("/contacts/google/login", "/contacts/google/finish",
                   "/contacts/google/signout"):
         _contacts_google(h, path.rsplit("/", 1)[1])

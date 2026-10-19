@@ -109,6 +109,10 @@ class Room:
         # The service a bridge carries this room for (`m.bridge`), or None.
         self.network: dict | None = None
         self.members: dict[str, str] = {}
+        # Pictures (20 Oct 2026): the room's own `m.room.avatar` and each
+        # member's, as mxc URLs ("" for none); served by /rooms/<thread>/avatar.
+        self.avatar = ""
+        self.avatars: dict[str, str] = {}
         self.messages: list[dict] = []
         self._by_id: dict[str, dict] = {}
         # The /messages token for what is older than `messages[0]`; None once
@@ -136,6 +140,9 @@ class Room:
                 joined = self._get(self.config, f"/rooms/{q}/joined_members")
                 self.members = {u: (m or {}).get("display_name") or u
                                 for u, m in (joined.get("joined") or {}).items()}
+                self.avatars = {u: (m or {}).get("avatar_url") or ""
+                                for u, m in (joined.get("joined") or {}).items()
+                                if _mxc((m or {}).get("avatar_url"))}
             except (urllib.error.URLError, OSError, ValueError) as e:
                 log.warning("matrix %s: members unreadable: %s", self.id, e)
             try:
@@ -143,7 +150,9 @@ class Room:
             except (urllib.error.URLError, OSError, ValueError):
                 self.name = ""       # a room with no name: named from its members
             try:
-                self.network = _network(self._get(self.config, f"/rooms/{q}/state"))
+                state = self._get(self.config, f"/rooms/{q}/state")
+                self.network = _network(state)
+                self.avatar = _room_avatar(state)
             except (urllib.error.URLError, OSError, ValueError):
                 pass                 # no service named: listed with the plain rooms
             got = self._page(None)
@@ -227,11 +236,20 @@ class Room:
                 self.name = content.get("name") or ""
                 self.rev += 1
             return
+        if kind == "m.room.avatar":
+            if not front:
+                self.avatar = content.get("url") if _mxc(content.get("url")) else ""
+                self.rev += 1
+            return
         if kind == "m.room.member":
             uid = ev.get("state_key") or ""
             # Going back, a member event is an old name: the joined list wins.
             if not front and content.get("membership") == "join":
                 self.members[uid] = content.get("displayname") or uid
+                if _mxc(content.get("avatar_url")):
+                    self.avatars[uid] = content["avatar_url"]
+                else:
+                    self.avatars.pop(uid, None)
             return
         if kind == "m.room.redaction":
             gone = ev.get("redacts") or content.get("redacts")
@@ -331,13 +349,117 @@ class Room:
 
     def _view(self, msgs: list[dict]) -> list[dict]:
         out = [dict(m, sender=dict(m["sender"])) for m in msgs]
+        who: dict[str, dict] = {}
         for m in out:            # names learnt since the message came in
-            m["sender"]["name"] = self.members.get(m["sender"]["id"]) or m["sender"]["name"]
+            uid = m["sender"]["id"]
+            m["sender"]["name"] = self.members.get(uid) or m["sender"]["name"]
             if m["role"] == "assistant":
                 # The app's "From <name>" note (§6.2.2 `peer`), drawn
                 # over an incoming message.
                 m["peer"] = {"name": m["sender"]["name"]}
+                # Their picture and their card (20 Oct 2026): `avatar` is the
+                # member's own on the homeserver, `contact` the person they
+                # are (a tap opens the card; its picture comes first).
+                if uid not in who:
+                    who[uid] = self._sender_extra(uid)
+                m["sender"].update(who[uid])
         return out
+
+    def _sender_extra(self, uid: str) -> dict:
+        extra: dict = {}
+        mxc = self.avatars.get(uid) or ""
+        if mxc:
+            extra["avatar"] = {"url": f"/rooms/{self.thread}/avatar?user={_q(uid)}",
+                               "etag": _etag(mxc)}
+        try:
+            from . import contacts
+
+            c = contacts.for_member(self, uid)
+        except Exception as e:  # noqa: BLE001 — a sender with no card, not no messages
+            log.warning("matrix %s: sender match failed: %s", self.id, e)
+            c = None
+        if c:
+            extra["contact"] = c
+        return extra
+
+
+def _mxc(v) -> bool:
+    return isinstance(v, str) and v.startswith("mxc://") and "/" in v[6:]
+
+
+def _etag(mxc: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(mxc.encode()).hexdigest()[:16]
+
+
+def _room_avatar(state: list) -> str:
+    """The room's own picture (`m.room.avatar`), an mxc, or ""."""
+    if not isinstance(state, list):
+        return ""
+    for ev in state:
+        if isinstance(ev, dict) and ev.get("type") == "m.room.avatar" and \
+                not ev.get("state_key"):
+            url = (ev.get("content") or {}).get("url")
+            return url if _mxc(url) else ""
+    return ""
+
+
+def avatar(thread: str, user: str = "") -> tuple[bytes, str, str] | None:
+    """`GET /rooms/<thread>/avatar[?user=]`: `(bytes, type, etag)` of the
+    room's picture or a member's, a 256 px thumbnail through the homeserver,
+    kept by its mxc's hash (0600) so it is fetched once; None when there is
+    none or it cannot be had."""
+    import hashlib
+
+    from . import contacts_photos
+
+    r = _ROOMS.get(thread)
+    if r is None:
+        return None
+    with r.lock:
+        mxc = r.avatars.get(user, "") if user else r.avatar
+    if not mxc:
+        return None
+    d = contacts_photos.photos_dir().parent / "room-avatars"
+    name = hashlib.sha256(mxc.encode()).hexdigest()
+    path = d / name
+    try:
+        if path.is_file():
+            data = path.read_bytes()
+            return data, contacts_photos.sniff(data) or "image/jpeg", _etag(mxc)
+        if (d / f"{name}.none").is_file() and \
+                time.time() - (d / f"{name}.none").stat().st_mtime < RETRY_AVATAR_S:
+            return None
+    except OSError:
+        return None
+    try:
+        got = contacts_photos.thumbnail(contacts_photos.fetch_mxc(mxc))
+        if got is None:
+            raise ValueError("not an image")
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        log.info("matrix: a picture unread: %s", e)
+        _write(d, f"{name}.none", b"")
+        return None
+    _write(d, name, got[0])
+    return got[0], got[1], _etag(mxc)
+
+
+#: A picture that could not be had is not asked for again before this.
+RETRY_AVATAR_S = 3600.0
+
+
+def _write(d, name: str, data: bytes) -> None:
+    d.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(d, 0o700)
+    except OSError:
+        pass
+    tmp = d / f".{name}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+    os.replace(tmp, d / name)
 
 
 def _network(state: list) -> dict | None:
@@ -393,6 +515,11 @@ def rows(flags: set | frozenset = frozenset()) -> list[dict]:
                         "harness": "matrix", "source": "matrix", "room": r.id,
                         "network": r.network,
                         "drivable": bool(owner_token())})
+            if r.avatar:
+                # The room's own picture (20 Oct 2026); a person's row shows
+                # the contact's first.
+                out[-1]["avatar"] = {"url": f"/rooms/{r.thread}/avatar",
+                                     "etag": _etag(r.avatar)}
             contact = _contact_of(r)
             if contact:
                 # The person the room is with (contacts.py): absent when none.

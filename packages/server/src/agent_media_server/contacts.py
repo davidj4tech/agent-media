@@ -1983,7 +1983,7 @@ def mail_link(emails: list, aliases: list | None = None) -> dict | None:
 def card(cid: str) -> dict | None:
     """`GET /contacts/<id>`'s contact: the merged card, its sources, and the
     rooms that are this person's."""
-    from . import contacts_find, contacts_photos
+    from . import contacts_edit, contacts_find, contacts_photos
 
     conn = _connect(create=False)
     if conn is None:
@@ -2008,6 +2008,8 @@ def card(cid: str) -> dict | None:
             "old_addresses": c.get("old_addresses") or [],
             "mail": mail_link(c.get("emails") or [],
                               [x.get("address") for x in c.get("old_addresses") or []]),
+            # Edit from the card (contacts_edit.py), and the person in Google.
+            "edit": contacts_edit.editable(c), "google_url": contacts_edit.google_url(c) or None,
             "updated": round(got[2], 3) if got[2] else None, "rooms": rooms_of(cid)}
 
 
@@ -2374,6 +2376,34 @@ def for_room(r) -> dict | None:
     if key in _ROOM_MEMO:
         return _ROOM_MEMO[key]
     got = match_room(r.id, members, _skip_of(r), network)
+    if len(_ROOM_MEMO) > 2000:
+        _ROOM_MEMO.clear()
+    _ROOM_MEMO[key] = got
+    return got
+
+
+def for_member(r, uid: str) -> dict | None:
+    """`{id, name}` of the contact one member of a room is (20 Oct 2026: a
+    sender's picture and card in a group chat), or None: matched as a room
+    with that member alone is (`match_room`'s handle, number, address, name
+    rules, the room's own joins aside). The owner's book only; never the
+    owner, the agent or a bridge's bot."""
+    if not is_owner():
+        return None
+    idx = _index()
+    if idx is None:
+        return None
+    skip = _skip_of(r)
+    if uid in skip:
+        return None
+    with r.lock:
+        name = r.members.get(uid) or ""
+    network = (r.network or {}).get("id") or None
+    key = (idx["gen"], "member", uid, name, network,
+           os.environ.get("MEDIA_CONTACTS_SELF") or "")
+    if key in _ROOM_MEMO:
+        return _ROOM_MEMO[key]
+    got = match_room(f"{r.id}|{uid}", {uid: name}, skip, network)
     if len(_ROOM_MEMO) > 2000:
         _ROOM_MEMO.clear()
     _ROOM_MEMO[key] = got
