@@ -464,7 +464,7 @@ def _claim_once(key: str, ttl_seconds: int = 300) -> bool:
         return True
 
 
-def _format_ask_question(tool_input: dict) -> str:
+def _format_ask_question(tool_input: dict, part: Optional[int] = None) -> str:
     """Render an AskUserQuestion tool input as speakable text.
 
     A multiple-choice question goes out as a *tool call*, so its text never
@@ -472,15 +472,22 @@ def _format_ask_question(tool_input: dict) -> str:
     the generic "waiting for input" notification. Speak the question(s) and
     each option's label and description, so the choice is audible with what
     picking it means (David, 18 Oct 2026: the labels alone left out the why).
+
+    `part` speaks only that question of a card of several, "Question 2 of
+    3." first: a card is read one part at a time (`speak_ask_part`).
     """
-    questions = tool_input.get("questions") or []
+    questions = [q for q in tool_input.get("questions") or []
+                 if (q.get("question") or "").strip()]
     blocks: list[str] = []
     multi = len(questions) > 1
     for i, q in enumerate(questions, 1):
-        qtext = (q.get("question") or "").strip()
-        if not qtext:
+        if part is not None and i != part + 1:
             continue
-        lead = f"Question {i}. " if multi else ""
+        qtext = (q.get("question") or "").strip()
+        if part is not None:
+            lead = f"Question {i} of {len(questions)}. " if multi else ""
+        else:
+            lead = f"Question {i}. " if multi else ""
         spoken_opts = []
         for o in q.get("options") or []:
             label = (o.get("label") or "").strip()
@@ -713,6 +720,15 @@ def _emit_ask(ask: str, payload: dict, lead: str = "", structure: list | None = 
     from ..speak_priority import level_of
 
     held = level_of(session) in ("pocket", "normal", "quiet") and toast.should_hold(session)
+    if held and payload.get("tool_use_id"):
+        # Held for the screen: the later parts of a card are not spoken
+        # either (`speak_ask_part`), the card shows them.
+        try:
+            from agent_media_core import pending_asks
+
+            pending_asks.update(session, str(payload["tool_use_id"]), held=True)
+        except Exception:  # noqa: BLE001
+            pass
     event = Event(text=msg, source=Source.CLAUDE_CODE,
                   priority=Priority.NORMAL if held else priority,
                   voice=voice_for_session(sess),
@@ -740,9 +756,89 @@ def _keep_pending_ask(payload: dict) -> None:
         from agent_media_core import pending_asks
 
         pending_asks.record(session, str(payload.get("tool_use_id") or ""),
-                            payload.get("tool_input") or {})
+                            payload.get("tool_input") or {},
+                            voice=voice_for_session(_session_name()) or "",
+                            place=_source_place(session))
     except Exception as e:  # noqa: BLE001 — the phone falls back to the screen
         log.info("hook: could not keep the pending question (%s)", e)
+
+
+def _ask_parts_follow(payload: dict) -> bool:
+    """Can the later parts of this card be spoken as they come up?
+
+    Only a card of several questions, kept by `_keep_pending_ask`, and only
+    where something will notice a part answered: the app, for a headless
+    session (it is answered nowhere else), and for a pane the watcher on its
+    tabs, which needs the server's screen reader installed alongside.
+    """
+    tool_input = payload.get("tool_input") or {}
+    qs = [q for q in tool_input.get("questions") or [] if (q.get("question") or "").strip()]
+    if len(qs) < 2 or not payload.get("session_id") or not payload.get("tool_use_id"):
+        return False
+    if os.environ.get("MEDIA_ASK_PARTS", "1") == "0":
+        return False
+    if os.environ.get("MEDIA_SOURCE_KIND") == "headless":
+        return True
+    if not os.environ.get("TMUX_PANE"):
+        return False
+    import importlib.util
+
+    return importlib.util.find_spec("agent_media_server") is not None
+
+
+def _follow_ask_tabs(payload: dict) -> None:
+    """Start the watcher that speaks each tab of the card as the terminal
+    reaches it (agent_media_server.ask_follow). Detached: the hook returns
+    at once and the watcher ends with the card."""
+    pane = os.environ.get("TMUX_PANE") or ""
+    if not pane:
+        return
+    import subprocess
+
+    try:
+        subprocess.Popen([sys.executable, "-m", "agent_media_server.ask_follow",
+                          str(payload.get("session_id") or ""), pane,
+                          str(payload.get("tool_use_id") or "")],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError as e:
+        log.info("hook: could not start the question's tab watcher (%s)", e)
+
+
+def speak_ask_part(session: str, part: int, tool_use_id: str = "") -> str:
+    """Speak part `part` (0-based) of the card `session` has up. Why not, or "".
+
+    Called when the part before it has been answered: by the server when a
+    part is picked in the app, by the watcher when the terminal moves to the
+    next tab. Each part is spoken once (`pending_asks.claim_part`), never the
+    first (the PreToolUse hook read it), and none when the first was held
+    for the screen. Runs outside the hook, so the voice and the place are the
+    ones the hook kept with the question.
+    """
+    from agent_media_core import pending_asks
+
+    cur = pending_asks.read(session)
+    if not cur:
+        return "no_question"
+    if tool_use_id and (cur.get("tool_use_id") or "") != tool_use_id:
+        return "not_this_question"
+    qs = cur.get("questions") or []
+    if not isinstance(part, int) or not 0 < part < len(qs):
+        return "no_such_part"
+    if cur.get("held"):
+        return "held"
+    if not pending_asks.claim_part(session, str(cur.get("tool_use_id") or ""), part):
+        return "already_spoken"
+    text = strip_markdown(_format_ask_question({"questions": qs}, part=part).strip())
+    if not text:
+        return "no_such_part"
+    place = cur.get("place") if isinstance(cur.get("place"), dict) else {}
+    event = Event(text=text, source=Source.CLAUDE_CODE, priority=Priority.NORMAL,
+                  voice=cur.get("voice") or None,
+                  metadata={"kind": "notif", "ask": True, "ask_part": part,
+                            "session": session, **place})
+    submit_event(event, state=StateStore())
+    return ""
 
 
 def _handle_pretooluse(payload: dict) -> int:
@@ -758,9 +854,22 @@ def _handle_pretooluse(payload: dict) -> int:
     if payload.get("tool_name") != "AskUserQuestion":
         return 0
     _keep_pending_ask(payload)
-    ask = strip_markdown(_format_ask_question(payload.get("tool_input") or {}).strip())
+    tool_input = payload.get("tool_input") or {}
+    # A card of several questions is read one part at a time: the first
+    # now, each next one when the one before is answered — picked in the
+    # app (POST /session/ask/part) or the terminal moved to its tab (the
+    # watcher, `_follow_ask_tabs`) (David, 19 Oct 2026). Where neither can
+    # tell, the whole card is read at once, as before.
+    part = 0 if _ask_parts_follow(payload) else None
+    ask = strip_markdown(_format_ask_question(tool_input, part=part).strip())
     if not ask:
         return 0
+    if part is not None:
+        from agent_media_core import pending_asks
+
+        pending_asks.claim_part(str(payload.get("session_id") or ""),
+                                str(payload.get("tool_use_id") or ""), 0)
+        _follow_ask_tabs(payload)
     # Prepend the prose Claude wrote before the question in this same turn,
     # read back from the transcript: the PreToolUse payload carries no
     # assistant text, but since Claude Code writes the turn's text to the

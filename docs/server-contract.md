@@ -1667,6 +1667,33 @@ and a structured one:
 
 Clients: S (`ConversationLog.vue`).
 
+#### `POST /session/ask/part` — gated — BUILT 19 Oct 2026
+
+A question card of several questions is read aloud one part at a time
+(David, 19 Oct 2026): the PreToolUse hook speaks the first part ("Question 1
+of 3. …"), and each next part is spoken once the one before it is answered.
+At the terminal the server sees that itself — the hook starts a watcher on
+the pane (`ask_follow.py`) that speaks a part when its tab becomes the
+current one. The app draws every part at once and sends them together, so
+it says when a part is picked:
+
+`{"session", "part": <n, 0-based>, "tool_use_id"?}` — every part before
+`part` has an answer picked; speak `part`. Send it the first time the last
+unanswered part before `part` gets a pick (`part` is the first part with no
+answer yet); sending it again, or for a part the terminal already reached,
+speaks nothing.
+
+- 200 `{"ok": true, "spoken": true}`, or `{"ok": true, "spoken": false,
+  "why"}` with `why` one of `already_spoken`, `held` (the first part was
+  held for the screen, so the rest are not spoken either), `no_question`,
+  `not_this_question` (`tool_use_id` names another), `no_such_part` (0 —
+  the hook's — or past the end).
+- 400 `"not a session id"`, `"part must be a number"`; 401 as §4.1.
+- Where neither can tell — a pane on a host without the server, or
+  `MEDIA_ASK_PARTS=0` — the whole card is read at once, as before.
+
+Clients: S (the question card).
+
 #### `POST /focus` — amux token or gated
 
 `{"pane": "%23"}` → pulls the desk's attached tmux client to that pane (or

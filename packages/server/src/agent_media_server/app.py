@@ -147,6 +147,10 @@ device gets its token):
                   directory, restarting it (moves.py, §6.15). While it is
                   busy (a turn, a question, background agents) the move
                   waits until it is free (`pending`, `why_waiting`)
+  POST /session/ask/part {"session", "part", "tool_use_id"?} → every part of
+                  that session's question card before `part` has an answer
+                  picked: speak part `part` (0-based), once; `spoken`, else
+                  `why` (ask_follow.py)
   POST /session/move/cancel {"session"} → drop the move waiting on that
                   session, and any failure it left (§6.15)
   POST /session/answer {"session", "choice", "key"} → answer the dialog that
@@ -284,6 +288,7 @@ CORS_PATHS = frozenset({
     "/session/answer", "/session/archive", "/session/seal", "/session/pin", "/session/priority", "/session/pocket",
     "/session/stop",
     "/session/retract", "/session/move", "/session/move/cancel", "/session/settings",
+    "/session/ask/part",
     "/speech/now", "/speech/ctl", "/speech/sentences", "/speech/clip", "/speech/default", "/speech/voice",
     "/settings/language",
     "/sessions/state", "/commands", "/rename",
@@ -2073,6 +2078,13 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
 
         body = _read_json(h) or {}
         ok, detail = moves.cancel(str(body.get("session") or ""), bearer=_bearer(h))
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/session/ask/part":
+        # A part of a question card picked in the app: speak the next part
+        # (ask_follow.py).
+        from . import ask_follow
+
+        ok, detail = ask_follow.post(_read_json(h) or {}, _bearer(h))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/follow/trace":
         # The app's bold, move by move, beside the row (follow_trace.py).

@@ -56,8 +56,11 @@ def questions_of(tool_input: dict) -> list[dict]:
     return out
 
 
-def record(session: str, tool_use_id: str, tool_input: dict) -> bool:
-    """Keep the question `session` is about to put up. Whether it was kept."""
+def record(session: str, tool_use_id: str, tool_input: dict, **extra) -> bool:
+    """Keep the question `session` is about to put up. Whether it was kept.
+
+    `extra` is kept beside it (the hook's `voice`, for speaking a later part
+    from another process)."""
     path = _path(session)
     qs = questions_of(tool_input)
     if path is None or not qs:
@@ -65,9 +68,48 @@ def record(session: str, tool_use_id: str, tool_input: dict) -> bool:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(f".{os.getpid()}.tmp")
-        tmp.write_text(json.dumps({"session": session, "tool_use_id": tool_use_id or "",
+        tmp.write_text(json.dumps({**extra, "session": session, "tool_use_id": tool_use_id or "",
                                    "at": round(time.time(), 3), "questions": qs}))
         os.replace(tmp, path)
+    except OSError:
+        return False
+    return True
+
+
+def update(session: str, tool_use_id: str, **fields) -> bool:
+    """Add `fields` to the kept question, if it is still that one."""
+    path = _path(session)
+    cur = read(session)
+    if path is None or not cur or (cur.get("tool_use_id") or "") != (tool_use_id or ""):
+        return False
+    try:
+        tmp = path.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps({**cur, **fields}))
+        os.replace(tmp, path)
+    except OSError:
+        return False
+    return True
+
+
+def claim_part(session: str, tool_use_id: str, part: int) -> bool:
+    """Is this the first ask to speak part `part` of that question?
+
+    A card of several questions is read one part at a time, each when the
+    one before it has been answered (David, 19 Oct 2026), and two things can
+    notice that: the app, when a part is picked there, and the watcher on the
+    pane, when the terminal moves to the next tab. Whichever is first speaks
+    it; a marker file made exclusively is the claim.
+    """
+    path = _path(session)
+    if path is None or part < 0:
+        return False
+    tag = re.sub(r"[^0-9A-Za-z_-]", "", tool_use_id or "")[:64] or "none"
+    marker = path.with_name(f"{session}.{tag}.part{int(part)}.spoken")
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        os.close(os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+    except FileExistsError:
+        return False
     except OSError:
         return False
     return True
@@ -98,3 +140,8 @@ def clear(session: str, tool_use_id: str = "") -> None:
         path.unlink()
     except OSError:
         pass
+    for marker in path.parent.glob(f"{session}.*.spoken"):
+        try:
+            marker.unlink()
+        except OSError:
+            pass
