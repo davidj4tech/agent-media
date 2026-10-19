@@ -832,6 +832,19 @@ def speak_ask_part(session: str, part: int, tool_use_id: str = "") -> str:
     text = strip_markdown(_format_ask_question({"questions": qs}, part=part).strip())
     if not text:
         return "no_such_part"
+    # The part before is answered, so its read-out has nothing left to ask:
+    # skip to this one rather than queue behind it — the one speaking stops,
+    # a queued one is dropped (David, 19 Oct 2026: "once I answer one, the
+    # audio should skip to the next question"). The cut is stamped before
+    # this part is submitted, so this part plays; the lead-in is not a
+    # read-out and is left alone.
+    from .submit import request_session_speech_cut
+
+    request_session_speech_cut(session, "ask")
+    try:
+        _stop_playing_ask(session)
+    except Exception as e:  # noqa: BLE001 — the cut still ends it between clips
+        log.info("hook: could not stop the part before (%s)", e)
     place = cur.get("place") if isinstance(cur.get("place"), dict) else {}
     event = Event(text=text, source=Source.CLAUDE_CODE, priority=Priority.NORMAL,
                   voice=cur.get("voice") or None,

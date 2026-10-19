@@ -91,3 +91,20 @@ def test_answering_clears_the_claims(isolated):
     pending_asks.clear("s1", "t1")
     pending_asks.record("s1", "t1", CARD)
     assert pending_asks.claim_part("s1", "t1", 1)
+
+
+def test_a_later_part_skips_the_one_before(isolated, monkeypatch):
+    """Answering a part cuts the read-out of the one before — the one
+    speaking is stopped, a queued one dropped — and the next part plays."""
+    import time
+    from agent_media_core.intake import submit as S
+
+    stopped = []
+    monkeypatch.setattr(H, "_stop_playing_ask", lambda s: stopped.append(s))
+    pending_asks.record("s1", "t1", CARD)
+    before = time.time() - 1
+    assert H.speak_ask_part("s1", 1) == ""
+    assert stopped == ["s1"]
+    assert S._speech_cut("s1", before, ask=True)          # part 1's read-out
+    assert not S._speech_cut("s1", before, ask=False)     # the lead-in plays
+    assert not S._speech_cut("s1", time.time() + 1, ask=True)  # part 2 plays

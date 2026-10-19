@@ -1684,6 +1684,12 @@ unanswered part before `part` gets a pick (`part` is the first part with no
 answer yet); sending it again, or for a part the terminal already reached,
 speaks nothing.
 
+Speaking a part skips to it: the read-out of the parts before is cut as an
+answered question's is (the one speaking stops, a queued one is dropped),
+so the next part never waits behind the one just answered; the lead-in
+before the card is left alone. The same holds when the terminal reaches a
+tab.
+
 - 200 `{"ok": true, "spoken": true}`, or `{"ok": true, "spoken": false,
   "why"}` with `why` one of `already_spoken`, `held` (the first part was
   held for the screen, so the rest are not spoken either), `no_question`,
