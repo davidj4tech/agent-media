@@ -1309,6 +1309,15 @@ ahead.
     "No matches"; Escape closes. Tool steps too with Advanced on.
     **Built 19 Oct 2026** (sasonica-app `FindBar.tsx`, test/find.mjs).
 
+33. **Messages: spaces** (David, 19 Oct 2026: "I think we need a way to
+    better manage the messages tab. maybe we can use spaces as well?").
+    The plan is docs/proposals/2026-10-19-messages-spaces.md: Matrix spaces
+    as a chip row across Messages (All, Unread, then spaces), the bridges'
+    own spaces for free, spaces David makes (Family, South Pen Labs, Rye
+    Remedial), and contact labels filling them. Step 1 is a fix on its
+    own: the bridges' space rooms are probably taken in as empty threads.
+    Plan only; open questions first.
+
 ## Loose ends
 
 - **A reply with a figure had no follow-along at all** (David, 23 Sep 2026)
