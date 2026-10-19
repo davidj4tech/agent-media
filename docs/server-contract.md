@@ -4299,8 +4299,32 @@ hold (and for any path that is not a uuid, as an unknown route).
   `label` is "Gmail" for Gmail, else the link's host. A search longer than
   2000 characters stops at the last address that fits — the card's own
   first, then the old ones last seen first — and says `left_out` (how many
-  did not). `null` with no address. The app opens it outside itself, as it
-  does `tel:`, so Android can hand it to the Gmail app (David, 19 Oct 2026).
+  did not). The app opens it outside itself, as it does `tel:`; the Gmail
+  app does not take a search (tried 20 Oct 2026: an ACTION_SEARCH is
+  dropped, a `#search/` link opens the inbox), so it is the browser's.
+  `mail` also carries `mailto` (`mailto:` the card's first email, for
+  "Email them", which Android hands to the Gmail app) and `recent: true`
+  when their newest mail can be listed (below). `null` with none of these.
+
+  **Their newest mail**: `GET /contacts/<id>/mail[?limit=5]` (gated as the
+  card; limit at most 20) → `{"ok": true, "available": true, "limit",
+  "items": [{"date": <epoch s>, "from": "Lionel Smith", "mine": false,
+  "subject": "Lunch?", "gmail_url": "https://mail.google.com/mail/u/0/#search/rfc822msgid%3A…"}]}`,
+  newest first, read live from this host's notmuch index (contacts_mail.py:
+  `search --output=messages --sort=newest-first`, then `show --body=false`)
+  over the card's addresses and its old chat addresses, raw and decoded:
+  mail from them or to them. Left out as the timeline's email is: a list's
+  or a machine's mail (List-Id, List-Unsubscribe, Precedence, Auto-Submitted,
+  a no-reply sender), spam, deleted, the Chats label. `from` is the
+  sender's name (else their address's local part), `mine` whether it is
+  one of David's own addresses; `gmail_url` is that one message by its
+  Message-ID in the book's mail template. Nothing is kept: notmuch's answer
+  is read in memory and dropped, never logged or written. `{"ok": true,
+  "available": false, "items": []}` when it cannot be listed (another
+  account's book — it is this host's mail —, no notmuch with a database,
+  `MEDIA_TIMELINE_MAIL=off|imap` or `MEDIA_CONTACTS_MAIL_RECENT=0`); 503
+  when notmuch does not answer; 404 no such contact (David, 20 Oct 2026:
+  "Both" — the newest on the card, the browser search for the rest).
 - **`old_addresses`**: `[{"address", "real"}]`, the old Jabber (XMPP)
   transport addresses to MSN, Yahoo, AIM, ICQ, Facebook chat, Google Talk
   bots and the like (`someone%hotmail.com@msn.example.org`), folded off

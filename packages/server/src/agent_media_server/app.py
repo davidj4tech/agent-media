@@ -197,6 +197,9 @@ device gets its token):
                   (contacts.py, §6.25)
   GET  /contacts/<id> → one person's card: names, phones, emails,
                   addresses, notes, sources, and the rooms that are theirs
+  GET  /contacts/<id>/mail[?limit=] → their newest mail (from, subject,
+                  date, a link to the message), live from notmuch
+                  (contacts_mail.py, §6.25)
   GET  /contacts/<id>/timeline[?limit=] → their texts, calls, mail and
                   notes by day, from the CRM's daily rollups (timeline.py)
   POST /contacts/<id>/notes {"text"} → a note on them, today, kept in the CRM
@@ -379,6 +382,8 @@ CONTACT_NOTES = re.compile(r"/contacts/([0-9a-f-]{36})/notes")
 CONTACT_SAME = re.compile(r"/contacts/([0-9a-f-]{36})/(same|different)")
 # Their picture (contacts_photos.py, §6.25).
 CONTACT_PHOTO = re.compile(r"/contacts/([0-9a-f-]{36})/photo")
+# Their newest mail, read live from notmuch (contacts_mail.py, §6.25).
+CONTACT_MAIL = re.compile(r"/contacts/([0-9a-f-]{36})/mail")
 # A Matrix room's picture, or a member's (matrix.py, §6.1, 20 Oct 2026).
 ROOM_AVATAR = re.compile(r"/rooms/([0-9a-f-]{36})/avatar")
 # An edit from the card, written back to Google (contacts_edit.py, §6.25).
@@ -403,7 +408,7 @@ def cors_path(path: str) -> bool:
                                      for r in (THREAD_EVENTS, THREAD_AGENTS, AGENT_LOG,
                                                         AGENT_ACT, CONTACT,
                                                         CONTACT_TIMELINE, CONTACT_NOTES,
-                                                        CONTACT_SAME, CONTACT_PHOTO,
+                                                        CONTACT_SAME, CONTACT_PHOTO, CONTACT_MAIL,
                                                         CONTACT_FIND, ROOM_AVATAR,
                                                         CONTACT_EDIT,
                                                         *BRIDGE_ROUTES))
@@ -904,6 +909,37 @@ def _contact_timeline(h: BaseHTTPRequestHandler, cid: str, query: str) -> None:
     _json_z(h, 200, {"ok": True, **timeline.timeline(cid, limit or None)})
 
 
+def _contact_mail(h: BaseHTTPRequestHandler, cid: str, query: str) -> None:
+    """`GET /contacts/<id>/mail[?limit=]` (§6.25): their newest mail from this
+    host's notmuch, gated as the card is; `available: false` (and no items)
+    when it cannot be listed (another account's book, no notmuch). Never
+    logged, never kept."""
+    from . import contacts, contacts_mail
+
+    user, err = auth.gate(_bearer(h))
+    if not user:
+        _json(h, err.pop("status", 403), {"ok": False, **err})
+        return
+    c = contacts.card(cid)
+    if c is None:
+        _json(h, 404, {"ok": False, "error": "no such contact"})
+        return
+    if not contacts_mail.available():
+        _json(h, 200, {"ok": True, "available": False, "items": []})
+        return
+    try:
+        limit = int((parse_qs(query).get("limit") or ["5"])[0] or 5)
+    except ValueError:
+        limit = 5
+    try:
+        items = contacts_mail.recent(c, limit)
+    except RuntimeError as e:
+        _json(h, 503, {"ok": False, "error": str(e)})
+        return
+    _json_z(h, 200, {"ok": True, "available": True, "items": items,
+                     "limit": max(1, min(contacts_mail.LIMIT_MAX, limit))})
+
+
 def _timeline_backfill(h: BaseHTTPRequestHandler, *, start: bool) -> None:
     """`POST /contacts/timeline/backfill` starts the job (§6.25a,
     timeline_backfill.py) unless it is running; `GET` says how it is doing.
@@ -1245,6 +1281,8 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         _contact_timeline(h, CONTACT_TIMELINE.fullmatch(path).group(1), query)
     elif CONTACT_PHOTO.fullmatch(path):
         _contact_photo(h, CONTACT_PHOTO.fullmatch(path).group(1), query)
+    elif CONTACT_MAIL.fullmatch(path):
+        _contact_mail(h, CONTACT_MAIL.fullmatch(path).group(1), query)
     elif ROOM_AVATAR.fullmatch(path):
         _room_avatar(h, ROOM_AVATAR.fullmatch(path).group(1), query)
     elif path == "/contacts/timeline/backfill":

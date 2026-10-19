@@ -1997,6 +1997,23 @@ def mail_link(emails: list, aliases: list | None = None) -> dict | None:
     return out
 
 
+def _card_mail(c: dict) -> dict | None:
+    """The card's `mail`: the browser search (`url`, `label`, `left_out`;
+    mail_link), `mailto` for "Email them", and `recent: true` when their
+    newest mail can be listed (`GET /contacts/<id>/mail`, contacts_mail.py).
+    None when there is none of these."""
+    from . import contacts_mail
+
+    out = dict(mail_link(c.get("emails") or [],
+                         [x.get("address") for x in c.get("old_addresses") or []]) or {})
+    to = contacts_mail.mailto(c)
+    if to:
+        out["mailto"] = to
+    if contacts_mail.addresses(c) and contacts_mail.available():
+        out["recent"] = True
+    return out or None
+
+
 def card(cid: str) -> dict | None:
     """`GET /contacts/<id>`'s contact: the merged card, its sources, and the
     rooms that are this person's."""
@@ -2023,8 +2040,7 @@ def card(cid: str) -> dict | None:
             "labels": c.get("labels") or [], "handles": c.get("handles") or [],
             "suggestions": suggestions(cid),
             "old_addresses": c.get("old_addresses") or [],
-            "mail": mail_link(c.get("emails") or [],
-                              [x.get("address") for x in c.get("old_addresses") or []]),
+            "mail": _card_mail(c),
             # Edit from the card (contacts_edit.py), and the person in Google.
             "edit": contacts_edit.editable(c), "google_url": contacts_edit.google_url(c) or None,
             "updated": round(got[2], 3) if got[2] else None, "rooms": rooms_of(cid)}
