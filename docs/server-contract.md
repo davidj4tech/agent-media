@@ -5054,7 +5054,17 @@ the owner's"`. With no bridges configured, `GET /bridges` is `{"ok": true,
   when it has it (`<state_dir>/owner-networks.json`, `{network: {name?,
   email?, phone?, username?}}`, written by the contacts import from
   Facebook's and Instagram's personal-information files; Messenger's email
-  comes from there), never over what the bridge said.
+  comes from there), never over what the bridge said. The import reads
+  Facebook's `personal_information/profile_information/profile_information.json`
+  (`profile_v2`: `emails.emails[0]`, `phone_numbers[0].phone_number`,
+  `username`, `name.full_name`) and Instagram's `personal_information.json`
+  (`profile_user[0].string_map_data`: Email, Phone Number, Username, Name),
+  each alone in a zip or as one file; only the fields present are kept, a
+  network's entry is replaced whole by each newer export and the others
+  are left; 0600, written atomically, and only by the owner's book (another
+  account's import writes nothing). `POST /contacts/import` answers
+  `profile: {network: [field names]}`, never the values; the export links
+  ask for Personal information → Profile information too.
 - `logins[].state` is the bridge state event as the bridge says it
   (`CONNECTED`, `CONNECTING`, `BACKFILLING`, `TRANSIENT_DISCONNECT`,
   `BAD_CREDENTIALS`, `UNKNOWN_ERROR`, `LOGGED_OUT`, …); `error` its error

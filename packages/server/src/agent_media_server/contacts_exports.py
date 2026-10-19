@@ -60,10 +60,12 @@ DYI_URL = "https://accountscenter.facebook.com/info_and_permissions/dyi"
 REMIND_DAYS = 90
 NETWORKS = {"facebook": "Facebook", "instagram": "Instagram"}
 CHOICES = {
-    "facebook": "Some of your information → Connections → Friends and followers; "
-                "All time, Format JSON",
-    "instagram": "Some of your information → Connections → Followers and following; "
-                 "All time, Format JSON",
+    "facebook": "Some of your information → Connections → Friends and followers, and "
+                "Personal information → Profile information (your own email and phone, "
+                "for Settings → Bridges); All time, Format JSON",
+    "instagram": "Some of your information → Connections → Followers and following, and "
+                 "Personal information → Personal information (your own email and phone, "
+                 "for Settings → Bridges); All time, Format JSON",
 }
 #: Settings → Contacts → Import a file's links (`GET /contacts/google`
 #: `exports`): what each export brings, said as the reminder says it.

@@ -1630,13 +1630,14 @@ def import_export(data: bytes, name: str = "", *, via: str = "") -> dict:
             raise contacts_import.NotAnExport("not a zip that opens") from e
         return _import_zip(zf, name, via=via)
     hist = contacts_history.scan_bytes(data, name)
+    profiles = contacts_import.profiles_bytes(data, name)
     try:
         found, counts = contacts_import.parse(data, name)
     except contacts_import.NotAnExport:
-        if not hist:
+        if not hist and not profiles:
             raise
         found, counts = {}, {}
-    return _import_found(found, counts, hist, via=via)
+    return _import_found(found, counts, hist, via=via, profiles=profiles)
 
 
 def import_path(path: Path, *, via: str = "") -> dict:
@@ -1673,16 +1674,32 @@ def _import_zip(zf: "zipfile.ZipFile", name: str, *, via: str = "") -> dict:
 
     found, counts, html = contacts_import.parse_zip(zf)
     hist = contacts_history.scan_zip(zf, name)
-    if not counts and not hist:
+    profiles = contacts_import.profiles_zip(zf)
+    if not counts and not hist and not profiles:
         raise contacts_import.NotAnExport(
             "that export is HTML: download it again as JSON" if html else
-            "no friends, followers, messages or chats in that zip")
-    return _import_found(found, counts, hist, via=via)
+            "no friends, followers, messages, chats or profile in that zip")
+    return _import_found(found, counts, hist, via=via, profiles=profiles)
 
 
-def _import_found(found: dict, counts: dict, hist, *, via: str = "") -> dict:
-    """The people lists found, then the history, into this book."""
+def _import_found(found: dict, counts: dict, hist, *, via: str = "",
+                  profiles: dict | None = None) -> dict:
+    """The people lists found, then the history, into this book; the
+    owner's own profile (contacts_import.save_owner_profiles) when the
+    export holds it."""
     out = {"imported": dict(counts), "people": 0, "joined": 0, "contacts": 0}
+    if profiles:
+        from . import contacts_import
+
+        try:
+            said = contacts_import.save_owner_profiles(profiles)
+        except OSError as e:
+            log.warning("contacts: the owner's profile was not kept (%s)", type(e).__name__)
+            said = {}
+        if said:
+            out["profile"] = said
+            log.info("contacts: the owner's profile from %s: %s", ", ".join(sorted(said)),
+                     "; ".join(f"{n} {', '.join(f) or 'nothing'}" for n, f in sorted(said.items())))
     if found:
         out.update(_import_people(found, counts))
     if hist:
@@ -2882,6 +2899,8 @@ def cmd_import(a) -> int:
         line += (f": {got['people']} people from exports, {got['joined']} of them joined "
                  "someone already here")
     print(f"{line}; {got['contacts']} contacts")
+    for net, fields in sorted((got.get("profile") or {}).items()):
+        print(f"your {net.capitalize()} profile: {', '.join(fields) or 'nothing filled'}")
     h = got.get("history")
     if h:
         print(f"history: {h['days']} days added or raised in the timeline, "

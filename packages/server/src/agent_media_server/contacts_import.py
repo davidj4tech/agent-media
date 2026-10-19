@@ -41,6 +41,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import re
 import zipfile
 from urllib.parse import urlparse
@@ -308,6 +309,118 @@ def _take(out: dict, counts: dict, kind, raw: bytes, fname: str) -> None:
         key = f"{kind[0]}_{kind[1]}"
         n = _uploads(kind, obj, out) if kind[1] == "uploads" else _people(kind, obj, out)
         counts[key] = counts.get(key, 0) + n
+
+
+# --- the owner's own profile ------------------------------------------------------
+#
+# Facebook's personal_information/profile_information/profile_information.json
+# (`profile_v2`) and Instagram's personal_information.json (`profile_user`)
+# say the exporter's own name, email, phone and username: what a bridge
+# leaves out of a sign-in (Messenger gives no email), filled in from
+# `owner-networks.json` (bridges.owner_networks, contract §6.26 `profile`).
+
+PROFILE_FILES = ("profile_information.json", "personal_information.json")
+PROFILE_FIELDS = ("name", "email", "phone", "username")
+_IG_KEYS = {"email": "email", "phone number": "phone", "phone": "phone",
+            "username": "username", "name": "name"}
+
+
+def _profile_file(path: str) -> bool:
+    return path.replace("\\", "/").rsplit("/", 1)[-1].lower() in PROFILE_FILES
+
+
+def _text(v) -> str:
+    return fix_text(v).strip() if isinstance(v, str) else ""
+
+
+def profile_of(obj) -> tuple[str, dict] | None:
+    """`(network, {name?, email?, phone?, username?})` from a profile file's
+    JSON, only the fields it fills; None when it is not one."""
+    if not isinstance(obj, dict):
+        return None
+    if isinstance(obj.get("profile_v2"), dict):                     # Facebook
+        p = obj["profile_v2"]
+        emails = (p.get("emails") or {}).get("emails") if isinstance(p.get("emails"), dict) else None
+        phones = p.get("phone_numbers") if isinstance(p.get("phone_numbers"), list) else []
+        phone = next((_text(x.get("phone_number")) for x in phones
+                      if isinstance(x, dict) and _text(x.get("phone_number"))), "")
+        got = {"name": _text((p.get("name") or {}).get("full_name")
+                             if isinstance(p.get("name"), dict) else ""),
+               "email": _text(emails[0]) if isinstance(emails, list) and emails else "",
+               "phone": phone, "username": _text(p.get("username"))}
+        return "facebook", {k: v for k, v in got.items() if v}
+    rows = obj.get("profile_user")                                  # Instagram
+    if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+        smd = rows[0].get("string_map_data")
+        got: dict[str, str] = {}
+        if isinstance(smd, dict):
+            for key, val in smd.items():
+                field = _IG_KEYS.get(str(key).strip().lower())
+                v = _text(val.get("value")) if isinstance(val, dict) else ""
+                if field and v and field not in got:
+                    got[field] = v
+        return "instagram", got
+    return None
+
+
+def _profile_raw(raw: bytes) -> tuple[str, dict] | None:
+    try:
+        return profile_of(json.loads(raw.decode("utf-8-sig")))
+    except (UnicodeDecodeError, ValueError):
+        return None
+
+
+def profiles_zip(zf: zipfile.ZipFile) -> dict[str, dict]:
+    """`{network: fields}` from an export zip's profile files (small; read
+    alone, never the rest)."""
+    out: dict[str, dict] = {}
+    for info in zf.infolist()[:MAX_MEMBERS]:
+        if _profile_file(info.filename) and info.file_size <= MAX_FILE:
+            got = _profile_raw(zf.read(info))
+            if got:
+                out[got[0]] = got[1]
+    return out
+
+
+def profiles_bytes(data: bytes, name: str = "") -> dict[str, dict]:
+    """The same from one JSON file."""
+    if data[:4] == b"PK\x03\x04" or data.lstrip()[:1] not in (b"{",):
+        return {}
+    got = _profile_raw(data)
+    return {got[0]: got[1]} if got else {}
+
+
+def save_owner_profiles(profiles: dict[str, dict]) -> dict[str, list[str]]:
+    """Each network's profile as its export says it into owner-networks.json
+    (0600, written whole and atomically), replacing that network's entry and
+    keeping the others'. The owner's book only: another account's import
+    writes nothing. `{network: [the fields kept]}`, never the values."""
+    from . import bridges, contacts
+
+    if not profiles or not contacts.is_owner():
+        return {}
+    path = bridges.owner_networks_path()
+    have = bridges.owner_networks()
+    said: dict[str, list[str]] = {}
+    for net, fields in profiles.items():
+        kept = {k: fields[k] for k in PROFILE_FIELDS if fields.get(k)}
+        have[net] = kept
+        said[net] = list(kept)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(have, f, ensure_ascii=False, indent=1)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+    return said
 
 
 def parse_zip(zf: zipfile.ZipFile) -> tuple[dict, dict, bool]:
