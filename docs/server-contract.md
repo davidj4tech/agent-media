@@ -4592,8 +4592,9 @@ gets none of this):
   Download your information page, `detail` the exact choices (Some of your
   information → Connections → Friends and followers / Followers and
   following; All time; JSON). The next import of that network clears it.
-- **The "ready" mail** (opt-in: `MEDIA_CONTACTS_EXPORT_MAIL=1` and the
-  timeline's IMAP connection, `timeline-imap.json`). Mail from
+- **The "ready" mail** (opt-in: `MEDIA_CONTACTS_EXPORT_MAIL=1` and a way
+  to the mail: this host's notmuch index, else the timeline's IMAP
+  connection, `timeline-imap.json`; §6.25a `email`). Mail from
   facebookmail.com or mail.instagram.com (the address's own domain) whose
   subject says the information is ready raises
   `contacts.export.ready.<network>` at warn, `fix` the download link from
@@ -4667,7 +4668,9 @@ separated; default `texts,notes`):
 | `texts` | on | `sms`, `signal`, `messenger`, `instagram`, `teams`, `whatsapp` | the Matrix rooms that are the contact's (§6.25 "Which room is whose"): Google Messages is `sms`, Signal `signal`, mautrix-meta's `facebookgo` `messenger` and `instagramgo` `instagram`, Teams `teams`; David's (the owner, his own number's puppet, or his own ghost on a network, §6.25 "The bridged networks") are out |
 | `notes` | on | `note` | `POST /contacts/<id>/notes`, or `… contacts note <who> <text>` |
 | `calls` | **off** | `call` | the phone's call log over `MEDIA_CONTACTS_ADB`, by number |
-| `email` | **off** | `email` | mail headers (From, To, Cc only) over IMAP, by address: `~/.config/agent-media/timeline-imap.json` or `MEDIA_TIMELINE_IMAP`, `{host, user, password, folder?}` (default folder `[Gmail]/All Mail`) |
+| `email` | **off** | `email` | mail headers (From, To, Cc, Date and the list headers), by address — the card's emails and its old chat addresses, raw or decoded: from this host's **notmuch** index when it has one (the owner's book; `notmuch show --body=false`, a month at a time, `MEDIA_TIMELINE_NOTMUCH` the command), else over IMAP: `~/.config/agent-media/timeline-imap.json` or `MEDIA_TIMELINE_IMAP`, `{host, user, password \| password_file \| password_cmd, folder?}` (default folder `[Gmail]/All Mail`; `password_cmd` as mbsync's PassCmd is written, run without a shell). `MEDIA_TIMELINE_MAIL=notmuch\|imap\|off` chooses |
+
+**Which mail counts** (both ways in): **out** when From is one of David's own addresses (`MEDIA_CONTACTS_SELF`'s, every `User` in ~/.mbsyncrc, notmuch's `user.primary_email`/`user.other_email`, the IMAP account), one per contact among To and Cc; **in** when From is a contact's and one of David's own addresses is in To or Cc (a Bcc, a list's copy or a forward is not a conversation); **never** a list or bulk mail (List-Id, List-Unsubscribe, Precedence bulk/list/junk, Auto-Submitted other than `no`), a no-reply sender, spam or deleted, or the Chats label (Google Talk, imported as `chat`, §6.25 "Past conversations", so nothing counts twice). **Only the counts are kept**: the ledger holds the contact, channel, day, counts and its summary line, never a subject, message id, address or link, and notmuch's answer is read in memory and dropped (David, 19 Oct 2026: "I'm not sure we want to double up with all that email"). notmuch holds what mbsync syncs; on red5 that is each account's Inbox, Sent and Spam, so mail archived in Gmail is not counted from it (a 10-year window on 19 Oct gave 19 contacts over 832 days).
 
 Besides the sources, an import writes the years before (§6.25 "Past
 conversations"): Messenger and Instagram threads and Gmail's old chats,

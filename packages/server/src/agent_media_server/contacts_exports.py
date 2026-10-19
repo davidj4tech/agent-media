@@ -10,8 +10,9 @@ account's book would tell the wrong person):
   again `MEDIA_CONTACTS_EXPORT_REMIND_DAYS` (90; 0 off) after the last
   import: a `contacts.export.<network>` alert at warn, with the link and
   the exact choices, cleared by the next import.
-* **The "ready" mail** (opt-in: `MEDIA_CONTACTS_EXPORT_MAIL=1` and the
-  timeline's IMAP connection, timeline-imap.json). Mail from
+* **The "ready" mail** (opt-in: `MEDIA_CONTACTS_EXPORT_MAIL=1` and a way to
+  the mail: this host's notmuch index, else the timeline's IMAP connection,
+  timeline-imap.json; timeline.mail_backend). Mail from
   facebookmail.com or mail.instagram.com whose subject says the
   information is ready to download raises `contacts.export.ready.<network>`
   with the download link read from the mail when it is Meta's own (a
@@ -262,17 +263,87 @@ def _link(msg) -> str | None:
     return None
 
 
+def _meta_sender(from_header) -> str | None:
+    """The Meta domain a From is really from, or None (a lookalike is not)."""
+    doms = [a.lower().rpartition("@")[2] for _, a in
+            email.utils.getaddresses(from_header if isinstance(from_header, list)
+                                     else [str(from_header or "")])]
+    return next((x for x in doms if any(x == d or x.endswith("." + d) for d in MAIL_FROM)),
+                None)
+
+
+def _raise_ready(sender: str, link: str | None, raised: dict, now: float) -> str:
+    net = _network_of(sender)
+    aid = f"contacts.export.ready.{net}"
+    _alert({"id": aid, "level": "warn",
+            "title": f"Your {NETWORKS[net]} export is ready",
+            "detail": ("Download it on the phone: it is imported from "
+                       "Downloads by itself." if link else
+                       "Your export is ready: open Accounts Center to download "
+                       "it on the phone; it is imported from Downloads by itself."),
+            "fix": link or DYI_URL})
+    raised[aid] = now
+    return aid
+
+
+def _mail_notmuch(state: dict, since: dt.date, now: float) -> list[str]:
+    """The ready mail from this host's notmuch index: headers from notmuch,
+    the link from the message's own file when it is small (read in memory,
+    never kept)."""
+    from . import timeline
+
+    seen = state.setdefault("mail_seen", {})
+    raised = state.setdefault("raised", {})
+    t0 = int(dt.datetime.combine(since, dt.time()).timestamp())
+    query = "(" + " or ".join(f"from:{d}" for d in MAIL_FROM) + f") and date:@{t0}.."
+    out = []
+    for m in timeline.notmuch_show(query, 60)[-100:]:
+        h = m.get("headers") or {}
+        sender = _meta_sender(h.get("From"))
+        if sender is None:
+            continue
+        subject = str(h.get("Subject") or "")
+        key = str(m.get("id") or subject)
+        if key in seen or not MAIL_SUBJECT.search(subject):
+            continue
+        seen[key] = now
+        link = None
+        for p in m.get("filename") or []:
+            try:
+                if os.path.getsize(p) <= MAIL_MAX:
+                    with open(p, "rb") as f:
+                        link = _link(email.message_from_binary_file(f))
+                break
+            except OSError:
+                continue
+        out.append(_raise_ready(sender, link, raised, now))
+    return out
+
+
 def mail(*, now: float | None = None) -> list[str]:
     """Raise a "ready" alert for each new Meta export mail; the ids raised.
-    Off unless `MEDIA_CONTACTS_EXPORT_MAIL` and the IMAP connection."""
+    Off unless `MEDIA_CONTACTS_EXPORT_MAIL` and a way to the mail: this
+    host's notmuch index, else the timeline's IMAP connection."""
     from . import timeline
 
     if not _on("MEDIA_CONTACTS_EXPORT_MAIL", False):
         return []
+    now = time.time() if now is None else now
+    backend = timeline.mail_backend()
+    if backend == "off":
+        return []
+    if backend == "notmuch":
+        state = load()
+        since = dt.date.fromtimestamp(state.get("mail_checked") or (now - 3 * 86400))
+        out = _mail_notmuch(state, since, now)
+        seen = state.get("mail_seen") or {}
+        state["mail_seen"] = {k: v for k, v in seen.items() if now - v < 31 * 86400}
+        state["mail_checked"] = now
+        save(state)
+        return out
     cfg = timeline.imap_settings()
     if cfg is None:
         return []
-    now = time.time() if now is None else now
     state = load()
     seen = state.setdefault("mail_seen", {})
     raised = state.setdefault("raised", {})
@@ -295,10 +366,7 @@ def mail(*, now: float | None = None) -> list[str]:
                     continue
                 size = re.search(rb"RFC822\.SIZE (\d+)", head[0] or b"")
                 h = email.message_from_bytes(head[1])
-                doms = [a.lower().rpartition("@")[2] for _, a in
-                        email.utils.getaddresses(h.get_all("From") or [])]
-                sender = next((x for x in doms if any(x == d or x.endswith("." + d)
-                                                      for d in MAIL_FROM)), None)
+                sender = _meta_sender(h.get_all("From") or [])
                 if sender is None:
                     continue
                 subject = str(email.header.make_header(
@@ -314,17 +382,7 @@ def mail(*, now: float | None = None) -> list[str]:
                         if typ == "OK" else None
                     if whole is not None:
                         link = _link(email.message_from_bytes(whole[1]))
-                net = _network_of(sender)
-                aid = f"contacts.export.ready.{net}"
-                _alert({"id": aid, "level": "warn",
-                        "title": f"Your {NETWORKS[net]} export is ready",
-                        "detail": ("Download it on the phone: it is imported from "
-                                   "Downloads by itself." if link else
-                                   "Your export is ready: open Accounts Center to download "
-                                   "it on the phone; it is imported from Downloads by itself."),
-                        "fix": link or DYI_URL})
-                raised[aid] = now
-                out.append(aid)
+                out.append(_raise_ready(sender, link, raised, now))
     finally:
         try:
             box.logout()

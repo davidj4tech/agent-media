@@ -19,10 +19,15 @@ comma separated; default `texts,notes`):
   `POST /contacts/<id>/notes`.
 * `calls` (off): the phone's call log over adb (`MEDIA_CONTACTS_ADB`, as
   the contacts are read), matched by number.
-* `email` (off): mail headers over IMAP (Gmail with an app password, or any
-  server), matched by address; `~/.config/agent-media/timeline-imap.json`
-  (or `MEDIA_TIMELINE_IMAP`, a path or the JSON) holds `{host, user,
-  password, folder?}`. Only From, To, Cc and Date are fetched.
+* `email` (off): mail headers, matched by address (the rule is above
+  `_count_mail`), only counts kept. From this host's notmuch index when it
+  has one (the owner's book: `notmuch show --body=false`, a month at a
+  time, `MEDIA_TIMELINE_NOTMUCH` the command), else over IMAP:
+  `~/.config/agent-media/timeline-imap.json` (or `MEDIA_TIMELINE_IMAP`, a
+  path or the JSON) holds `{host, user, password | password_file |
+  password_cmd, folder?}` — `password_cmd` as mbsync's PassCmd is written,
+  run without a shell. `MEDIA_TIMELINE_MAIL=notmuch|imap|off` chooses.
+  Only From, To, Cc, Date and the list headers are read.
 
 The rollup runs after each contacts sync (contacts._run) over the last
 `MEDIA_TIMELINE_DAYS` (2: yesterday and today). A count never goes down: a
@@ -33,11 +38,14 @@ holds whole is less than the first. `MEDIA_TIMELINE=0` leaves it off.
 from __future__ import annotations
 
 import datetime as dt
+import email.message
+import email.parser
 import email.utils
 import imaplib
 import json
 import os
 import re
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -261,6 +269,32 @@ def calls(window: list[str]) -> list[tuple]:
     return out
 
 
+def _password(got: dict) -> str | None:
+    """`password`, else `password_file` (its first line), else `password_cmd`
+    (a command run without a shell, as mbsync's PassCmd is written: its
+    first line of output). Never logged, never kept."""
+    if got.get("password"):
+        return str(got["password"])
+    if got.get("password_file"):
+        try:
+            text = Path(str(got["password_file"])).expanduser().read_text()
+        except OSError:
+            return None
+        return (text.splitlines() or [""])[0].strip() or None
+    cmd = got.get("password_cmd")
+    if cmd:
+        argv = cmd if isinstance(cmd, list) else shlex.split(str(cmd))
+        try:
+            run = subprocess.run([os.path.expanduser(str(a)) for a in argv],
+                                 capture_output=True, text=True, timeout=20)
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            return None
+        if run.returncode != 0:
+            return None
+        return (run.stdout.splitlines() or [""])[0].strip() or None
+    return None
+
+
 def imap_settings() -> dict | None:
     from .contacts import account_config_dir, owner_env
 
@@ -275,11 +309,268 @@ def imap_settings() -> dict | None:
             got = json.loads(p.read_text())
     except (OSError, ValueError):
         return None
-    if not isinstance(got, dict) or not all(got.get(k) for k in ("host", "user", "password")):
+    if not isinstance(got, dict) or not got.get("host") or not got.get("user"):
         return None
-    return {"host": got["host"], "user": got["user"], "password": got["password"],
+    password = _password(got)
+    if not password:
+        return None
+    return {"host": got["host"], "user": got["user"], "password": password,
             "folder": got.get("folder") or "[Gmail]/All Mail",
             "port": int(got.get("port") or 993)}
+
+
+# --- whose mail, and which mail counts --------------------------------------------
+#
+# The rule, the same for notmuch and IMAP (§6.25a "email"):
+# * out: From is one of David's own addresses; each To/Cc address that is a
+#   contact's (the card's, or an old chat address, raw or decoded) counts one
+#   for that contact.
+# * in: From is a contact's, and one of David's own addresses is in To or
+#   Cc — so a Bcc, a list's copy or a forward is not a conversation.
+# * never: a mailing list or bulk mail (List-Id, List-Unsubscribe,
+#   Precedence bulk/list/junk, Auto-Submitted other than "no"), a no-reply
+#   sender, and the Chats label (Google Talk, counted by contacts_history.py
+#   as `chat`, so nothing counts twice).
+# Only the counts are kept: no subject, id, address or link of a message is
+# written anywhere, and notmuch's output is read in memory and dropped.
+
+_BULK_LOCAL = re.compile(
+    r"^(no-?reply|do-?not-?reply|donotreply|noreply[-.+]|notifications?|"
+    r"mailer-daemon|postmaster|bounces?)([-.+_]|$)", re.I)
+_PRECEDENCE = re.compile(r"^\s*(bulk|list|junk)\b", re.I)
+
+
+def _addr(a: str) -> str:
+    """An address as matched: lower case, no XMPP resource."""
+    return (a or "").strip().lower().split("/", 1)[0]
+
+
+def _mbsync_users() -> set[str]:
+    """Every account mbsync syncs (`User` lines of ~/.mbsyncrc or isyncrc)."""
+    out = set()
+    home = Path.home()
+    for p in (home / ".mbsyncrc", home / ".config" / "isyncrc"):
+        try:
+            text = p.read_text(errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            m = re.match(r"\s*User\s+(\S+@\S+)\s*$", line)
+            if m:
+                out.add(m.group(1).lower())
+    return out
+
+
+def mail_self(extra: str = "") -> set[str]:
+    """David's own addresses: `MEDIA_CONTACTS_SELF`'s, mbsync's accounts and
+    notmuch's user.primary_email / user.other_email (the owner's book), and
+    `extra` (the IMAP account itself)."""
+    from . import contacts
+
+    _, out = contacts._self_ids()
+    out = set(out)
+    if extra:
+        out.add(extra.lower())
+    if contacts.is_owner():
+        out |= _mbsync_users()
+        if _notmuch_ok():
+            for key in ("user.primary_email", "user.other_email"):
+                got = _notmuch(["config", "get", key], 10)
+                if got is not None:
+                    out |= {a.strip().lower() for a in re.split(r"[;\n]", got) if "@" in a}
+    return out
+
+
+def _mail_index() -> dict:
+    """Each address to its one contact: the card's emails and every old chat
+    address (`aliases`), raw and decoded. An address two contacts share is
+    nobody's."""
+    from . import contacts
+
+    by: dict[str, set] = {}
+    for em, cids in ((contacts._index() or {}).get("emails") or {}).items():
+        by.setdefault(_addr(em), set()).update(cids)
+    conn = contacts._connect(create=False)
+    if conn is not None:
+        try:
+            for cid, addr, real in conn.execute("SELECT contact, address, real FROM aliases"):
+                for a in (addr, real):
+                    if a:
+                        by.setdefault(_addr(a), set()).add(cid)
+        except sqlite3.Error:
+            pass
+        finally:
+            conn.close()
+    return {a: next(iter(c)) for a, c in by.items() if len(c) == 1}
+
+
+def _mail_who(idx: dict, addr: str) -> str | None:
+    from . import contacts
+
+    a = _addr(addr)
+    if a in idx:
+        return idx[a]
+    real = contacts.gateway_real(a)
+    return idx.get(_addr(real)) if real else None
+
+
+def _bulk(head) -> bool:
+    """A list's or a machine's mail, by its headers (a Message or a dict)."""
+    get = head.get
+    if get("List-Id") or get("List-Unsubscribe"):
+        return True
+    if _PRECEDENCE.match(str(get("Precedence") or "")):
+        return True
+    auto = str(get("Auto-Submitted") or "").strip().lower()
+    return bool(auto) and auto != "no"
+
+
+def _count_mail(day: str, frm: list, tos: list, mine: set, idx: dict,
+                bulk) -> list[tuple]:
+    """One message's entries: `(contact, "email", day, in|out, 0)`, a contact
+    once. `bulk` is a callable, asked only when a contact is involved (it may
+    read the message's header block)."""
+    frm = [_addr(a) for a in frm if "@" in (a or "")]
+    tos = [_addr(a) for a in tos if "@" in (a or "")]
+    if any(a in mine for a in frm):
+        who = {c for a in tos if a not in mine and (c := _mail_who(idx, a))}
+        if who and not bulk():
+            return [(c, "email", day, "out", 0) for c in who]
+        return []
+    if not any(a in mine for a in tos):
+        return []                       # Bcc'd, a list's copy, a forward
+    who = {c for a in frm if (c := _mail_who(idx, a))}
+    if not who or any(_BULK_LOCAL.match(a.partition("@")[0]) for a in frm) or bulk():
+        return []
+    return [(c, "email", day, "in", 0) for c in who]
+
+
+# --- notmuch ----------------------------------------------------------------------
+
+_NM: dict = {}
+
+
+def _notmuch_cmd() -> list[str]:
+    from .contacts import owner_env
+
+    return shlex.split(owner_env("MEDIA_TIMELINE_NOTMUCH") or "notmuch")
+
+
+def _notmuch(args: list[str], timeout: float) -> str | None:
+    """notmuch's stdout, or None (missing, failed). The one seam the tests
+    replace with a fake script (`MEDIA_TIMELINE_NOTMUCH`)."""
+    try:
+        run = subprocess.run(_notmuch_cmd() + args, capture_output=True, text=True,
+                             timeout=timeout, encoding="utf-8", errors="replace")
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+    return run.stdout if run.returncode == 0 else None
+
+
+def _notmuch_ok() -> bool:
+    """notmuch is there and has a database (asked once a minute)."""
+    key = tuple(_notmuch_cmd())
+    hit = _NM.get(key)
+    if hit and time.monotonic() - hit[1] < 60:
+        return hit[0]
+    got = _notmuch(["count", "*"], 30)
+    ok = got is not None and got.strip().isdigit()
+    _NM[key] = (ok, time.monotonic())
+    return ok
+
+
+def mail_backend() -> str:
+    """`notmuch`, `imap` or `off`: `MEDIA_TIMELINE_MAIL` when set, else
+    notmuch when it has a database (the owner's book only: it is this host's
+    mail), else IMAP."""
+    from . import contacts
+
+    want = (contacts.owner_env("MEDIA_TIMELINE_MAIL") or "").strip().lower()
+    if want in ("off", "imap", "notmuch"):
+        return want
+    return "notmuch" if contacts.is_owner() and _notmuch_ok() else "imap"
+
+
+def _messages(tree):
+    """Every message dict in notmuch's `show --format=json` thread tree."""
+    if isinstance(tree, dict):
+        if "headers" in tree:
+            yield tree
+        return
+    if isinstance(tree, list):
+        for x in tree:
+            yield from _messages(x)
+
+
+def _header_block(paths: list) -> email.message.Message | None:
+    """The header block of a message's first readable file (the body is
+    never read)."""
+    for p in paths if isinstance(paths, list) else [paths]:
+        try:
+            with open(p, "rb") as f:
+                return email.parser.BytesHeaderParser().parse(f)
+        except OSError:
+            continue
+    return None
+
+
+def _chat(m: dict) -> bool:
+    tags = {str(t).lower() for t in m.get("tags") or []}
+    if tags & {"chat", "chats"}:
+        return True
+    files = m.get("filename") or []
+    return any("/chats/" in str(f).lower() for f in (files if isinstance(files, list) else [files]))
+
+
+def notmuch_show(query: str, timeout: float = 300) -> list[dict]:
+    """notmuch's messages for `query`, headers only, spam and deleted out."""
+    got = _notmuch(["show", "--format=json", "--body=false", "--entire-thread=false",
+                    f"({query}) and not tag:spam and not tag:deleted"], timeout)
+    if got is None:
+        raise RuntimeError("notmuch did not answer")
+    try:
+        tree = json.loads(got or "[]")
+    except ValueError:
+        raise RuntimeError("notmuch answered something else") from None
+    return [m for m in _messages(tree) if not m.get("excluded")]
+
+
+#: Days asked of notmuch at once: a month of mail is a few MB of headers.
+NOTMUCH_CHUNK = 31
+
+
+def _email_notmuch(window: list[str]) -> list[tuple]:
+    days_ = sorted(window)
+    want = set(days_)
+    idx = _mail_index()
+    mine = mail_self()
+    out = []
+    first, last = dt.date.fromisoformat(days_[0]), dt.date.fromisoformat(days_[-1])
+    start = first
+    while start <= last:
+        end = min(last, start + dt.timedelta(days=NOTMUCH_CHUNK - 1))
+        t0 = int(dt.datetime.combine(start, dt.time()).timestamp())
+        t1 = int(dt.datetime.combine(end + dt.timedelta(days=1), dt.time()).timestamp()) - 1
+        for m in notmuch_show(f"date:@{t0}..@{t1}"):
+            if _chat(m):
+                continue
+            try:
+                day = _day_of(float(m.get("timestamp") or 0))
+            except (TypeError, ValueError, OverflowError, OSError):
+                continue
+            if day not in want:
+                continue
+            h = m.get("headers") or {}
+            frm = [a for _, a in email.utils.getaddresses([str(h.get("From") or "")])]
+            tos = [a for _, a in email.utils.getaddresses(
+                [str(h.get("To") or ""), str(h.get("Cc") or "")])]
+
+            def bulk(m=m):
+                head = _header_block(m.get("filename") or [])
+                return bool(head is not None and _bulk(head))
+            out.extend(_count_mail(day, frm, tos, mine, idx, bulk))
+        start = end + dt.timedelta(days=1)
+    return out
 
 
 def _imap(cfg: dict):
@@ -294,13 +585,17 @@ def _imap_date(d: dt.date) -> str:
     return f"{d.day:02d}-{_MONTHS[d.month - 1]}-{d.year}"
 
 
-def email_(window: list[str]) -> list[tuple]:
+IMAP_FIELDS = "FROM TO CC LIST-ID LIST-UNSUBSCRIBE PRECEDENCE AUTO-SUBMITTED"
+
+
+def _email_imap(window: list[str]) -> list[tuple]:
     """Mail headers over IMAP, a day at a time, by address."""
     cfg = imap_settings()
     if cfg is None:
         raise RuntimeError("no IMAP connection (timeline-imap.json)")
-    emails = _by_email()
-    me = cfg["user"].lower()
+    idx = _mail_index()
+    mine = mail_self(cfg["user"])
+    gmail = cfg["host"].lower().endswith(("gmail.com", "googlemail.com"))
     out = []
     box = _imap(cfg)
     try:
@@ -308,35 +603,44 @@ def email_(window: list[str]) -> list[tuple]:
         box.select(f'"{cfg["folder"]}"', readonly=True)
         for day in window:
             d = dt.date.fromisoformat(day)
-            typ, data = box.search(None, "SINCE", _imap_date(d),
-                                   "BEFORE", _imap_date(d + dt.timedelta(days=1)))
+            crit = ["SINCE", _imap_date(d), "BEFORE", _imap_date(d + dt.timedelta(days=1))]
+            if gmail:
+                crit += ["X-GM-RAW", '"-in:chats"']      # Google Talk is `chat`'s
+            typ, data = box.search(None, *crit)
             ids = (data[0] or b"").split() if typ == "OK" and data else []
             for i in range(0, len(ids), 200):
                 typ, got = box.fetch(b",".join(ids[i:i + 200]),
-                                     "(BODY.PEEK[HEADER.FIELDS (FROM TO CC)])")
+                                     f"(BODY.PEEK[HEADER.FIELDS ({IMAP_FIELDS})])")
                 if typ != "OK":
                     continue
                 for part in got:
                     if not isinstance(part, tuple):
                         continue
                     msg = email.message_from_bytes(part[1])
-                    sender = [a.lower() for _, a in email.utils.getaddresses(msg.get_all("From") or [])]
-                    to = [a.lower() for _, a in email.utils.getaddresses(
+                    frm = [a for _, a in email.utils.getaddresses(msg.get_all("From") or [])]
+                    tos = [a for _, a in email.utils.getaddresses(
                         (msg.get_all("To") or []) + (msg.get_all("Cc") or []))]
-                    if me in sender:
-                        for a in set(to):
-                            if a in emails:
-                                out.append((emails[a], "email", day, "out", 0))
-                    else:
-                        for a in set(sender):
-                            if a in emails:
-                                out.append((emails[a], "email", day, "in", 0))
+                    out.extend(_count_mail(day, frm, tos, mine, idx,
+                                           lambda msg=msg: _bulk(msg)))
     finally:
         try:
             box.logout()
         except Exception:  # noqa: BLE001 — closing is best effort
             pass
     return out
+
+
+def email_(window: list[str]) -> list[tuple]:
+    """Mail, counted by address (the rule above): notmuch's local index when
+    it has one, else IMAP; `MEDIA_TIMELINE_MAIL` chooses."""
+    backend = mail_backend()
+    if backend == "off":
+        return []
+    if backend == "notmuch":
+        if not _notmuch_ok():
+            raise RuntimeError("notmuch has no database (MEDIA_TIMELINE_MAIL=notmuch)")
+        return _email_notmuch(window)
+    return _email_imap(window)
 
 
 ADAPTERS = {"texts": texts, "calls": calls, "email": email_}

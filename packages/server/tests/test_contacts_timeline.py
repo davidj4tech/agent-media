@@ -541,7 +541,7 @@ class Box:
         return "OK", [" ".join(f"{day}-{i}" for i in range(n)).encode()]
 
     def fetch(self, ids, what):
-        assert "HEADER.FIELDS (FROM TO CC)" in what
+        assert "HEADER.FIELDS (FROM TO CC " in what and "LIST-ID" in what
         out = []
         for i in ids.split(b","):
             day, n = i.decode().rsplit("-", 1)
