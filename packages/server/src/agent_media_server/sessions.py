@@ -381,6 +381,9 @@ def add_projects(rows: list[dict], folders: dict[str, str] | None = None) -> lis
     from . import moves, sessiond
 
     restart = sessiond.restart_view()
+    from agent_media_core import quota
+
+    limit = quota.read() if quota.path().exists() else None
 
     for r in rows:
         sid = str(r.get("session") or "")
@@ -396,6 +399,8 @@ def add_projects(rows: list[dict], folders: dict[str, str] | None = None) -> lis
             moves.add_status(r, sid)
             # A restart of the session host waiting (§6.1): only while one is.
             sessiond.add_restart_status(r, sid, restart)
+            # Waiting for the usage limit's reset (§6.1 `quota`): only then.
+            sessiond.add_quota_status(r, sid, limit)
     return rows
 
 
@@ -867,6 +872,9 @@ def targets(bearer: str, history: str = "") -> tuple[bool, dict]:
     restart = sessiond.restart_view()
     if restart:
         out["restart_pending"] = restart
+    limit = sessiond.quota_view()
+    if limit:
+        out["quota"] = limit
     return True, out
 
 

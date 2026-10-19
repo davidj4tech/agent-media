@@ -821,7 +821,8 @@ def test_the_speech_hook_goes_where_it_works(tmp_path, monkeypatch):
     got = {ev: [h for g in settings["hooks"][ev] for h in g["hooks"]]
            for ev in settings["hooks"]}
     assert set(got) == {"Stop", "Notification", "PreToolUse", "PostToolUse",
-                        "PostToolUseFailure", "UserPromptSubmit"}
+                        "PostToolUseFailure", "UserPromptSubmit", "StopFailure"}
+    assert settings["hooks"]["StopFailure"][0]["matcher"] == "rate_limit"
     assert got["Stop"][0] == {"type": "command", "command": "media-hook-claude-code",
                               "timeout": 120, "async": True}
     assert got["Notification"][0]["timeout"] == 30

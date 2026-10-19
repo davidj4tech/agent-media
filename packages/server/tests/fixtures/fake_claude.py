@@ -18,6 +18,10 @@ is chosen by the user message's words:
                    for it returns the call at once ("backgrounded")
   crash            exit 3 at once, as a process that died would
 
+While `$FAKE_CLAUDE_LIMIT_FILE` exists every turn is refused by the usage
+limit (a rejected `rate_limit_event` with the file's reset, the synthetic
+reply and the `api_error` result).
+
 It writes a small transcript to `$CLAUDE_CONFIG_DIR/projects/<cwd slug>/
 <session>.jsonl` (user and assistant records), so the server finds the session
 the way it finds a real one. Every start is logged as one JSON line to
@@ -275,6 +279,8 @@ class Fake:
             time.sleep(TICK)
             if text == "crash":
                 os._exit(3)
+            if self.limited():
+                return self.limit_turn(msg)
             if text.startswith("/rename "):
                 # A local command under -p (measured on 2.1.278): the name
                 # into the transcript, a synthetic reply, a zero-cost result.
@@ -304,6 +310,37 @@ class Fake:
             self.lifecycle(msg, "completed")
         finally:
             self.busy = False
+
+    @staticmethod
+    def limited() -> "float | None":
+        """`$FAKE_CLAUDE_LIMIT_FILE`, while it exists, is the usage limit:
+        its content the reset (epoch s; empty or 0 for none given)."""
+        p = os.environ.get("FAKE_CLAUDE_LIMIT_FILE") or ""
+        if not p or not os.path.exists(p):
+            return None
+        try:
+            return float(open(p).read().strip() or 0)
+        except (OSError, ValueError):
+            return 0.0
+
+    def limit_turn(self, msg: dict) -> None:
+        """A turn the usage limit refuses, as 2.1.302 sends it (20 Oct 2026)."""
+        reset = self.limited() or 0
+        words = "You've hit your session limit \u00b7 resets 2am (Australia/Melbourne)"
+        if reset:
+            emit({"type": "rate_limit_event", "rate_limit_info": {
+                "status": "rejected", "resetsAt": int(reset), "rateLimitType": "five_hour",
+                "overageStatus": "rejected", "isUsingOverage": False}})
+        emit({"type": "assistant", "message": {
+            "model": "<synthetic>", "id": str(uuid.uuid4()), "type": "message",
+            "role": "assistant", "content": [{"type": "text", "text": words}],
+            "stop_reason": "stop_sequence"}})
+        emit({"type": "result", "subtype": "success", "is_error": True, "result": words,
+              "stop_reason": "stop_sequence", "terminal_reason": "api_error",
+              "api_error_status": 429, "api_error": "usage_limit_reached",
+              "num_turns": 1, "duration_ms": 5, "total_cost_usd": 0.0,
+              "permission_denials": [], "queued_turn_count": 0})
+        self.lifecycle(msg, "cancelled")
 
     def tool_turn(self, cmd: str) -> None:
         tid = "toolu_" + uuid.uuid4().hex[:20]

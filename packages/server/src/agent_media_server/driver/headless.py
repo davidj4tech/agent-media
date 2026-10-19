@@ -27,7 +27,7 @@ from . import HEADLESS, Caps
 _STATUS = {"not_found": 404, "not_live": 404, "bad_cwd": 404, "busy": 503, "down": 503,
            "spawn_failed": 500, "internal": 500, "empty_text": 400, "bad_request": 400,
            "unsupported": 400, "exists": 409, "not_pending": 409, "lost": 409,
-           "refused": 400}
+           "refused": 400, "restart_pending": 503, "quota_limited": 503}
 
 #: sessiond's states as the contract names them (§6.1 /sessions/state, §11).
 _CONTRACT_STATE = {"starting": "working", "working": "working", "waiting": "waiting",
@@ -86,8 +86,11 @@ def call(op: str, *, timeout: float = 30.0, **kw) -> dict:
 
 def _failed(r: dict, **extra) -> tuple[bool, dict]:
     code = str(r.get("code") or "internal")
-    return False, {"error": str(r.get("error") or "the session host refused"),
-                   "status": _STATUS.get(code, 500), "code": code, **extra}
+    out = {"error": str(r.get("error") or "the session host refused"),
+           "status": _STATUS.get(code, 500), "code": code, **extra}
+    if isinstance(r.get("quota"), dict):
+        out["quota"] = r["quota"]     # the usage limit's reset (§6.2.2)
+    return False, out
 
 
 def compose(text: str, quote: str = "") -> str:
@@ -341,8 +344,10 @@ class HeadlessDriver:
                       "submitted": True, "driver": HEADLESS,
                       "queued": bool(r.get("queued")), "acked": bool(r.get("acked")),
                       "uuid": r.get("uuid"),
-                      # Held for a pending restart of the session host (§6.1).
-                      **({"held": True} if r.get("held") else {})}
+                      # Held for a pending restart of the session host (§6.1),
+                      # or for the usage limit's reset (`quota`).
+                      **({"held": True} if r.get("held") else {}),
+                      **({"quota": r["quota"]} if isinstance(r.get("quota"), dict) else {})}
 
     def resume(self, session):
         from .. import rest

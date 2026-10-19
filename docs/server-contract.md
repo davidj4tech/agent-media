@@ -261,6 +261,14 @@ Everything a message can be pointed at.
   thread's messages wait for it>`, so a held reply (§6.2.2 `held`) can say
   "held until the server restarts". It goes when the restart is done or
   given up, and the held messages are then delivered.
+- **`quota`** (20 Oct 2026; additive, only while there is one): the
+  account's usage limit (§17 "The usage limit"): `{"resets_at": <epoch s>,
+  "since", "kind": "five_hour" | "seven_day" | …, "state": "waiting" |
+  "resuming", "waiting": <threads in line>}` — `waiting` until the reset,
+  `resuming` while the threads it stopped are picked up one by one. Each
+  row (headless or desk) and a thread's snapshot (§11) that is in line
+  carries `"quota": {"resets_at", "state"}`, so the app can say "Paused by
+  the usage limit — resumes at 3:00"; it goes once the thread is resumed.
 - `sessions` is `sessions_index()`. Live sessions come first, titled from the
   pane (Claude's terminal title with the spinner stripped; Codex, pi and
   Hermes from their own session files, cut to 60 chars). A live session
@@ -1189,6 +1197,13 @@ to the agent but kept: the answer adds `"held": true` (with `queued: true`,
 restarted (or the restart gives up). Show it as "held until the server
 restarts", not as failed. A new chat is refused meanwhile: 503 `code:
 "restart_pending"`, with a sentence.
+
+**Held for the usage limit** (20 Oct 2026): while the account's usage limit
+holds (§6.1 `quota`, §17 "The usage limit"), a reply to a Claude thread is
+held the same way and the answer carries `"quota": {"resets_at", "state"}`
+too: show "held until the limit resets at 3:00". It is delivered after the
+note that resumes the thread. A new Claude chat is refused 503 `code:
+"quota_limited"` with a sentence and `quota`.
 
 Errors: 400 `"empty reply"`. 404 when the item is not a conversation.
 **502 with `submitted: false` and `pane`**: the words are in the composer
@@ -5517,7 +5532,7 @@ increasing `id`, and `retry: 2000` first.
 
 | Event | Data | When |
 | --- | --- | --- |
-| `snapshot` | `{"ok": true}`, the `/conversation/log?session=` envelope — `messages` (the newest **30**, or `?limit=`), `older`, `lines` (deprecated; only those of the page, below), `pending`, `working`, `approval`, `suggestion`, `recap` — plus `{"state", "session_live": bool, "live": bool (deprecated alias of `session_live`), "pane", "resumable"}`, and (22 Sep 2026) `"agents": {"running", "total"}` (§6.12), `"project"`, `"cwd"` (§6.1), and (19 Oct 2026) `"move_pending"?`, `"move_failed"?` (§6.15, only when there is one), `"title"` (the name `/targets` would give it, `""` when none), and `"restart_pending"?` (§6.1, a headless thread's, only while a restart of the session host is waiting) | first frame on every connection |
+| `snapshot` | `{"ok": true}`, the `/conversation/log?session=` envelope — `messages` (the newest **30**, or `?limit=`), `older`, `lines` (deprecated; only those of the page, below), `pending`, `working`, `approval`, `suggestion`, `recap` — plus `{"state", "session_live": bool, "live": bool (deprecated alias of `session_live`), "pane", "resumable"}`, and (22 Sep 2026) `"agents": {"running", "total"}` (§6.12), `"project"`, `"cwd"` (§6.1), and (19 Oct 2026) `"move_pending"?`, `"move_failed"?` (§6.15, only when there is one), `"title"` (the name `/targets` would give it, `""` when none), and `"restart_pending"?` (§6.1, a headless thread's, only while a restart of the session host is waiting), and (20 Oct 2026) `"quota"?` (§6.1, `{"resets_at", "state"}`, only while the thread waits for the usage limit's reset) | first frame on every connection |
 | `message` | `{"op": "append" \| "replace", "message": <message>}` (§6.2.2) | a message appears, or one (matched by `id`) changes: grows a part, a tool finishes, its turn ends, it gains or loses `spoken` |
 | `live` | `{"id", "at", "sentences", "sentence", "offsets", "elapsed", "server_time", "delay", "paused"}` — the message being spoken, by `id` — or `null` when nothing is | a new reply starts, the sentence changes, pause or resume, or the clock jumps (more than 1 s from where it should be: a skip) — **not** at 1 Hz; the client runs the clock between frames |
 | `working` | the `working` object, or `null` | a step starts, or the turn ends |
@@ -6054,6 +6069,48 @@ writes nothing to tmux.
   to re-run if still needed (David, 19 Oct 2026: "It should be able to
   manage background agents too"). Idle sessions are not woken. Its held
   messages follow.
+- **The usage limit** (20 Oct 2026: "We hit a quota again and sessions got
+  stopped mid-turn … automatically pick them up when we're back on"). All
+  Claude sessions on a host share one subscription. A turn the limit ends
+  is a `result` with `api_error: "usage_limit_reached"` (HTTP 429, "You've
+  hit your session limit · resets 2am (Australia/Melbourne)"), after a
+  `rate_limit_event` whose `rate_limit_info.status` is `rejected` and whose
+  `resetsAt` is the reset. sessiond records that session's `cut_off` (why
+  `quota`, `resets_at`, the same fields as a restart's) and puts it in the
+  host's one line, `$XDG_STATE_HOME/agent-media/quota.json` (core
+  `quota.py`: `resets_at`, `since`, `state`, `waiting`). So is a background
+  agent the limit ended by itself (its `task_updated`/`task_notification`
+  failed with the limit's words), against its session, even one whose own
+  turn was over or carried on. A **desk** session (a pane) is put in the
+  same line by its `StopFailure` hook (matcher `rate_limit`; Claude Code
+  fires it instead of `Stop` when an API error ended the turn), with its
+  pane, its last message and any background agent whose transcript under
+  `<session>/subagents/` ends on the limit. The reset is `resetsAt`, else
+  read from the sentence, else a backoff (15 min, doubling to 2 h) whose
+  first resume is the probe. **While the account is limited**, a message to
+  a Claude thread is **held** (`held: true`, as for a restart, plus
+  `quota: {"resets_at", "state"}`; §6.2.2), since a turn would only fail,
+  and a new Claude chat is refused 503 `code: "quota_limited"` with a
+  sentence saying when it resets (and `quota`). **At the reset** plus
+  `MEDIA_QUOTA_RESUME_MARGIN_S` (60 s) the waiting sessions are resumed
+  oldest first, one every `MEDIA_QUOTA_RESUME_GAP_S` (20 s), each once,
+  with "[From the session host] You were stopped by the usage limit at
+  <time>; it has reset. Pick up where you left off (the last message in
+  was: …)." and, for each stopped agent, its id to continue with
+  SendMessage and to tell David (an agents-only one: "A background agent of
+  yours was stopped by the usage limit …"); background commands that
+  finished meanwhile are named with their output file. A headless one gets
+  it as a message (its held messages follow); a desk one has it typed into
+  its pane, never over a draft (retried), and not at all if its pane is
+  gone or its transcript no longer ends on the limit (it was picked up
+  already). One that hits the limit again moves the reset and the rest
+  wait for it. A message to a thread still in line after the reset resumes
+  it at once, out of turn. A request that goes through while the line says
+  limited (`rate_limit_event` allowed, a minute in) ends the wait early. The
+  line is on disk, so it outlives a sessiond restart; at start a session
+  whose last turn ended on the limit before this existed (its last
+  `result`, its last rejected `rate_limit_event`, its agents' `task_*`
+  events) is put in line too, once (`quota_resumed` in its record).
 - **Permissions** (`MEDIA_HEADLESS_PERMISSIONS`, per host): `strict`
   (default) keeps every settings source — hooks, speech — and adds a
   `--settings` overlay whose `ask` rules name every tool but a read-only list

@@ -1183,6 +1183,43 @@ def _play_detached(event: Event) -> None:
         os._exit(0)
 
 
+def _handle_stop_failure(payload: dict) -> int:
+    """StopFailure (Claude Code fires it instead of Stop when an API error
+    ended the turn; registered with the matcher `rate_limit`): a desk
+    session's turn the usage limit stopped is put in the account's line
+    (core quota.py) with its pane, cwd, the last thing typed and any
+    background agents the limit stopped too (their transcripts under
+    `<session>/subagents/` end on it), so sessiond types a note into the pane
+    at the reset. A headless session's (`MEDIA_SESSIOND_SESSION`) is
+    sessiond's own to notice; any other API error is not ours."""
+    if os.environ.get("MEDIA_SESSIOND_SESSION"):
+        return 0
+    from .. import quota
+
+    sid = str(payload.get("session_id") or "")
+    if not sid:
+        return 0
+    tp = str(payload.get("transcript_path") or "")
+    hit = quota.transcript_limit(tp) if tp else None
+    said = " ".join(str(payload.get(k) or "") for k in ("last_assistant_message",
+                                                      "error_details"))
+    if not hit and not quota.is_limit_text(said):
+        return 0
+    now = time.time()
+    text = (hit or {}).get("text") or str(payload.get("last_assistant_message") or "") \
+        or str(payload.get("error_details") or "")
+    reset = (hit or {}).get("resets_at") or quota.parse_reset(text, now)
+    sub = str(Path(tp).with_suffix("") / "subagents") if tp else ""
+    agents = quota.limited_agents(sub, since=now - 6 * 3600) if sub else []
+    entry = {"kind": "desk", "session": sid, "cwd": str(payload.get("cwd") or ""),
+             "pane": os.environ.get("TMUX_PANE") or "", "at": round(now, 3), "turn": True,
+             "last_text": quota.last_user_text(tp) if tp else "", "tasks": agents}
+    quota.note_limit(entry, reset, kind=str((hit or {}).get("kind") or ""), text=text[:200],
+                     source="event" if hit and hit.get("resets_at") else "text", now=now)
+    log.info("hook: %s stopped by the usage limit; resumes at the reset", sid[:8])
+    return 0
+
+
 def _handle_stop(payload: dict) -> int:
     """Stop path: get the assistant's final text and speak it (detached)."""
     # Prefer the text straight off the Stop payload — no transcript read, parse,
@@ -1511,8 +1548,9 @@ def _record_listener_text(session: str, text: str,
 def main() -> int:
     if os.environ.get("MEDIA_HOOK_ENABLED", "1") == "0":
         return 0
-    if os.environ.get("CLAUDE_TTS_ENABLED", "1") == "0":
-        return 0
+    # Speech off still records a usage limit (StopFailure), so the read
+    # below happens either way.
+    speech_off = os.environ.get("CLAUDE_TTS_ENABLED", "1") == "0"
 
     load_env_file("hook-claude-code")
 
@@ -1528,6 +1566,14 @@ def main() -> int:
         return 0
 
     event_name = payload.get("hook_event_name")
+    if event_name == "StopFailure":
+        try:
+            return _handle_stop_failure(payload)
+        except Exception as e:  # noqa: BLE001 — a hook never fails its session
+            log.warning("hook: StopFailure handler failed: %s", e)
+            return 0
+    if speech_off:
+        return 0
     try:
         if event_name == "PreToolUse":
             return _handle_pretooluse(payload)

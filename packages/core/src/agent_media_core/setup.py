@@ -90,7 +90,10 @@ CLAUDE_HOOK_SPEC = (("Stop", 120, True, None), ("Notification", 30, True, None),
                     ("PreToolUse", 30, True, "AskUserQuestion"),
                     ("PostToolUse", 30, True, "AskUserQuestion"),
                     ("PostToolUseFailure", 30, True, "AskUserQuestion"),
-                    ("UserPromptSubmit", 10, True, None))
+                    ("UserPromptSubmit", 10, True, None),
+                    # A turn the usage limit ended: put in line to be
+                    # resumed at the reset (quota.py, 20 Oct 2026).
+                    ("StopFailure", 30, True, "rate_limit"))
 CLAUDE_HOOK_EVENTS = tuple(event for event, _, _, _ in CLAUDE_HOOK_SPEC)
 
 

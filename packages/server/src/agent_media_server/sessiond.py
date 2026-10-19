@@ -86,6 +86,26 @@ record saying it), and the next start resumes each session cut off — mid-
 turn, a card up, background work — once, with `resume_note`. Idle ones are
 not woken.
 
+**The usage limit** (20 Oct 2026). Every Claude session shares one
+subscription; when its usage limit is reached a turn ends on a `result` with
+`api_error: "usage_limit_reached"` (HTTP 429, "You've hit your session limit
+· resets 2am (Australia/Melbourne)"), after a `rate_limit_event` whose
+`rate_limit_info.status` is `rejected` and whose `resetsAt` is the reset.
+That session is cut off (`cut_off`, why `quota`, with what it was doing, as
+for a restart) and put in the account's line (core quota.py, one record for
+the host, which a desk session's `StopFailure` hook writes to as well); so is
+a background agent the limit ended on its own (`task_*` failed with the
+limit's words), against its session, even when that session's own turn
+never hit it. While the account is limited a message to a Claude session is
+held (`held: true`, `quota`) and a new chat refused `quota_limited`; at the
+reset plus `MEDIA_QUOTA_RESUME_MARGIN_S` (60 s) `quota_tick` resumes them,
+oldest first, one every `MEDIA_QUOTA_RESUME_GAP_S` (20 s), each once, with
+`quota_note` (what was cut off; each stopped agent to be continued by
+SendMessage to its id), then its held messages; a desk one has the note
+typed into its pane. One that hits the limit again moves the reset and the
+rest wait for it. A session whose last turn ended on the limit before this
+was running is found at `load` (`_backfill_quota`).
+
 Ops (request `{"op", …}` → `{"ok": true, …}` or `{"ok": false, "error",
 "code"}`): `ping`, `list`, `get`, `start`, `send`, `resume`, `interrupt`,
 `answer`, `close`, `park`, `events`, `configure` (model and plan mode;
@@ -202,6 +222,9 @@ TYPED_INSTEAD = ("The user answered by typing a message instead of choosing; "
 #: Why a new chat is refused while a restart is pending (Supervisor.start).
 RESTART_REFUSED = ("the session host is about to restart and is waiting for the "
                    "busy sessions to finish; start the chat again once it has")
+#: Why a new chat is refused while the usage limit holds (Supervisor.start).
+QUOTA_REFUSED = ("the usage limit has been reached; it resets at {at}. Start the chat "
+                 "then (a message to an open thread is held and sent at the reset)")
 #: Why a `keep_pending` send was refused (Supervisor.send).
 PENDING_KEPT = ("it has a question or permission waiting for an answer; "
                 "a message from another session would answer it, so it was not sent")
@@ -373,6 +396,15 @@ class Session:
         #: `work()` plus `at` and `why`; `due` once the next sessiond start
         #: has judged it worth resuming (`Supervisor.load`).
         self.cut_off: dict | None = None
+        #: The last `rate_limit_event` that said `rejected` (its
+        #: `rate_limit_info`), for when the usage limit's `result` follows.
+        self.limit_info: dict | None = None
+        #: Background agents a usage limit stopped (their `task_*` said so)
+        #: before their session's own turn hit it: task_id → its task_list row.
+        self.limit_agents: dict[str, dict] = {}
+        #: `at` of the last quota cut-off resumed: never twice (the backfill
+        #: at start reads this).
+        self.quota_resumed = 0.0
         #: The task count park_idle last logged holding this session for.
         self.park_held = 0
         self.background_rids: set[str] = set()
@@ -449,7 +481,8 @@ class Session:
                 "queued": sorted(self.queued), "first_text": self.first_text,
                 "turns": self.turns, "seq": self.seq, "last_result": self.last_result,
                 "tasks": self.active_tasks(), "task_list": self.task_list(),
-                "last_text": self.last_text, "held": self.held, "cut_off": self.cut_off}
+                "last_text": self.last_text, "held": self.held, "cut_off": self.cut_off,
+                "quota_resumed": self.quota_resumed}
 
     def view(self) -> dict:
         return {**self.record(), "live": self.live}
@@ -477,6 +510,10 @@ class Session:
         s.last_text = str(rec.get("last_text") or "")
         s.held = [m for m in rec.get("held") or [] if isinstance(m, dict) and m.get("text")]
         s.cut_off = rec.get("cut_off") if isinstance(rec.get("cut_off"), dict) else None
+        try:
+            s.quota_resumed = float(rec.get("quota_resumed") or 0)
+        except (TypeError, ValueError):
+            s.quota_resumed = 0.0
         for p in rec.get("pending") or []:
             if isinstance(p, dict) and p.get("request_id"):
                 s.pending[str(p["request_id"])] = p
@@ -505,7 +542,8 @@ def _task_key(obj: dict) -> str:
 
 def _result_summary(obj: dict) -> dict:
     return {k: obj.get(k) for k in ("subtype", "is_error", "stop_reason", "terminal_reason",
-                                    "num_turns", "ttft_ms", "duration_ms", "total_cost_usd")}
+                                    "num_turns", "ttft_ms", "duration_ms", "total_cost_usd",
+                                    "api_error", "api_error_status")}
 
 
 def _work_of_record(rec: dict) -> dict | None:
@@ -536,6 +574,9 @@ def _judge_cut_off(s: "Session", stopped_at: float | None) -> dict | None:
     cut = s.cut_off
     if not cut or s.agent != "claude":
         return None
+    if cut.get("why") == "quota":
+        # The usage limit's: resumed at its reset (`quota_tick`), not at start.
+        return {k: v for k, v in cut.items() if k != "due"}
     if cut.get("due"):
         return cut
     why = cut.get("why")
@@ -608,6 +649,93 @@ def resume_note(s: "Session", cut: dict) -> str:
     return note
 
 
+# --- the usage limit (core quota.py) ---------------------------------------------
+
+def _quota():
+    from agent_media_core import quota
+
+    return quota
+
+
+def _quota_lifted() -> None:
+    q = _quota()
+    try:
+        if q.path().exists() and q.lifted():
+            log.info("sessiond: the usage limit is off before its reset; resuming")
+    except OSError:
+        pass
+
+
+def _clock(at: float) -> str:
+    """`2:41 am`: the host's local time, as David reads it."""
+    t = time.localtime(at)
+    return f"{(t.tm_hour % 12) or 12}:{t.tm_min:02d} {'am' if t.tm_hour < 12 else 'pm'}"
+
+
+def quota_note(cut: dict, subagents: str = "") -> str:
+    """The message a session the usage limit stopped is resumed with, headless
+    or in a pane: what was cut off, and the background agents to continue
+    (each by SendMessage to its id: it resumes from its own transcript).
+    `subagents`: where their transcripts are, when known."""
+    tag = "[From the session host] "
+    at = _clock(float(cut.get("at") or time.time()))
+    tasks = [t for t in cut.get("tasks") or [] if isinstance(t, dict)]
+    agents_cut = [t for t in tasks if t.get("type") == "local_agent" and t.get("id")]
+    n = len(agents_cut)
+    if cut.get("turn") or not agents_cut:
+        last = " ".join(str(cut.get("last_text") or "").split())
+        if len(last) > 160:
+            last = last[:159] + "\u2026"
+        note = (tag + f"You were stopped by the usage limit at {at}; it has reset. "
+                "Pick up where you left off"
+                + (f" (the last message in was: \u201c{last}\u201d)" if last else "") + ".")
+    else:
+        note = (tag + (f"A background agent of yours was" if n == 1 else
+                       f"{n} background agents of yours were")
+                + f" stopped by the usage limit at {at}; it has reset.")
+    if agents_cut:
+        note += (" These background agents were stopped part-way by the limit; continue each "
+                 "with SendMessage to its id (it resumes from its own transcript \u2014 don't "
+                 "start a new one; skip any you have already continued), then tell David you "
+                 "did: "
+                 + "; ".join(f"\u201c{t.get('description') or 'an agent'}\u201d \u2192 {t['id']}"
+                             for t in agents_cut) + ".")
+        if subagents:
+            note += f" Their transcripts are in {subagents}."
+    finished = [f for f in cut.get("finished") or [] if isinstance(f, dict)]
+    if finished:
+        note += (" These background commands finished while you were stopped, and their "
+                 "results may not have reached you: "
+                 + "; ".join(str(f.get("description") or f.get("id") or "a command")
+                             + (f" (output: {f['output_file']})" if f.get("output_file") else "")
+                             for f in finished) + ".")
+    if int(cut.get("queued") or 0):
+        q = int(cut["queued"])
+        note += (f" {q} message{'s' if q != 1 else ''} sent to you mid-turn may not have "
+                 "reached you (check the thread's last messages).")
+    return note
+
+
+def quota_view() -> dict | None:
+    """The account's usage limit as /targets carries it (§6.1 `quota`)."""
+    try:
+        return _quota().view()
+    except OSError:
+        return None
+
+
+def add_quota_status(row: dict, session: str, rec: dict | None) -> None:
+    """`quota` on a thread's row or envelope, in place: `{"resets_at",
+    "state": "waiting" | "resuming"}` while the usage limit holds it (a
+    headless thread or a desk one alike); gone otherwise. `rec`: the quota
+    record, read once by the caller."""
+    v = _quota().session_view(session, rec=rec) if rec and session else None
+    if v:
+        row["quota"] = v
+    else:
+        row.pop("quota", None)
+
+
 # --- the supervisor -----------------------------------------------------------------
 
 class Supervisor:
@@ -660,6 +788,10 @@ class Supervisor:
                                          "why": "crash"}
                     s.set_state("ended")
                 s.cut_off = _judge_cut_off(s, stopped_at)
+                try:
+                    self._backfill_quota(s)
+                except Exception:  # noqa: BLE001 — an odd events file must not stop the load
+                    log.exception("sessiond: reading %s for the usage limit", s.id[:8])
                 if s.pending:
                     now = time.time()
                     s.lost.extend({**p, "lost_at": round(now, 3),
@@ -779,12 +911,26 @@ class Supervisor:
         """Unless a restart is pending: resume each session a restart cut off
         (`resume_note`), then deliver the messages held for it, in order.
         One that cannot go yet (no room, a card up for another session's
-        mail) waits for the next call. The sessions acted on."""
+        mail) waits for the next call. While the usage limit holds (core
+        quota.py) a Claude session's held messages wait too, and a session
+        it stopped is left to `quota_tick`, which runs last. The sessions
+        acted on."""
         if self.draining():
             return []
+        q = _quota()
+        rec = q.read() if q.path().exists() else None
+        limited = q.limited(rec=rec) is not None if rec else False
         with self.lock:
-            todo = [s.id for s in self.sessions.values()
-                    if s.held or (s.cut_off or {}).get("due")]
+            todo = []
+            for s in self.sessions.values():
+                cut = s.cut_off or {}
+                if s.agent == "claude" and rec and (
+                        limited or q.waiting_entry(s.id, rec) is not None):
+                    continue
+                if cut.get("why") == "quota" and not cut.get("due"):
+                    continue
+                if s.held or cut.get("due"):
+                    todo.append(s.id)
         done = []
         for sid in todo:
             try:
@@ -792,47 +938,311 @@ class Supervisor:
                 done.append(sid)
             except Exception:  # noqa: BLE001 — one session must not stop the rest
                 log.exception("sessiond: delivering to %s", sid[:8])
+        if rec:
+            try:
+                got = self.quota_tick()
+                if got:
+                    done.append(got)
+            except Exception:  # noqa: BLE001
+                log.exception("sessiond: resuming after the usage limit")
         return done
 
-    def _deliver(self, sid: str) -> None:
+    def _deliver(self, sid: str) -> bool:
+        """Resume `sid` if it is due (a note saying what was cut off), then
+        send what is held for it. False when it could not go yet (no room,
+        a card up): the cut-off or the messages are kept for the next try."""
         with self.lock:
             s = self.sessions.get(sid)
             if s is None:
-                return
+                return True
             cut = s.cut_off if (s.cut_off or {}).get("due") else None
-            text = resume_note(s, cut) if cut and s.agent == "claude" else ""
+            text = ""
+            if cut and s.agent == "claude":
+                if cut.get("why") == "quota":
+                    d = None
+                    if any(t.get("type") == "local_agent" for t in cut.get("tasks") or []
+                           if isinstance(t, dict)):
+                        try:
+                            from . import agents
+
+                            d = agents.subagents_dir(s.id)
+                        except Exception:  # noqa: BLE001 — a path is a nicety
+                            d = None
+                    text = quota_note(cut, str(d) if d else "")
+                else:
+                    text = resume_note(s, cut)
             if cut:
                 s.cut_off = None      # never resumed twice
+                if cut.get("why") == "quota":
+                    s.quota_resumed = float(cut.get("at") or time.time())
                 self._save(s)
         if text:
+            why = "the usage limit" if cut.get("why") == "quota" else "the restart"
             try:
                 self.send(sid, text, _internal=True)
-                log.info("sessiond: %s resumed after the restart", sid[:8])
+                log.info("sessiond: %s resumed after %s", sid[:8], why)
             except Refused as e:
                 if e.code == "busy":
                     with self.lock:
                         s.cut_off = cut   # no room yet: the next call
                         self._save(s)
-                    return
-                log.warning("sessiond: %s not resumed after the restart: %s", sid[:8],
-                            e.error)
+                    return False
+                log.warning("sessiond: %s not resumed after %s: %s", sid[:8], why, e.error)
         while True:
             with self.lock:
                 if not s.held:
-                    return
+                    return True
                 m = s.held[0]
             try:
                 self.send(sid, str(m.get("text") or ""), uid=str(m.get("uuid") or ""),
                           keep_pending=bool(m.get("keep_pending")), _internal=True)
             except Refused as e:
                 if e.code in ("pending", "busy"):
-                    return
+                    return False
                 log.warning("sessiond: %s: a held message could not be delivered (%s); "
                             "dropped", sid[:8], e.error)
             with self.lock:
                 if s.held and s.held[0] is m:
                     s.held.pop(0)
                     self._save(s)
+
+    # -- the usage limit: who it stopped, and picking them up at its reset --
+
+    def _task_ended(self, s: Session, key: str, status: str, said: object,
+                    obj: dict) -> None:
+        """Under the lock, before the task is forgotten: a background agent
+        the usage limit ended is kept to be continued at the reset (and the
+        session noted as waiting for it, even if its own turn never hits
+        the limit); a command that ends while the session waits is noted,
+        so the resume can say its result came while it was stopped."""
+        if not key or s.agent != "claude":
+            return
+        cut = s.cut_off if (s.cut_off or {}).get("why") == "quota" else None
+        info = dict(s.task_info.get(key) or {})
+        if not info.get("type"):
+            # Its task_updated came first and it is forgotten: what the cut-off has.
+            known = next((t for t in (cut or {}).get("tasks") or [] if t.get("id") == key),
+                         s.limit_agents.get(key) or {})
+            info = {**known, **{k: v for k, v in info.items() if v}}
+        q = _quota()
+        if status in ("failed", "killed", "error", "stopped") and q.is_limit_text(said) \
+                and (info.get("type") or "local_agent") == "local_agent":
+            row = {"id": key, "description": str(info.get("description") or
+                                                  obj.get("description") or "")[:200],
+                   "type": "local_agent"}
+            if cut is not None:
+                if all(t.get("id") != key for t in cut.get("tasks") or []):
+                    cut["tasks"] = list(cut.get("tasks") or []) + [row]
+                    self._save(s)
+                return
+            if key in s.limit_agents:
+                return
+            s.limit_agents[key] = row
+            # Its own: the parent may never hit the limit (its turn was over,
+            # or goes on). Waiting from now, for the reset the agent's error
+            # gives (else the last rejected event's, else a backoff).
+            now = time.time()
+            reset = q.reset_from_info(s.limit_info) or q.parse_reset(said, now)
+            s.cut_off = {"state": s.state, "turn": False, "question": False,
+                         "tasks": list(s.limit_agents.values()), "queued": 0,
+                         "last_text": s.last_text, "at": round(now, 3), "why": "quota",
+                         "resets_at": reset}
+            self._save(s)
+            self._note_quota(s, reset, said)
+            log.info("sessiond: %s: background agent %s stopped by the usage limit",
+                     s.id[:8], key)
+            return
+        if cut is not None and status == "completed" and info.get("type") == "local_agent":
+            # Finished after all: nothing to continue.
+            cut["tasks"] = [t for t in cut.get("tasks") or [] if t.get("id") != key]
+            self._save(s)
+            return
+        if cut is not None and obj.get("subtype") == "task_notification" \
+                and info.get("type") != "local_agent" \
+                and not any(t.get("id") == key and t.get("type") == "local_agent"
+                            for t in cut.get("tasks") or []):
+            fin = {"id": key, "description": str(info.get("description") or "")[:200],
+                   "status": status, "output_file": str(obj.get("output_file") or "")}
+            cut["finished"] = [f for f in cut.get("finished") or [] if f.get("id") != key] + [fin]
+            cut["tasks"] = [t for t in cut.get("tasks") or [] if t.get("id") != key]
+            self._save(s)
+
+    def _quota_cut(self, s: Session, obj: dict, now: float) -> None:
+        """Under the lock: `s`'s turn ended on the usage limit. What it was
+        doing is its cut-off (why "quota", as a restart's would be), and it
+        waits in the account's line (core quota.py) for the reset."""
+        q = _quota()
+        text = str(obj.get("result") or "")
+        reset = q.reset_from_info(s.limit_info) or q.parse_reset(text, now)
+        tasks = s.task_list() + [t for t in s.limit_agents.values()
+                                 if t["id"] not in s.tasks]
+        old = s.cut_off if (s.cut_off or {}).get("why") == "quota" else None
+        origin = str((obj.get("origin") or {}).get("kind") or "")
+        cut = {"state": s.state, "turn": True, "question": bool(s.pending),
+               "tasks": tasks, "queued": len(s.queued), "last_text": s.last_text,
+               "at": round(now, 3), "why": "quota", "resets_at": reset,
+               "limit": {"kind": str((s.limit_info or {}).get("rateLimitType") or ""),
+                         "text": text[:200]},
+               **({"origin": origin} if origin else {})}
+        if old:
+            seen = {t.get("id") for t in old.get("tasks") or []}
+            cut = {**cut, "at": old.get("at") or cut["at"],
+                   "last_text": old.get("last_text") or cut["last_text"],
+                   "tasks": list(old.get("tasks") or []) + [t for t in tasks
+                                                            if t.get("id") not in seen],
+                   "finished": old.get("finished") or []}
+        s.cut_off = cut
+        s.limit_agents.clear()
+        self._save(s)
+        self._note_quota(s, reset, text)
+        log.info("sessiond: %s stopped by the usage limit (resets %s)", s.id[:8],
+                 _clock(reset) if reset else "unknown")
+
+    def _note_quota(self, s: Session, reset: float | None, text: object) -> None:
+        cut = s.cut_off or {}
+        try:
+            _quota().note_limit({"kind": "headless", "session": s.id, "cwd": s.cwd,
+                                 "at": cut.get("at")}, reset,
+                                kind=str((s.limit_info or {}).get("rateLimitType") or ""),
+                                text=str(text or "")[:200],
+                                source="event" if (s.limit_info or {}).get("resetsAt")
+                                else "text")
+        except OSError as e:
+            log.warning("sessiond: could not write the usage limit's record (%s)", e)
+
+    def _backfill_quota(self, s: Session) -> None:
+        """At load: a session whose last turn ended on the usage limit before
+        this was here to notice (its record's `last_result`), and not resumed
+        since, is cut off by it now — its reset from the last rejected
+        `rate_limit_event`, its stopped agents from their `task_*` events."""
+        lr = s.last_result or {}
+        if s.agent != "claude" or s.cut_off is not None or not lr.get("is_error") \
+                or (lr.get("terminal_reason") != "api_error"
+                    and lr.get("api_error") != _quota().LIMIT_ERROR):
+            return
+        if time.time() - s.last_event_at > 3 * 86400:
+            return
+        q = _quota()
+        info: dict | None = None
+        types: dict[str, dict] = {}
+        agents_cut: dict[str, dict] = {}
+        last: dict | None = None
+        try:
+            lines = (self.root / f"{s.id}.events.jsonl").read_text().splitlines()
+        except OSError:
+            return
+        for ln in lines:
+            try:
+                ev = json.loads(ln)
+            except ValueError:
+                continue
+            t, sub = ev.get("type"), ev.get("subtype")
+            if t == "rate_limit_event":
+                ri = ev.get("rate_limit_info") or {}
+                if ri.get("status") == "rejected":
+                    info = ri
+            elif t == "system" and sub == "task_started":
+                types[_task_key(ev)] = {"description": str(ev.get("description") or "")[:200],
+                                        "type": str(ev.get("task_type") or "")}
+            elif t == "system" and sub in ("task_updated", "task_notification"):
+                key = _task_key(ev)
+                st = (ev.get("patch") or {}).get("status") if sub == "task_updated" \
+                    else ev.get("status")
+                said = (ev.get("patch") or {}).get("error") if sub == "task_updated" \
+                    else ev.get("summary")
+                if st in ("failed", "killed", "error", "stopped") and q.is_limit_text(said) \
+                        and (types.get(key, {}).get("type") or "local_agent") == "local_agent":
+                    agents_cut[key] = {"id": key, "type": "local_agent",
+                                       "description": types.get(key, {}).get("description", "")}
+            elif t == "result":
+                last = ev
+                if not q.is_limit_result(ev):
+                    agents_cut.clear()
+        if not last or not q.is_limit_result(last):
+            return
+        at = float(last.get("t") or s.last_event_at)
+        if s.quota_resumed and at <= s.quota_resumed:
+            return
+        text = str(last.get("result") or "")
+        reset = q.reset_from_info(info) or q.parse_reset(text, at)
+        s.limit_info = info
+        s.cut_off = {"state": "ended", "turn": True, "question": False,
+                     "tasks": list(agents_cut.values()), "queued": 0,
+                     "last_text": s.last_text, "at": round(at, 3), "why": "quota",
+                     "resets_at": reset, "backfilled": True,
+                     "limit": {"kind": str((info or {}).get("rateLimitType") or ""),
+                               "text": text[:200]}}
+        self._note_quota(s, reset, text)
+        log.info("sessiond: %s was stopped by the usage limit before this start; "
+                 "it resumes at the reset", s.id[:8])
+
+    def quota_tick(self) -> str:
+        """At the usage limit's reset (core quota.take_next: the reset plus
+        its margin, one session every `gap_s`, oldest first): resume the next
+        session it stopped — a headless one here, a desk one by typing into
+        its pane. One that cannot go yet goes back to the front. The session
+        acted on, or ""."""
+        q = _quota()
+        entry = q.take_next()
+        if not entry:
+            return ""
+        sid = str(entry.get("session") or "")
+        try:
+            how = (self._resume_desk(entry) if entry.get("kind") == "desk"
+                   else self._resume_quota(sid))
+        except Exception:  # noqa: BLE001 — the rest must still go
+            log.exception("sessiond: resuming %s after the usage limit", sid[:8])
+            how = "retry"
+        if how == "retry":
+            tries = int(entry.get("tries") or 0) + 1
+            if tries <= 90:
+                q.put_back({**entry, "tries": tries}, retry_s=20.0)
+            else:
+                log.warning("sessiond: %s not resumed after the usage limit: gave up", sid[:8])
+            return ""
+        return sid if how == "done" else ""
+
+    def _resume_quota(self, sid: str) -> str:
+        """A headless session's turn at the reset: "done", "retry" or "gone"."""
+        with self.lock:
+            s = self.sessions.get(sid)
+            if s is None or s.state == "closed":
+                return "gone"
+            if (s.cut_off or {}).get("why") == "quota":
+                s.cut_off = {**s.cut_off, "due": True}
+        return "done" if self._deliver(sid) else "retry"
+
+    def _resume_desk(self, entry: dict) -> str:
+        """A desk session's turn at the reset: the note typed into its pane
+        (send.py's seam, as a reply from the phone is), never over a draft.
+        "gone" when its pane is gone or it was picked up already (its
+        transcript no longer ends on the limit)."""
+        from . import panes, send, sessions, transcript
+
+        sid = str(entry.get("session") or "")
+        pane = sessions.live_sessions().get(sid) or ""
+        if not pane or not panes.alive(pane):
+            log.info("sessiond: desk session %s is no longer in a pane; not resumed", sid[:8])
+            return "gone"
+        tp = transcript.transcript_path(sid)
+        if entry.get("turn") and tp and _quota().transcript_limit(tp) is None:
+            log.info("sessiond: desk session %s was picked up already", sid[:8])
+            return "gone"
+        if sessions.pane_draft(pane):
+            return "retry"
+        agent = sessions.agent_of(sid) or "claude"
+        if panes.classify(pane, agent) == "working":
+            return "retry"
+        sub = str(Path(tp).with_suffix("") / "subagents") if tp else ""
+        body = send.for_pane(quota_note(entry, sub), pane, agent)
+        err = send._send_to_pane(pane, body)
+        if err:
+            log.warning("sessiond: desk session %s: %s", sid[:8], err)
+            return "retry"
+        if not send._ensure_submitted(pane, body, agent=agent):
+            log.warning("sessiond: desk session %s: the note is in %s, not sent", sid[:8], pane)
+        log.info("sessiond: desk session %s resumed after the usage limit (%s)", sid[:8], pane)
+        return "done"
 
     def shutdown(self) -> None:
         """Park everything live, as gently as a close: stdin, then signals."""
@@ -963,7 +1373,10 @@ class Supervisor:
         s.acked.clear()
         s.tasks.clear()
         s.task_info.clear()
-        s.cut_off = None
+        if (s.cut_off or {}).get("why") != "quota":
+            # A usage limit's cut-off waits for its reset, however the
+            # session is woken meanwhile (the app opening the thread).
+            s.cut_off = None
         s.park_held = 0
         s.set_state("starting")
         s.last_event_at = time.time()
@@ -1075,12 +1488,15 @@ class Supervisor:
                 status = ((obj.get("patch") or {}).get("status")
                           if sub == "task_updated" else None)
                 if key and status in _TASK_DONE:
+                    self._task_ended(s, key, status, (obj.get("patch") or {}).get("error"), obj)
                     s.tasks.pop(key, None)
                     s.task_info.pop(key, None)
                 elif key and (key in s.tasks or sub == "task_progress"):
                     s.tasks[key] = now
             elif t == "system" and sub == "task_notification":
                 s.foreground.pop(str(obj.get("tool_use_id") or ""), None)
+                self._task_ended(s, _task_key(obj), str(obj.get("status") or ""),
+                                 obj.get("summary"), obj)
                 s.tasks.pop(_task_key(obj), None)
                 s.task_info.pop(_task_key(obj), None)
             elif t == "user":
@@ -1108,8 +1524,19 @@ class Supervisor:
                                     s.id[:8], resp.get("error"))
                 elif rid:
                     s.responses[rid] = resp
+            elif t == "rate_limit_event":
+                info = obj.get("rate_limit_info") or {}
+                if info.get("status") == "rejected":
+                    s.limit_info = info
+                elif info.get("status") in ("allowed", "allowed_warning") \
+                        and s.agent == "claude" and _quota().path().exists():
+                    # A request went through: a limit on record is off.
+                    threading.Thread(target=_quota_lifted, daemon=True,
+                                     name="quota-lifted").start()
             elif t == "result":
                 s.foreground.clear()
+                if s.agent == "claude" and _quota().is_limit_result(obj):
+                    self._quota_cut(s, obj, now)
                 s.last_result = _result_summary(obj)
                 s.set_state("approval" if s.pending else "waiting")
                 if s.turns == 1 and not s.auto_titled and not obj.get("is_error"):
@@ -1314,6 +1741,11 @@ class Supervisor:
                                   permissions=perms.mode(permissions), model=model)
         if self.draining():
             raise Refused(RESTART_REFUSED, "restart_pending")
+        q = _quota()
+        lim = q.limited() if q.path().exists() else None
+        if lim:
+            raise Refused(QUOTA_REFUSED.format(at=_clock(float(lim["resets_at"]))),
+                          "quota_limited", quota=q.view(rec=lim))
         session = session or str(uuid.uuid4())
         with self.lock:
             if session in self.sessions:
@@ -1350,6 +1782,10 @@ class Supervisor:
         if not (text or "").strip():
             raise Refused("empty message", "empty_text")
         uid = uid or str(uuid.uuid4())
+        if not _fresh and not _internal and self._agent(session) == "claude":
+            held = self._quota_hold(session, text, uid, keep_pending)
+            if held is not None:
+                return held
         if not _fresh and not _internal and self.draining():
             with self.lock:
                 s = self._get(session)
@@ -1406,6 +1842,45 @@ class Supervisor:
         return {"session": session, "uuid": uid, "fresh": _fresh, "resumed": resumed,
                 "queued": busy, "acked": acked, "state": s.state, "live": s.live,
                 "pid": s.proc.pid if s.live else None}
+
+    def _quota_hold(self, session: str, text: str, uid: str,
+                    keep_pending: bool) -> dict | None:
+        """A message to a Claude session while the usage limit holds (core
+        quota.py): **held** like a restart's (kept on the session, answered
+        `held: true` with `quota: {resets_at, state}`), since a turn now would
+        only fail on the limit, and the session put in line to be resumed at
+        the reset with it. After the reset, a session still in line is
+        resumed now, out of turn — its note first, then this message. None
+        when the message is to go as usual."""
+        q = _quota()
+        if not q.path().exists():
+            return None
+        rec = q.read()
+        if not rec:
+            return None
+        if q.limited(rec=rec):
+            with self.lock:
+                s = self._get(session)
+                if keep_pending and (s.pending or s.state == "approval"):
+                    raise Refused(PENDING_KEPT, "pending")
+                s.held.append({"uuid": uid, "text": text, "at": round(time.time(), 3),
+                               "keep_pending": keep_pending})
+                self._save(s)
+                cwd, n = s.cwd, len(s.held)
+            q.add_waiting({"kind": "headless", "session": session, "cwd": cwd})
+            log.info("sessiond: %s: message held for the usage limit's reset (%d held)",
+                     session[:8], n)
+            with self.lock:
+                return {"session": session, "uuid": uid, "fresh": False, "resumed": False,
+                        "queued": True, "held": True, "acked": False, "state": s.state,
+                        "live": s.live, "pid": s.proc.pid if s.live else None,
+                        "quota": q.session_view(session) or
+                        {"resets_at": rec.get("resets_at"), "state": "waiting"}}
+        if q.waiting_entry(session, rec) is not None and q.drop(session) is not None:
+            log.info("sessiond: %s: written to while waiting its turn after the usage "
+                     "limit; resumed now", session[:8])
+            self._resume_quota(session)
+        return None
 
     def rename(self, session: str, title: str) -> dict:
         """`/rename <title>` into a live session: Claude Code takes it under
@@ -1930,7 +2405,9 @@ class Supervisor:
             if op == "ping":
                 # `system_prompt`: `start` takes a `system_prompt_file`.
                 # `held`: messages are held while a restart is pending.
-                return {"ok": True, "pid": os.getpid(), "system_prompt": True, "held": True}
+                # `quota`: the usage limit's sessions are resumed at its reset.
+                return {"ok": True, "pid": os.getpid(), "system_prompt": True, "held": True,
+                        "quota": True}
             if op == "list":
                 return {"ok": True, "sessions": self.list()}
             if op == "get":
