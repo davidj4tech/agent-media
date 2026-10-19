@@ -1223,9 +1223,12 @@ ROOMS = ("only", "none")
 
 
 def _narrowing(fts: str, *, since: float | None, who: str | None,
-               rooms: str | None) -> tuple[str, list]:
-    """The SQL for `since`, `who` and `rooms`, after `{fts} MATCH ?`."""
+               rooms: str | None, session: str | None = None) -> tuple[str, list]:
+    """The SQL for `since`, `who`, `rooms` and `session`, after `{fts} MATCH ?`."""
     sql, args = "", []
+    if session:
+        sql += " AND d.session = ?"
+        args.append(session)
     if since is not None:
         sql += " AND d.at >= ?"
         args.append(since)
@@ -1242,7 +1245,8 @@ def _message_hits(conn: sqlite3.Connection, query: str, *, tools: bool, before: 
                   limit: int, rows: dict[str, dict], listed: dict[str, dict],
                   owned: set[str], sort: str = "newest", after: float | None = None,
                   offset: int = 0, since: float | None = None, who: str | None = None,
-                  rooms: str | None = None) -> tuple[list[dict], float | int | None]:
+                  rooms: str | None = None,
+                  session: str | None = None) -> tuple[list[dict], float | int | None]:
     """A page of message hits and the cursor for the next (`None` at the end):
     an `at` for newest (`before=`) and oldest (`after=`), a count for best
     (`offset=`)."""
@@ -1269,7 +1273,7 @@ def _message_hits(conn: sqlite3.Connection, query: str, *, tools: bool, before: 
         # into it is a stable cursor.
         merged = []
         for fts, kind in tables:
-            more, args = _narrowing(fts, since=since, who=who, rooms=rooms)
+            more, args = _narrowing(fts, since=since, who=who, rooms=rooms, session=session)
             found = conn.execute(
                 select.format(fts=fts) + more + f" ORDER BY bm25({fts}), d.at DESC LIMIT ?",
                 (_OPEN, _CLOSE, SNIPPET_TOKENS, query, *args, offset + limit + 1)).fetchall()
@@ -1286,7 +1290,7 @@ def _message_hits(conn: sqlite3.Connection, query: str, *, tools: bool, before: 
             cursor = after if after is not None else float("-inf")
         else:
             cursor = before if before is not None else float("inf")
-        more, args = _narrowing(fts, since=since, who=who, rooms=rooms)
+        more, args = _narrowing(fts, since=since, who=who, rooms=rooms, session=session)
         order = (" AND d.at > ? ORDER BY d.at ASC LIMIT ?" if oldest
                  else " AND d.at < ? ORDER BY d.at DESC LIMIT ?")
         batch = max(limit * 2, 40)
@@ -1308,6 +1312,24 @@ def _message_hits(conn: sqlite3.Connection, query: str, *, tools: bool, before: 
     out.sort(key=lambda r: r["at"] if oldest else -r["at"])
     out = out[:limit]
     return out, out[-1]["at"] if len(out) >= limit else None
+
+
+def _session_total(conn: sqlite3.Connection, query: str, session: str,
+                   rows: dict[str, dict], owned: set[str], *, tools: bool,
+                   since: float | None, who: str | None) -> int:
+    """How many of one thread's messages match: the find bar's "3 of 12".
+    0 for a thread search does not answer (machinery, an excluded folder)."""
+    t = rows.get(session)
+    if t is None or _hidden(t.get("entrypoint"), session, owned, t.get("harness")) \
+            or _excluded(t.get("cwd") or ""):
+        return 0
+    n = 0
+    for fts in ("text_fts", "tool_fts") if tools else ("text_fts",):
+        more, args = _narrowing(fts, since=since, who=who, rooms=None, session=session)
+        n += conn.execute(
+            f"SELECT count(*) FROM {fts} JOIN docs d ON d.id = {fts}.rowid "
+            f"WHERE {fts} MATCH ?" + more, (query, *args)).fetchone()[0]
+    return n
 
 
 # --- memory ---------------------------------------------------------------------
@@ -1355,7 +1377,7 @@ def _memory_section(q: str, limit: int = 8) -> dict:
 
 def search(q: str, bearer: str, *, limit=None, before=None, tools: bool = False,
            memory: bool = True, sort=None, after=None, offset=None, since=None,
-           who=None, rooms=None) -> tuple[bool, dict]:
+           who=None, rooms=None, session=None) -> tuple[bool, dict]:
     """`GET /search` (server-contract.md §6.14)."""
     user, err = auth.gate(bearer)
     if not user:
@@ -1374,7 +1396,7 @@ def search(q: str, bearer: str, *, limit=None, before=None, tools: bool = False,
         return False, {"error": "who is me or agent", "status": 400}
     if rooms not in (None, "") and rooms not in ROOMS:
         return False, {"error": "rooms is only or none", "status": 400}
-    who, rooms = who or None, rooms or None
+    who, rooms, session = who or None, rooms or None, session or None
     times = {}
     for name, v in (("before", before), ("after", after), ("since", since)):
         try:
@@ -1392,10 +1414,13 @@ def search(q: str, bearer: str, *, limit=None, before=None, tools: bool = False,
 
     from . import doc_read
 
+    # One thread's find bar (`session=`): its messages only, no threads,
+    # documents or memory, and a `total` on the first page.
+    first = cursor is None and not session
     with ThreadPoolExecutor(max_workers=2) as pool:
-        mem = pool.submit(_memory_section, " ".join(terms)) if memory and cursor is None else None
+        mem = pool.submit(_memory_section, " ".join(terms)) if memory and first else None
         # A project's documents (doc_read.py): first page only.
-        found_docs = pool.submit(doc_read.search, terms) if cursor is None else None
+        found_docs = pool.submit(doc_read.search, terms) if first else None
         caught = refresh(budget_s=QUERY_BUDGET_S)
         conn = _connect()
         rows = _threads_rows(conn)
@@ -1406,16 +1431,24 @@ def search(q: str, bearer: str, *, limit=None, before=None, tools: bool = False,
             messages, nxt = _message_hits(
                 conn, query, tools=tools, before=times["before"], limit=n, rows=rows,
                 listed=listed, owned=owned, sort=sort, after=times["after"],
-                offset=skip or 0, since=times["since"], who=who, rooms=rooms)
+                offset=skip or 0, since=times["since"], who=who, rooms=rooms,
+                session=session)
+            total = (_session_total(conn, query, session, rows, owned, tools=tools,
+                                    since=times["since"], who=who)
+                     if session and cursor is None else None)
         except sqlite3.OperationalError as e:
             return False, {"error": f"could not search for that ({e})", "status": 400}
         out = {"q": q, "terms": terms, "tools": bool(tools), "sort": sort,
                "threads": (_thread_hits(terms, rows, listed, owned, sort=sort,
                                         since=times["since"], rooms=rooms)
-                           if cursor is None else []),
+                           if first else []),
                "messages": messages,
                "next": nxt,
                "indexing": not caught["done"]}
+        if session:
+            out["session"] = session
+            if total is not None:
+                out["total"] = total
         if found_docs is not None:
             try:
                 out["docs"] = found_docs.result(timeout=6)

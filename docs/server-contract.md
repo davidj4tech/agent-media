@@ -3058,7 +3058,7 @@ data: {}
 
 ### 6.14 Search — gated (built 23 Sep 2026)
 
-#### `GET /search?q=<words>[&limit=][&before=<at>][&tools=1][&memory=0][&sort=][&after=<at>][&offset=<n>][&since=<at>][&who=][&rooms=]` — gated (`auth.gate`)
+#### `GET /search?q=<words>[&limit=][&before=<at>][&tools=1][&memory=0][&sort=][&after=<at>][&offset=<n>][&since=<at>][&who=][&rooms=][&session=<id>]` — gated (`auth.gate`)
 
 Every thread's messages — both sides; live, closed, headless and archived
 threads alike — plus thread titles, recaps and projects, plus long-term
@@ -3117,6 +3117,12 @@ memory as its own section when this host has agent-memory. Code:
   `rooms=only` (only Matrix rooms, messages and threads) or `rooms=none`
   (none of them). A bad `sort`, `who` or `rooms`, or a `since`, `after` or
   `offset` that is not a number, is 400.
+- **One thread** (19 Oct 2026, the thread's find bar): `session=<id>`
+  answers only that thread's messages, narrowed and paged as above (the app
+  asks `sort=oldest`). `threads` is `[]`, `docs` and `memory` are left out,
+  and the answer says `session` and, on the first page, `total`: how many of
+  its messages match (0 for a thread search does not answer). A hit opens
+  as any other, `/conversation/log?session=<id>&around=<message>`.
 - **`tools=1`** (the app's Advanced setting) adds tool steps: a tool's name,
   its title, its input summary and its result summary (§6.2.2 — summaries,
   never file contents). Without it they are never searched.

@@ -188,7 +188,7 @@ device gets its token):
                   working, what is being said, recent threads with recaps,
                   places and agents for a quick start, and the machines
                   (dashboard.py, §6.11)
-  GET  /search?q=[&limit=&before=&tools=1&memory=0] → every thread's messages,
+  GET  /search?q=[&limit=&before=&tools=1&memory=0&session=] → every thread's messages,
                   titles, recaps and projects, and long-term memory when this
                   host has agent-memory (search.py, §6.14)
   GET  /contacts?q=[&limit=][&label=…&label=…][&labels_mode=any|all] →
@@ -1064,7 +1064,8 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
                                    before=arg("before"), tools=arg("tools") in ("1", "true"),
                                    memory=arg("memory") not in ("0", "false"),
                                    sort=arg("sort"), after=arg("after"), offset=arg("offset"),
-                                   since=arg("since"), who=arg("who"), rooms=arg("rooms"))
+                                   since=arg("since"), who=arg("who"), rooms=arg("rooms"),
+                                   session=arg("session"))
         if ok:
             _json_z(h, 200, {"ok": True, **detail})
         else:

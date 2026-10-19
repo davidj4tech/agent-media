@@ -477,3 +477,22 @@ def test_nothing_real_is_read(home):
     for f, _s in search._claude_files() + search._pi_files() + search._codex_files():
         assert f.startswith(str(home)), f
     assert not os.environ.get("CLAUDE_CONFIG_DIR", "").startswith(os.path.expanduser("~/.claude"))
+
+
+def test_one_thread_find_bar(home, gate):
+    a, b = claude(home, SID), claude(home, SID2)
+    for i in range(3):
+        a.prompt(f"marten here {i}")
+        a.end_turn()
+    b.prompt("marten elsewhere")
+    b.end_turn()
+    page = ask("marten", session=SID, sort="oldest", limit=2)
+    assert [h["snippet"]["text"] for h in page["messages"]] == ["marten here 0", "marten here 1"]
+    assert {h["session"] for h in page["messages"]} == {SID}
+    assert page["total"] == 3 and page["session"] == SID
+    assert page["threads"] == [] and "memory" not in page and "docs" not in page
+    page2 = ask("marten", session=SID, sort="oldest", limit=2, after=page["next"])
+    assert [h["snippet"]["text"] for h in page2["messages"]] == ["marten here 2"]
+    assert "total" not in page2
+    assert ask("marten", session="no-such-thread")["total"] == 0
+    assert len(ask("marten")["messages"]) == 4

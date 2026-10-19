@@ -1298,6 +1298,16 @@ ahead.
     place), and have the card note `?account=` (scroll to, or highlight,
     that account's row). Check a cold start and a warm one from Google
     Contacts.
+32. **Find in this thread** (David, 19 Oct 2026: "Can we have a search
+    feature within a thread?" → a find bar that jumps). "Find in this
+    thread", first in a thread's ⋮ menu (not a ⌕ beside it: the labels'
+    row is full at the phone's text size), opens a box under the header.
+    The words go to the server for that thread only (§6.14 `session=`,
+    oldest first, a `total`), so matches in pages not yet loaded are found;
+    "3 of 12", starting at the newest; ↑ / ↓ (Enter, Shift+Enter) step
+    through them with the search jump (loaded in, centred, the words lit);
+    "No matches"; Escape closes. Tool steps too with Advanced on.
+    **Built 19 Oct 2026** (sasonica-app `FindBar.tsx`, test/find.mjs).
 
 ## Loose ends
 
