@@ -8,6 +8,7 @@ Moved from agent-mail #91, #92, #95, #96 (agent-media → agent-config, 16 Oct 2
 3. **No ARM64 cloudflared for Windows.**
 4. **Pre-existing CI pytest failures:** personas, doc undo, org_listen and others. They were the same before this work, so none come from it, but they're still red.
 5. Installs and pairings from before 16 Oct need `sasonica update` and one more pairing to get the lookup. Does the app or update path tell people this?
+   **Done 19 Oct 2026 (pairing half):** GET /me now names the lookup and the app keeps it (agent-media 2930df0, sasonica-app fc42431), so an old pairing needs no second pairing once its server is updated. The server half stands: an install from before 16 Oct publishes nothing until `sasonica update`, and nothing tells its owner so.
 
 First, check against the repo whether any of these are already done. Then tell David which are left, and ask which to take on.
 
