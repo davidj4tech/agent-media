@@ -275,6 +275,9 @@ def rename_conversation(item: str, session: str, title: str, bearer: str,
     # (ended, or mid-sentence in the box) is not a failed rename — the shelf
     # and the name file have it, and the next session starts with it.
     why = send.send_rename(session, named)
+    from . import thread_events
+
+    thread_events.renamed(session, named)
     return True, {"session": session, "title": named,
                   "terminal": not why, "why": why or None}
 

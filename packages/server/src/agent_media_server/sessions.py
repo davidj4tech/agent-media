@@ -888,6 +888,21 @@ def _folder_for_session(session: str) -> str:
     return str(_manifest_of(session).get("folder") or "")
 
 
+def title_of(session: str, *, live_only: bool = False) -> str:
+    """A thread's name as the list would give it, for an open thread's
+    header (§11 `title`): a live one's from the `/sessions/state` sweep (its
+    pane's title, or a headless one's shelf name), else the shelf's. ""
+    when it has none. `live_only`: "" rather than read the shelf (each read
+    opens every manifest), for a caller asking every second."""
+    for r in cached_states()[0]:
+        if r.get("session") == session:
+            return str(r.get("title") or "")
+    if live_only:
+        return ""
+    title = _shelf_title(_manifest_of(session))
+    return title if len(title) <= 60 else title[:59] + "…"
+
+
 def _shelf_title(data: dict) -> str:
     """The shelf's name for a conversation: its `title` — a `/rename`, kept in
     the manifest — else the folder it was filed under, which keeps its first

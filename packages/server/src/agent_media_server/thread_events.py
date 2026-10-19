@@ -165,7 +165,8 @@ def snapshot(session: str, limit: int | None = None) -> tuple[bool, dict]:
     env.update({"state": st["state"], "session_live": st["session_live"],
                 "live": st["session_live"], "pane": st["pane"],
                 "resumable": sessions.session_exists(session),
-                "agents": agent_counts(session, st["session_live"])})
+                "agents": agent_counts(session, st["session_live"]),
+                "title": sessions.title_of(session)})
     # Where the thread is, for the small line under its title (§6.1).
     sessions.add_projects([env])
     return True, env
@@ -335,6 +336,14 @@ class Watcher:
                "recap": env.get("recap"), "context": env.get("context"),
                "agents": agent_counts(self.session, st["session_live"]),
                "move": move_status(self.session)}
+        # The name, so an open thread's header follows a rename made
+        # elsewhere: the auto-name after a first turn, `/rename` at the
+        # terminal, another device. A live one is read off the cached sweep
+        # each time; an ended one's is read once and then pushed by a rename
+        # through the server (`renamed`).
+        title = sessions.title_of(self.session, live_only=emit)
+        if title:
+            now["title"] = {"title": title}
         for name, value in now.items():
             self._update(name, value, emit)
         self._busy = bool(env.get("working")) or bool(live) or st["state"] == "working"
@@ -369,6 +378,15 @@ class Watcher:
 
 _WATCHERS: dict[str, Watcher] = {}
 _LOCK = threading.Lock()
+
+
+def renamed(session: str, title: str) -> None:
+    """A rename went through the server (POST /rename): tell the thread's
+    open screens now, ended or not, rather than at the next read."""
+    with _LOCK:
+        w = _WATCHERS.get(session)
+    if w is not None and title:
+        w._update("title", {"title": title}, emit=True)
 
 
 def subscribe(session: str, device: str = "") -> tuple[Watcher, Subscriber] | None:

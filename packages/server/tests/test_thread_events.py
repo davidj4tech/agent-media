@@ -509,3 +509,29 @@ def test_markers_are_not_part_of_the_text(server, signed_in, convo, spoken):
     res, obj = call(server, "GET", f"/conversation/log?session={SID}&messages=1", headers=AUTH)
     assert "[[" not in obj["messages"][-1]["parts"][0]["text"]
     assert transcript.display_text("No markers [here].") == "No markers [here]."
+
+
+def test_the_name_follows_a_rename_made_elsewhere(server, signed_in, convo, monkeypatch):
+    """§11 `title`: in the snapshot, then a `title` event when a live
+    thread's name changes in the sweep (the auto-name after a first turn,
+    `/rename` at the terminal) or a rename goes through POST /rename."""
+    from agent_media_core import book_tracks
+    from agent_media_server import send
+
+    rows = [{"session": SID, "title": "Hello"}]
+    monkeypatch.setattr(sessions, "cached_states", lambda: ([dict(r) for r in rows], {}))
+    st = Stream(server, f"/threads/{SID}/events", AUTH)
+    ev, snap = st.event()
+    assert ev == "snapshot" and snap["title"] == "Hello"
+
+    rows[0]["title"] = "Greetings, named"
+    assert st.next("title") == {"title": "Greetings, named"}
+
+    # Ended (out of the sweep), a rename from the app is still pushed at once.
+    rows.clear()
+    monkeypatch.setattr(book_tracks, "rename", lambda s, t: t)
+    monkeypatch.setattr(send, "send_rename", lambda s, t: "no pane: the session is not running")
+    res, _obj = call(server, "POST", "/rename", {"session": SID, "title": "Chosen here"}, AUTH)
+    assert res.status == 200
+    assert st.next("title") == {"title": "Chosen here"}
+    st.close()
