@@ -566,29 +566,46 @@ def resume_note(s: "Session", cut: dict) -> str:
         what.append("a question or permission request waiting for David (lost; ask "
                     "again if you still need it)")
     tasks = [t for t in cut.get("tasks") or [] if isinstance(t, dict)]
-    if tasks:
-        named = [f"{t.get('description') or 'a task'}"
-                 + (f" ({t.get('type')}{', ' + t['id'] if t.get('id') else ''})"
-                    if t.get("type") else "") for t in tasks]
-        what.append(f"{len(tasks)} background task{'s' if len(tasks) != 1 else ''}: "
-                    + "; ".join(named))
+    # A background agent stopped by the restart is not lost: Claude Code
+    # resumes a subagent from its own transcript when it is sent a message,
+    # and its task id is the address (the transcript is agent-<id>.jsonl).
+    # So each one is named with the way to continue it — never a fresh start,
+    # which would redo its work. A background command cannot be resumed.
+    agents_cut = [t for t in tasks if t.get("type") == "local_agent" and t.get("id")]
+    others = [t for t in tasks if t not in agents_cut]
+    if agents_cut:
+        what.append(f"{len(agents_cut)} background agent{'s' if len(agents_cut) != 1 else ''}")
+    if others:
+        what.append(f"{len(others)} background command{'s' if len(others) != 1 else ''}"
+                    + ("" if all(t.get("type") == "local_bash" for t in others) else " or task"))
     if int(cut.get("queued") or 0):
         n = int(cut["queued"])
         what.append(f"{n} message{'s' if n != 1 else ''} sent to you mid-turn that may "
                     "not have reached you (check the thread's last messages)")
-    where = ""
-    try:
-        from . import agents
-
-        d = agents.subagents_dir(s.id)
-        if d is not None:
-            where = f" (subagent transcripts are in {d})"
-    except Exception:  # noqa: BLE001 — a path is a nicety
+    note = (tag + "The session host restarted while you were working: "
+            + "; ".join(what or ["work in progress"]) + ". Pick up where you left off.")
+    if agents_cut:
         where = ""
-    return (tag + "The session host restarted while you were working: "
-            + "; ".join(what or ["work in progress"]) + ". Pick up where you left off. "
-            "Background agents and commands that were running were stopped — restart "
-            f"any you still need{where}.")
+        try:
+            from . import agents
+
+            d = agents.subagents_dir(s.id)
+            if d is not None:
+                where = f" Their transcripts are in {d}."
+        except Exception:  # noqa: BLE001 — a path is a nicety
+            where = ""
+        note += (" These background agents were stopped part-way; continue each with "
+                 "SendMessage to its id (it resumes from its own transcript — don't start "
+                 "a new one), then tell David you did: "
+                 + "; ".join(f"\u201c{t.get('description') or 'an agent'}\u201d → {t['id']}"
+                             for t in agents_cut)
+                 + "." + where)
+    if others:
+        note += (" These background commands were stopped and can't be resumed; re-run "
+                 "any you still need: "
+                 + "; ".join(str(t.get("description") or t.get("id") or "a command")
+                             for t in others) + ".")
+    return note
 
 
 # --- the supervisor -----------------------------------------------------------------

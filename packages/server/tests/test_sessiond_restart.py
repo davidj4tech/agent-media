@@ -114,8 +114,10 @@ def test_a_session_cut_off_mid_turn_is_resumed_once_and_an_idle_one_is_not(host)
         assert sup2.sessions[busy].last_text == " ".join(note.split())[:300]
         assert note.startswith("[From the session host] The session host restarted while "
                                "you were working")
-        assert "slow: 20" in note and "Rebuild the index (local_agent, a3f6)" in note
-        assert "restart any you still need" in note
+        assert "slow: 20" in note and "1 background agent" in note
+        # Continued from its own transcript, never started again.
+        assert "SendMessage to its id" in note and "don't start a new one" in note
+        assert "\u201cRebuild the index\u201d → a3f6" in note and "tell David" in note
         assert [s["argv"][-1] for s in starts(host)[n:]] == [busy]   # the idle one sleeps
         assert sessiond.read_record(busy)["cut_off"] is None
         assert sup2.deliver_due() == [] and len(starts(host)) == n + 1   # never twice
@@ -155,7 +157,24 @@ def test_a_crashed_host_resumes_from_what_the_record_says(host):
     cut = sup.sessions[sid].cut_off
     assert cut["why"] == "crash" and cut["due"] and cut["turn"]
     note = sessiond.resume_note(sup.sessions[sid], cut)
-    assert "fix the build" in note and "npm test (local_bash, b1)" in note
+    assert "fix the build" in note and "1 background command" in note
+    assert "can't be resumed" in note and "npm test" in note
+    assert "SendMessage" not in note   # a command is re-run, not continued
+
+
+def test_each_stopped_agent_is_named_with_how_to_continue_it(host):
+    sid = "6a1e0000-0000-4000-8000-000000000009"
+    _record(sid, str(host.work), state="working", last_text="ship it", tasks=3,
+            task_list=[{"id": "a1b2c3", "description": "Write the docs", "type": "local_agent"},
+                       {"id": "d4e5f6", "description": "Run the suites", "type": "local_agent"},
+                       {"id": "b9", "description": "pnpm build", "type": "local_bash"}])
+    sup = sessiond.Supervisor()
+    sup.load()
+    note = sessiond.resume_note(sup.sessions[sid], sup.sessions[sid].cut_off)
+    assert "2 background agents" in note and "1 background command" in note
+    assert "\u201cWrite the docs\u201d → a1b2c3" in note
+    assert "\u201cRun the suites\u201d → d4e5f6" in note
+    assert note.index("SendMessage") < note.index("pnpm build")
 
 
 def test_an_agent_that_ended_by_itself_is_resumed_only_if_the_stop_killed_it(host):

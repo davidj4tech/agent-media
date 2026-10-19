@@ -6009,8 +6009,13 @@ writes nothing to tmux.
   say the same, and a child the stop's cgroup kill took first counts too.
   At the next start each session cut off is resumed, once, with a message
   from `[From the session host]` saying what was running and to pick up
-  where it left off and restart any background work it still needs (a
-  card-only session: to ask again). Idle sessions are not woken. Its held
+  where it left off (a card-only session: to ask again). Each background
+  agent the stop cut off is named with its id, and the session is told to
+  continue it with SendMessage to that id — Claude Code resumes a subagent
+  from its own transcript (`agent-<id>.jsonl`), so its work is not redone —
+  and to tell David; a background command cannot be resumed and is listed
+  to re-run if still needed (David, 19 Oct 2026: "It should be able to
+  manage background agents too"). Idle sessions are not woken. Its held
   messages follow.
 - **Permissions** (`MEDIA_HEADLESS_PERMISSIONS`, per host): `strict`
   (default) keeps every settings source — hooks, speech — and adds a
