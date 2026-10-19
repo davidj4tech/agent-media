@@ -8,7 +8,8 @@ the same reader as a note, with the same Listen (org_listen.py, `{"doc"}`).
 
 Only `.md`, `.org` and `.txt` files under the projects folder
 (MEDIA_PROJECTS_DIR, else ~/projects) or a doc root (`docs.doc_roots()`,
-MEDIA_DOC_ROOTS), with no dot-dir on the way (.git, .claude) and no symlink
+MEDIA_DOC_ROOTS) or in a project folder of its own (`layout.project_folders`,
+~/agent-config), with no dot-dir on the way (.git, .claude) and no symlink
 out. 404 for anything else. server-contract.md §6.10.
 """
 
@@ -42,6 +43,29 @@ def roots() -> list[Path]:
     return out
 
 
+def single_projects() -> list[Path]:
+    """Project folders outside every root, each a project of its own."""
+    out = []
+    for r in layout.project_folders():
+        try:
+            out.append(Path(r).resolve())
+        except OSError:
+            continue
+    return out
+
+
+def _inside(p: Path, bases: list[Path]) -> bool:
+    """`p` is in one of `bases`, with no dot-dir on the way."""
+    for base in bases:
+        try:
+            rel = p.relative_to(base)
+        except ValueError:
+            continue
+        if not any(part.startswith(".") for part in rel.parts):
+            return True
+    return False
+
+
 def safe_path(raw: str) -> Path | None:
     """`raw` as a readable document, or None."""
     raw = (raw or "").strip()
@@ -53,14 +77,7 @@ def safe_path(raw: str) -> Path | None:
         return None
     if p.suffix.lower() not in SUFFIXES or not p.is_file():
         return None
-    for base in roots():
-        try:
-            rel = p.relative_to(base)
-        except ValueError:
-            continue
-        if not any(part.startswith(".") for part in rel.parts):
-            return p
-    return None
+    return p if _inside(p, roots() + single_projects()) else None
 
 
 def title_of(p: Path, text: str) -> str:
@@ -137,7 +154,8 @@ def _project_of_rel(rel: str) -> str:
 def project_dir(project: str = "", path: str = "") -> Path | None:
     """The folder a project's documents live in: `path` (a folder a thread
     runs in; a worktree's own folder counts), else ~/projects/<name> for a
-    label like `p-agent-media` or `agent-media`. Only under a reader root."""
+    label like `p-agent-media` or `agent-media`. Only under a reader root,
+    or a project folder of its own (`p-agent-config`, ~/agent-config)."""
     cand: Path | None = None
     if path:
         try:
@@ -148,7 +166,9 @@ def project_dir(project: str = "", path: str = "") -> Path | None:
         cand = top.resolve() if top else cand
     elif project:
         name = project.strip()
-        known = layout.project_dir(name)    # any root, a group too: p-sasonica-app
+        # any root, a group too: p-sasonica-app; a folder of its own by its
+        # bare name as well (agent-config is p-agent-config on David's desk)
+        known = layout.project_dir(name) or layout.project_dir(layout.encoded_project_label(name))
         if known:
             cand = Path(known).resolve()
         else:
@@ -161,6 +181,8 @@ def project_dir(project: str = "", path: str = "") -> Path | None:
             cand = (new_project.root() / name).resolve()
     if not cand or not cand.is_dir():
         return None
+    if cand in single_projects():
+        return cand
     for base in roots():
         if cand == base:
             return None                     # the whole projects folder is not a project

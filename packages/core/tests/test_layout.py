@@ -316,3 +316,31 @@ def test_the_default_layout_names_a_grouped_folder_group_slash_name(grouped, mon
     assert layout.project_of_path(str(grouped / "tools")) == "tools"
     assert layout.project_parts("sasonica/sasonica-app") == ("sasonica", "sasonica-app")
     assert layout.canonical_project("sasonica-app") == "sasonica/sasonica-app"
+
+
+# --- a project folder of its own (19 Oct 2026) -----------------------------------
+
+
+def test_a_listed_folder_outside_the_roots_is_a_project_of_its_own(grouped, monkeypatch):
+    # ~/agent-config stays at home: listed in project_dirs, it is p-agent-config.
+    home = grouped.parent.parent
+    (home / "agent-config" / ".git").mkdir(parents=True)
+    (home / "config.toml").write_text('project_dirs = ["~/agent-config", "~/gone"]\n')
+    monkeypatch.delenv("MEDIA_PROJECT_DIRS", raising=False)
+    assert layout.project_folders() == [str(home / "agent-config")]
+    assert layout.project_dir("p-agent-config") == str(home / "agent-config")
+    assert layout.project_name(str(home / "agent-config" / "bin")) == "p-agent-config"
+    assert layout.project_rel(str(home / "agent-config")) == "agent-config"
+    assert layout.project_name(str(home / "elsewhere")) == ""
+    monkeypatch.setenv("MEDIA_LAYOUT", layout.DEFAULT)
+    assert layout.project_dir("agent-config") == str(home / "agent-config")
+
+
+def test_a_listed_folder_already_in_a_root_keeps_its_roots_name(grouped, monkeypatch):
+    home = grouped.parent.parent
+    monkeypatch.setenv("MEDIA_PROJECT_DIRS", str(grouped / "tools"))
+    assert layout.project_name(str(grouped / "tools")) == "spl-p-tools"
+    assert "p-tools" not in layout._index()["projects"]
+    monkeypatch.setenv("MEDIA_PROJECT_DIRS", "")
+    assert layout.project_folders() == []
+    assert layout.project_name(str(home / "agent-media")) == ""

@@ -350,6 +350,28 @@ def projects_roots() -> list[str]:
     return out
 
 
+def project_folders() -> list[str]:
+    """Single project folders outside every root (~/agent-config, which
+    must stay where it is): top-level `project_dirs` in config.toml, or
+    MEDIA_PROJECT_DIRS (colon-separated). Each is a project of its own,
+    named for its folder, `p-<folder>` on David's desk. Folders that are
+    not there are left out (David, 19 Oct 2026)."""
+    raw = os.environ.get("MEDIA_PROJECT_DIRS")
+    if raw is not None:
+        items: list = raw.split(":")
+    else:
+        items = config.load().get("project_dirs") or []
+        items = items if isinstance(items, list) else []
+    out: list[str] = []
+    for p in items:
+        if not isinstance(p, str) or not p.strip():
+            continue
+        p = os.path.expanduser(p.strip()).rstrip("/")
+        if os.path.isdir(p) and p not in out:
+            out.append(p)
+    return out
+
+
 def _child_dirs(path: str) -> list[str]:
     """The folders in `path` themselves: not hidden, not links."""
     try:
@@ -388,7 +410,10 @@ def _prefix(root: str) -> str:
 def _name(root: str, group: str, folder: str, idx: dict) -> str:
     """A project's name: `<prefix><folder>` on David's desk
     (`spl-p-sasonica-app`), `<prefix><group>-<folder>` when two projects
-    share the folder name; `<group>/<folder>` or `<folder>` elsewhere."""
+    share the folder name; `<group>/<folder>` or `<folder>` elsewhere. A
+    folder of its own (`project_folders`) is `p-<folder>` or `<folder>`."""
+    if not group and os.path.realpath(os.path.join(root, folder)) in idx.get("single", ()):
+        return f"p-{folder}" if projects() else folder
     if not projects():
         return f"{group}/{folder}" if group else folder
     clash = group and idx.get("kids", {}).get(folder, 0) > 1
@@ -401,7 +426,8 @@ def _index() -> dict:
     and `kids` (how many projects have each folder name)."""
     global _index_seen
     roots = projects_roots()
-    key = (tuple(roots), projects())
+    single = project_folders()
+    key = (tuple(roots), tuple(single), projects())
     at, seen_key, idx = _index_seen
     if seen_key == key and time.monotonic() - at < GROUPS_TTL_S:
         return idx
@@ -419,7 +445,13 @@ def _index() -> dict:
     kids: dict[str, int] = {}
     for _r, _g, k in found:
         kids[k] = kids.get(k, 0) + 1
-    idx = {"kids": kids, "groups": groups, "projects": {}, "aliases": {}, "by_path": {}}
+    idx = {"kids": kids, "groups": groups, "projects": {}, "aliases": {}, "by_path": {},
+           "single": set()}
+    in_roots = {os.path.realpath(os.path.join(r, g, f)) for r, g, f in found}
+    for p in single:                    # a project in a root wins over a listed folder
+        if os.path.realpath(p) not in in_roots:
+            found.append((os.path.dirname(p), "", os.path.basename(p)))
+            idx["single"].add(os.path.realpath(p))
     for root, group, folder in found:
         name = _name(root, group, folder, idx)
         path = os.path.join(root, group, folder) if group else os.path.join(root, folder)
@@ -477,6 +509,10 @@ def _locate(path: str) -> tuple[str, str, str] | None:
                 if parts[0] in idx["groups"] and _is_group(os.path.join(r, parts[0])):
                     return (root, parts[0], parts[1]) if len(parts) > 1 else None
                 return root, "", parts[0]
+    for top in idx["single"]:
+        for base in (os.path.realpath(p), os.path.normpath(p)):
+            if base == top or base.startswith(top + "/"):
+                return os.path.dirname(top), "", os.path.basename(top)
     return None
 
 
