@@ -699,19 +699,39 @@ ahead.
    and `finishAccountSignIn` (replacing a pairing on the same server).
    Pairing another server replaced the device; `forgetSnapshots` runs only
    on leaving the demo, so the old server's cached list painted until the
-   new one answered. *The server already names itself:* `POST /pair`,
-   `POST /enrol` and `POST /devices/code` answer `server: {name, base}`
-   (`gethostname()`), so nothing is added for now; small later options are
-   `MEDIA_SERVER_NAME` (already `servers_report`'s) there too, so a Termux
-   base is "Pixel" not "localhost", and `server` on `GET /targets` so rows
-   from a pairing made before the name was kept get one.
+   new one answered. *The server already named itself:* `POST /pair`,
+   `POST /enrol` and `POST /devices/code` answered `server: {name, base}`
+   (`gethostname()`). Added (20 Oct 2026, with the several-servers
+   proposal, item 36): `server_id` on `/pair`, `/enrol` and `/me` (the id
+   sasonica.com's list already used), and `MEDIA_SERVER_NAME` for the name,
+   so a base on the phone is "Pixel". Later, `server` on `GET /targets`
+   so rows from a pairing made before the id was kept get one.
    *Storage:* the current pairing stays exactly where it is
    (`sasonica.chat.device`); the others go in `sasonica.chat.otherPairings`,
    a JSON array of the same Device shape, sealed the same way. So the
    existing pairing needs no migration (it is the current one), the native
    notifier is unchanged, and an older build ignores the new key and keeps
-   working. A pairing is known by its normalised server address: the same
+   working. A pairing is known by its `server_id` (kept as `server.id`)
+   when both sides have one, else by its normalised address: the same
    server paired again replaces its own pairing, another is added.
+   *Against docs/proposals/2026-10-20-several-servers.md* (item 36, written
+   the same day): the same idea, a list with a token each and `server_id`
+   as the key, which this uses. It differs in four places, to be merged:
+   (i) storage — the proposal has `sasonica.chat.servers` (one key per
+   entry's token) and `sasonica.chat.active`; this keeps the current one in
+   `sasonica.chat.device` and the rest in one sealed list, so nothing
+   migrates and the notifier, older builds and the e2e suites that seed
+   `sasonica.chat.device` are untouched. The proposal's shape can come when
+   the notifier takes a list (slice 4). (ii) The proposal's switcher in the
+   header is superseded by David's "Merged, with a filter" (20 Oct 2026):
+   one list, rows labelled, a chip per server; slice 1's Switch in Settings
+   is only the way to reach another server until the merged list lands,
+   and then names the home base (below). (iii) Unpair here forgets the
+   pairing on the device only, as before; the proposal also revokes the row
+   on that server while the token works — worth adding. (iv) The proposal
+   puts roles step 1 and Settings in three sections before the list; this
+   starts with the list, which needs no roles. Snapshots and drafts keyed
+   by server (the proposal) are slice 2 here.
    *Which base a request goes to:* in slice 1, the current one, as now. From
    slice 3, a per-thread call takes the base of the row that owns the
    session (a `session → base` map filled by the merged list; a link to a
@@ -1400,7 +1420,11 @@ ahead.
     presets, project roots, personas, bridges, contacts, devices). Needs
     roles step 1 first (docs/proposals/2026-10-18-roles.md). The plan and
     its open questions are in docs/proposals/2026-10-20-several-servers.md.
-    Not started.
+    **The pairing list and `server_id` are item 7's first step** (built
+    20 Oct 2026, branch `multi-base`; item 7's plan lists where it differs
+    from the proposal). Its switcher gives way to one merged list with a
+    filter per server (David, 20 Oct 2026: "Merged, with a filter"). The
+    settings split is not started.
 
 ## Loose ends
 
