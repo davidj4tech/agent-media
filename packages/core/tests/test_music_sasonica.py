@@ -120,6 +120,13 @@ def test_restore_is_on_the_apps_scale(monkeypatch):
     assert sent == [("tcp://p8a:6615", "set", "volume", 100)]
 
 
+def test_the_app_ducks_its_own_music(monkeypatch):
+    # Audio focus ducks it in the app; a volume write too would stack.
+    sent = _wire(monkeypatch)
+    SinkMusicSasonica("tcp://p8a:6615").duck(level=10)
+    assert sent == []
+
+
 def test_offered_in_the_picker_only_when_configured(monkeypatch):
     names = {o["name"]: o for o in audio_targets.music_options()}
     assert names["sasonica"]["available"] is False

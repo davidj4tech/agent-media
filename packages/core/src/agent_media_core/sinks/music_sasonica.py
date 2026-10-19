@@ -255,6 +255,13 @@ class SinkMusicSasonica(SinkMusicLocal):
         from ..speech_balance import music_level
         return music_level()
 
+    def duck(self, target: Target = SASONICA_TARGET, level: int = 15) -> None:
+        """Nothing: the app ducks its own music under a reply and while the mic
+        is open, by audio focus (sasonica-app TransientFocus, MicDuck), at the
+        moment the sound starts. A volume write here as well would put the
+        music at a fifth of the duck level (David, 19 Oct 2026: "the music
+        doesn't seem to be ducking for speech")."""
+
     def unduck(self, target: Target = SASONICA_TARGET, restore: int = 100) -> None:
         try:
             self._set("volume", max(0, min(100, restore)))
