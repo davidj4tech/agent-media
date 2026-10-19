@@ -134,6 +134,19 @@ personal outlook.com never does.
 6. **New-mail notices** from contacts.
 7. **Outlook** through Graph, with the calendar's sign-in.
 
+## Decided (David, 20 Oct 2026)
+
+- **Archived mail:** asked of Gmail when needed (its API), nothing extra
+  stored; red5 keeps Inbox, Sent and Spam as now.
+- **Sync:** labels mirrored both ways (lieer over Gmail's API), so read,
+  archive and labels agree with the Gmail app.
+- **Spam:** hidden; a Spam folder in the Mail tab, never in Messages or
+  notices.
+- **Read aloud:** only when David asks (a Play button on an email).
+- **Messages:** every account's mail can sit on a person's row, and each
+  account is a space (2026-10-19-messages-spaces.md) to filter by.
+- **Notices:** new mail from people in his contacts only.
+
 ## Open questions for David
 
 - **Archived mail:** sync All Mail for all fifteen accounts (complete,
