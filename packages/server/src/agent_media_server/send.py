@@ -852,7 +852,7 @@ def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
 
 
 def _ask_pane(text: str, *, agent: str, cwd: str, host: str, flags: list[str],
-              quote: str = "", profile: str = "") -> tuple[bool, dict]:
+              quote: str = "", profile: str = "", plan: bool = False) -> tuple[bool, dict]:
     """The pane driver's fresh session: a background tmux window in `host`,
     the words typed in, the listener's turn shelved against its uuid."""
     # pi takes its id up front; the others are asked for theirs.
@@ -866,6 +866,10 @@ def _ask_pane(text: str, *, agent: str, cwd: str, host: str, flags: list[str],
     session = fixed or (sessions.session_of_pane(pane) if agent == "claude" else "")
     _settle(pane)
     body = for_pane(compose(text, quote), pane, agent)
+    if plan and agent == "codex":
+        # Codex's native /plan accepts an inline first prompt. It switches
+        # collaboration mode before submitting, including attached context.
+        body = "/plan " + body
     send_err = _send_to_pane(pane, body)
     if send_err:
         return False, {"error": send_err, "session": session or None, "pane": pane}

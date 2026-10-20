@@ -5,8 +5,10 @@ The reply box's bottom row carries a model chip and a plan chip. `GET
 be changed from the phone; `POST /session/settings {session, model?, plan?}`
 changes it; `/ask` takes the same two for a new chat (`send.ask`).
 
-Claude Code only: Codex and Hermes answer `can: {model: false, plan:
-false}` and the app hides the chips. opencode has a model chip too: a new
+Codex exposes both chips through its native model picker and collaboration
+mode. Grok exposes its model chip; their sheets come from their own account
+catalogues (native_models.py), and native_settings.py verifies the changes.
+Hermes and Gemini currently hide the chips. opencode has a model chip too: a new
 chat's sheet is its free models (`new_sheet`, opencode_models.py) and `/ask`
 starts it with `-m`; a running one in a pane is switched through its own
 picker (the opencode section below), a headless one sends the new model with
@@ -85,6 +87,10 @@ def clean_new(agent: str, model: str, mode: str) -> tuple[str, str]:
         from agent_media_core import pi_models
 
         return pi_models.allowed(model), ""
+    if agent in ("codex", "grok"):
+        from agent_media_core import native_models
+
+        return native_models.allowed(model), ("plan" if mode == "plan" and agent == "codex" else "")
     if agent != "claude":
         return "", ""
     model = (model or "").strip().lower()
@@ -160,10 +166,31 @@ def state(session: str) -> dict:
                 "can": {"model": True, "plan": True}}
     pane = sessions.live_sessions().get(session, "")
     agent = sessions._agent_of_pane(pane) if pane else sessions.agent_of(session)
+    if agent == "codex":
+        from . import codex_control
+
+        daemon = codex_control.state(session)
+        if daemon is not None:
+            return {"agent": agent, "live": True, "model": daemon["model"],
+                    "model_id": daemon["model"], "plan": daemon["plan"], "driver": "codex",
+                    "can": {"model": True, "plan": daemon["mode_known"]}}
     if agent == "opencode":
         return _opencode_state(session, pane)
     if agent == "pi":
         return _pi_state(session, pane)
+    if agent in ("codex", "grok"):
+        from agent_media_core import native_models
+        from . import native_settings, panes
+
+        model, at = native_models.current(session)
+        with _LOCK:
+            chosen = _CHOSEN.get(session)
+        if chosen and chosen[1] > at:
+            model = chosen[0]
+        capable = bool(pane) and not panes.is_herdr(pane)
+        return {"agent": agent, "live": bool(pane), "model": model, "model_id": model,
+                "plan": bool(pane) and native_settings.plan_on(pane) if agent == "codex" else False,
+                "driver": driver.PANE, "can": {"model": capable, "plan": capable and agent == "codex"}}
     if agent != "claude":
         return {"agent": agent, "live": bool(pane), "model": "", "model_id": "",
                 "plan": False, "driver": driver.PANE, "can": {"model": False, "plan": False}}
@@ -230,9 +257,16 @@ def default_note() -> str:
 
 def _answer(session: str, **extra) -> dict:
     st = state(session)
-    sheet = (_opencode_sheet(st["model"]) if st["agent"] == "opencode"
+    sheet = (_native_sheet(st["agent"], session) if st["agent"] in ("codex", "grok")
+             else _opencode_sheet(st["model"]) if st["agent"] == "opencode"
              else _pi_sheet(session, st["model"]) if st["agent"] == "pi" else models())
     return {"session": session, "models": sheet, **st, **extra}
+
+
+def _native_sheet(agent: str, session: str) -> list:
+    from agent_media_core import harnesses, native_models
+
+    return native_models.models(agent, harnesses.profile_of(session))
 
 
 # --- opencode ----------------------------------------------------------------
@@ -410,6 +444,13 @@ def new_sheet(agent: str = "claude", profile: str = "") -> dict:
     """A new chat's sheet: Claude Code's aliases, opencode's free models, or
     the models pi lists for `profile` (a harness profile, "" its default
     one), with what its "Default" runs; {} for an agent with no chip."""
+    if agent in ("codex", "grok"):
+        from agent_media_core import harness_profiles, native_models
+
+        if profile and not harness_profiles.get(agent, profile):
+            return {"models": []}
+        return {"models": native_models.models(agent, profile),
+                "can": {"model": True, "plan": agent == "codex"}}
     if agent == "opencode":
         from agent_media_core import opencode_models
 
@@ -453,7 +494,10 @@ def post(session: str, body: dict, bearer: str) -> tuple[bool, dict]:
         return False, err
     model = body.get("model")
     agent = sessions.agent_of(session)
-    if model is not None and agent in ("opencode", "pi"):
+    if model is not None and agent in ("codex", "grok"):
+        if not isinstance(model, str) or model not in {m["id"] for m in _native_sheet(agent, session)}:
+            return False, {"error": "model must be one of this harness's offered models", "status": 400}
+    elif model is not None and agent in ("opencode", "pi"):
         from agent_media_core import opencode_models, pi_models
 
         model = (opencode_models if agent == "opencode" else pi_models).allowed(str(model))
@@ -470,7 +514,15 @@ def post(session: str, body: dict, bearer: str) -> tuple[bool, dict]:
     if model is None and plan is None:
         return False, {"error": "nothing to change (model or plan)", "status": 400}
     mode = None if plan is None else ("plan" if plan else "")
-    ok, detail = driver.for_session(session).configure(session, model=model, mode=mode)
+    if agent == "codex":
+        from . import codex_control
+
+        if codex_control.state(session) is not None:
+            ok, detail = codex_control.configure(session, model=model, mode=mode)
+        else:
+            ok, detail = driver.for_session(session).configure(session, model=model, mode=mode)
+    else:
+        ok, detail = driver.for_session(session).configure(session, model=model, mode=mode)
     if not ok:
         return False, detail
     return True, _answer(session, told=bool(detail.get("told")))
@@ -485,14 +537,23 @@ def configure_pane(session: str, *, model: str | None = None,
     if not pane or not panes.alive(pane):
         return False, {"error": "the session is not running; resume it first", "status": 409}
     agent = sessions._agent_of_pane(pane)
-    if agent not in ("claude", "opencode", "pi"):
-        return False, {"error": "only Claude Code, opencode and pi sessions change model here",
+    if agent not in ("claude", "opencode", "pi", "codex", "grok"):
+        return False, {"error": "this harness has no settings controls here yet",
                        "status": 400}
     st = sessions.activity_of(session, pane).get("state") or "waiting"
     if st != "waiting":
         why = "a question" if st == "approval" else "the turn"
         return False, {"error": f"wait for {why} to finish, then change it", "status": 409,
                        "state": st}
+    if agent in ("codex", "grok"):
+        from . import native_settings
+
+        ok, detail = native_settings.configure(agent, pane, model=model, mode=mode,
+                                               offered=_native_sheet(agent, session))
+        if ok and model is not None:
+            with _LOCK:
+                _CHOSEN[session] = (model, time.time())
+        return ok, detail
     if agent == "opencode":
         if mode:
             return False, {"error": "opencode has no plan mode here", "status": 400}

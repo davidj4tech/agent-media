@@ -46,12 +46,15 @@ class PaneDriver:
                          else f for f in flags] + ["--permission-mode", "plan"]
         elif agent == "opencode" and model:
             flags += ["-m", model]
+        elif agent in ("codex", "grok") and model:
+            flags += ["--model", model]
         elif agent == "pi" and model:
             from agent_media_core import pi_models
 
             flags += pi_models.start_flags(model)
         return send._ask_pane(text, agent=agent, cwd=cwd, host=host, flags=flags,
-                              quote=quote, **({"profile": profile} if profile else {}))
+                              quote=quote, **({"profile": profile} if profile else {}),
+                              **({"plan": True} if agent == "codex" and mode == "plan" else {}))
 
     def configure(self, session, *, model=None, mode=None):
         """`/model <alias>` typed in, and shift+tab round to plan mode or off

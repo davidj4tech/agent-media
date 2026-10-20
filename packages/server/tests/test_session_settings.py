@@ -84,7 +84,7 @@ def test_a_working_pane_is_not_typed_into(pane):
 
 
 def test_other_agents_cannot(pane, monkeypatch):
-    monkeypatch.setattr(sessions, "_agent_of_pane", lambda p: "codex")
+    monkeypatch.setattr(sessions, "_agent_of_pane", lambda p: "hermes")
     ok, d = ss.get(SID, "t")
     assert ok and d["can"] == {"model": False, "plan": False}
 
@@ -92,7 +92,7 @@ def test_other_agents_cannot(pane, monkeypatch):
 def test_a_new_chat_takes_only_a_sheet_alias_and_only_for_claude():
     assert ss.clean_new("claude", "Sonnet", "plan") == ("sonnet", "plan")
     assert ss.clean_new("claude", "gpt-9", "") == ("", "")
-    assert ss.clean_new("codex", "opus", "plan") == ("", "")
+    assert ss.clean_new("codex", "gpt-example", "plan") == ("gpt-example", "plan")
 
 
 def test_a_new_pane_chat_gets_the_flags(monkeypatch):
@@ -164,7 +164,7 @@ def test_a_new_chat_sheet_per_agent(monkeypatch):
     oc = ss.new_sheet("opencode")
     assert [m["id"] for m in oc["models"]][0] == "opencode/big-pickle"
     assert oc["default"] == "Big Pickle · Free"
-    assert ss.new_sheet("codex") == {"models": []}
+    assert ss.new_sheet("hermes") == {"models": []}
 
 
 OC = "ses_" + "a" * 26
