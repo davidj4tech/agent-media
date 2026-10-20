@@ -68,6 +68,14 @@ class Cue:
     beat_ms: int            # silence after the last word before the fade up
     reason: str             # one word for the log and the now-playing row
 
+    def wire(self) -> str:
+        """The cue for a player that fades itself (Sasonica's DjCue): the
+        level as a share of the music's own volume, the times in ms."""
+        stop = self.strategy == InterruptionStrategy.PAUSE
+        return (f"level={0 if stop else self.level / 100:.2f};"
+                f"down={self.fade_down_ms};up={self.fade_up_ms};"
+                f"beat={self.beat_ms};stop={1 if stop else 0}")
+
     def as_extras(self) -> dict:
         return {"cue": self.reason, "fade_down_ms": self.fade_down_ms,
                 "fade_up_ms": self.fade_up_ms, "beat_ms": self.beat_ms}

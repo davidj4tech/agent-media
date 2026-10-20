@@ -166,6 +166,9 @@ class SinkMusicSasonica(SinkMusicLocal):
 
     # The app ducks itself by audio focus (see duck), so there is no fade to step here.
     fades = False
+    # ...and with the DJ cue on the speech socket it fades and stops itself
+    # (sasonica-app DjCue), so the coordinator leaves its music alone.
+    self_ducks = True
 
     def _endpoint(self) -> str:
         ep = self._ep_override or endpoint()

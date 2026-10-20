@@ -164,6 +164,27 @@ def set_priority(priority: str, target: Target = DEFAULT_TARGET) -> bool:
         return False
 
 
+#: mpv `user-data` key carrying how the music gives way to this reply.
+DUCK_CUE_PROPERTY = "user-data/agent-media/duck-cue"
+
+
+def set_duck_cue(cue: str, target: Target = DEFAULT_TARGET) -> bool:
+    """Tell a player that fades its own music how to give way to this reply.
+
+    Sasonica's music player is on the phone and ducks itself (by audio focus,
+    in one step); with the cue it fades as the server's music does instead —
+    the DJ cue of route/dj.py, as ``level=0.1;down=400;up=1500;beat=300;stop=0``
+    (``Cue.wire``). Empty clears it, and the app ducks as before. Written with
+    the priority, before the reply is audible; best-effort like every flag here.
+    """
+    try:
+        ipc.set_property(_socket_for(target), DUCK_CUE_PROPERTY, cue or "")
+        return True
+    except (ipc.MpvIpcError, OSError) as e:
+        log.debug("sink-speech: duck cue %r failed: %s", cue, e)
+        return False
+
+
 #: mpv `user-data` key carrying whether the *device* wants to be quiet.
 #:
 #: Written by the phone-side `ringer-state` service (see
