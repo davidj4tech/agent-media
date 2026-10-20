@@ -822,9 +822,22 @@ ahead.
    the follow-up after a 409 and the Answered line posted the same way; the
    listening notification names a server only when its loop stopped on a
    refused token ("hpo needs pairing"), and drops the name once it gets
-   through again. **Built 20 Oct 2026** (sasonica-app branch `multi-base-7`,
-   not merged): while it names one, its tap opens `/pairing?server=<base>`
+   through again. **Done 20 Oct 2026** (sasonica-app `7502d7f`, merged):
+   while it names one, its tap opens `/pairing?server=<base>`
    with that server filled in (David, 20 Oct 2026).
+   **Every pairing's lookup and a new chat on a chosen server, built 20 Oct
+   2026** (sasonica-app branch `multi-base-8`, not merged; David picked them
+   next, in that order): a request to another paired server that cannot get
+   through (a refused connection, or a dead tunnel's 502/503/504/530) asks
+   that pairing's own lookup (`relocateOther`, spaced as the current one's),
+   stores the new address on the pairing, tells the notifier and is tried
+   once more there; its threads, chip state and the list's choice of it
+   follow. The new-chat screen has a strip of servers (the current one by
+   default, another as `?server=`), each choice a fresh screen whose places,
+   agents, presets, project roots, personas, model sheet and ask are that
+   server's; the mic's new chat comes through it, the list's + starts on the
+   server in view, and a share's files go to the server of the chat they are
+   sent to (a new one's chosen on the share screen).
    **What is left of the first step** (20 Oct 2026; everything above is the
    app talking to each base itself, no base-to-base link):
    - *A server picker in Settings* for the per-server things — voice, speech
@@ -835,16 +848,12 @@ ahead.
      global (David, 20 Oct 2026). "Switch to it" goes when it lands; the
      several-servers proposal's roles split (You on <server>, the admin
      section) can follow on top of it.
-   - *A new chat on a chosen server*: `/new`'s places and projects from
-     every server, or a server choice beside them, and `POST /ask` sent
-     there (the routing already notes the thread); the same for the mic's
-     new chat, a project strip's +, and the share sheet's upload
-     (`uploadFile`, now the current server's).
-   - *Every pairing's lookup*: `relocate()` follows a moved address only for
-     the current server; another server on a quick tunnel that moves shows
-     offline until it is paired again. Each pairing needs its own lookup
-     ask (the stored `server.lookup`, `/me`'s for it) and its stored base
-     updated, in the app and in the notifier's loop.
+   - *Smaller, from the two above*: another pairing's lookup is the one
+     its pairing stored (the link's or `POST /pair`'s); `/me`'s lookup is
+     learnt only for the current server. The notifier's loop for a moved
+     server follows only once the app has learnt the new address (it asks
+     no lookup itself). The share screen's Organiser inbox and "just keep"
+     stay the current server's.
    - *The phone's other streams from other servers*: the notifier's loops
      carry threads and alerts only; mic asks, an agent's asks of the phone,
      notes, catch-ups, the busy card, speech played here and the widgets
