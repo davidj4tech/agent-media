@@ -948,6 +948,13 @@ def _pane_of(pid: str) -> str:
 
 def _codex_session(pid: str) -> str:
     """The rollout a codex process is writing, by the file it holds open."""
+    # A shared app-server owns the file descriptors, but an explicitly
+    # resumed TUI still names its conversation in argv.
+    argv = _argv(pid)
+    if "resume" in argv:
+        for arg in argv[argv.index("resume") + 1:]:
+            if re.fullmatch(_UUID, arg):
+                return arg
     best, best_at = "", -1.0
     for fd in glob.glob(f"/proc/{pid}/fd/*"):
         try:

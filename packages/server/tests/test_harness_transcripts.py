@@ -208,6 +208,25 @@ def test_a_failed_pi_tool_is_marked(pi):
     assert step["result_summary"] == "No such file"
 
 
+def test_pi_provider_reusing_call_ids_keeps_distinct_steps(pi):
+    pi.prompt("inspect two files")
+    for result in ("first file", "second file"):
+        pi.say({"type": "toolCall", "id": "bash:0", "name": "bash",
+                "arguments": {"command": "cat file"}})
+        pi.result("bash:0", result)
+    steps = [p for m in T.messages(PI)[0] for p in m["parts"] if p["type"] == "tool"]
+    assert len({p["tool_use_id"] for p in steps}) == 2
+    assert [p["result_summary"] for p in steps] == ["first file", "second file"]
+    assert all(p["status"] == "done" for p in steps)
+
+
+def test_claude_title_does_not_inherit_pi_terminal_title(monkeypatch):
+    from agent_media_server import sessions
+
+    monkeypatch.setattr(sessions, "_headless_title", lambda session, view: "Location settings")
+    assert sessions._display_title("claude-session", "pi: Add a thread to a todo") == "Location settings"
+
+
 def test_a_pi_compaction_ends_the_turn(pi):
     pi.prompt("a long one")
     pi.say({"type": "text", "text": "Working."})

@@ -59,7 +59,7 @@ function contextNote(session_id: string, usage: any): string {
 	try {
 		return execFileSync(existsSync(bin) ? bin : "media-hook-context", [], {
 			input: JSON.stringify({
-				session_id: `pi-${session_id}`,
+				session_id,
 				context_tokens: usage.tokens,
 				context_window: usage.contextWindow,
 			}),

@@ -1161,6 +1161,10 @@ def _claude_first_prompt(session: str) -> str:
 
 def _display_title(session: str, pane_title: str) -> str:
     """The pane's title, unless it is the generic one; then the first message."""
+    # A nested terminal can leave another harness's title on a Claude pane.
+    # The transcript remains authoritative when the terminal names pi.
+    if pane_title.strip().lower().startswith("pi:"):
+        return _headless_title(session, {}) or _claude_first_prompt(session) or pane_title
     if pane_title.strip().lower() not in _GENERIC_TITLES:
         return pane_title
     first = _claude_first_prompt(session)

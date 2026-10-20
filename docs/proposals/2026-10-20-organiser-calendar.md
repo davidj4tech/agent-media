@@ -5,7 +5,12 @@ with other calendar services like Outlook? with a day, 3 day, week and month
 view". Sources: both the server and the phone. Editing: create and edit
 events, not only read them.
 
-Nothing here is built yet.
+Implementation is partial: the Org grid and read-only server vdir/ICS
+sources exist. Phone upload and Settings source management remain proposed.
+
+Calendar selection and its relationship to automatic speech are specified
+in [Calendar settings: what is shown and what holds speech](2026-10-21-calendar-selection-and-speech-holds.md)
+(21 October 2026).
 
 ## What there is today
 

@@ -777,7 +777,11 @@ class PiBuilder(_HarnessBuilder):
                                      "redacted": not said})
             elif t == "toolCall":
                 tid = str(b.get("id") or "")
-                part = _tool_part(str(b.get("name") or ""), b.get("arguments"), tid)
+                # Some providers restart ids (bash:0, read:0) on each model
+                # response. Results still refer to that raw id, but the UI
+                # needs a distinct id for every call in the folded turn.
+                uid = f"{_pi_rec(rec)['uuid']}:{len(msg['parts'])}:{tid}"
+                part = _tool_part(str(b.get("name") or ""), b.get("arguments"), uid)
                 msg["parts"].append(part)
                 if tid:
                     self._tools[tid] = (part["name"], part)
