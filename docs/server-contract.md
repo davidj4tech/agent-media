@@ -1877,7 +1877,10 @@ and on every refusal.
 
 Actions (`_APP_SPEECH_ACTIONS`): `toggle`, `skip-`, `skip+`, `para-`,
 `para+`, `jump-end`, `prev`, `replay`, `replay-id`, `speed-`, `speed+`,
-`speed0`, `vol-`, `vol+`, `mute`, `goto-sentence`.
+`speed0`, `vol-`, `vol+`, `mute`, `goto-sentence`, `stop`.
+- `stop` (20 Oct 2026) ends the reply being heard, as `media stop` does; the
+  next one waiting still plays. It never touches the turn: that is
+  `POST /session/stop` (§12). The app's full screen speech rail sends it.
 - `arg` is the turn index for `prev` and `replay` (1 = latest, clamped
   1–999), or a history row id for `replay-id` (not clamped).
 - `session` on `replay` (25 Sep 2026): the thread the Replay was pressed
