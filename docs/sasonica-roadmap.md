@@ -825,8 +825,8 @@ ahead.
    through again. **Done 20 Oct 2026** (sasonica-app `7502d7f`, merged):
    while it names one, its tap opens `/pairing?server=<base>`
    with that server filled in (David, 20 Oct 2026).
-   **Every pairing's lookup and a new chat on a chosen server, built 20 Oct
-   2026** (sasonica-app branch `multi-base-8`, not merged; David picked them
+   **Every pairing's lookup and a new chat on a chosen server, done 20 Oct
+   2026** (sasonica-app `3174375`, `0b5119a`, merged; David picked them
    next, in that order): a request to another paired server that cannot get
    through (a refused connection, or a dead tunnel's 502/503/504/530) asks
    that pairing's own lookup (`relocateOther`, spaced as the current one's),
@@ -838,22 +838,34 @@ ahead.
    server's; the mic's new chat comes through it, the list's + starts on the
    server in view, and a share's files go to the server of the chat they are
    sent to (a new one's chosen on the share screen).
+   **The Settings server picker, built 20 Oct 2026** (sasonica-app branch
+   `multi-base-9`, not merged; David: "yeah, let's do it"): with more than
+   one pairing, Settings has a strip of servers above its per-server
+   sections, the current one chosen to begin with and the choice kept per
+   device; on Settings and its pages (voice, coding agents, presets,
+   projects, contacts, bridges, personas, devices, the Organiser's setup)
+   the per-server calls — speech voice, default, balance and samples,
+   language, the Organiser's setup, harnesses and setup, presets, project
+   roots, personas, bridges, Google Contacts and the contacts import,
+   devices and pairing codes, the account, Connect an assistant — go to the
+   chosen server with its token; This device, the lists and playback do
+   not, nor anything outside Settings. The phone's own settings (text size,
+   follow-along, pictures, notifications and per-server notices, location,
+   speech here, when busy, the music app, Advanced) stay the phone's.
+   "Switch to it" became **Make it this phone's server**, kept because these
+   still follow the current server: Home's speaking now, queue, hosts,
+   digests and sign-ins; the notifier's full stream (mic and photo asks,
+   notes, catch-ups, the busy card); speech played here; the widgets; the
+   Advanced server address and the legacy token. Also: the share screen's
+   Organiser inbox and Just keep go to the server chosen on its strip, and
+   each other server's `GET /me` lookup is learnt once a page load and kept
+   on its pairing.
    **What is left of the first step** (20 Oct 2026; everything above is the
    app talking to each base itself, no base-to-base link):
-   - *A server picker in Settings* for the per-server things — voice, speech
-     default, language, the Organiser and its setup, coding agents (keys,
-     logins, setup), presets, project roots, personas, bridges, Google
-     Contacts, Devices and pairing codes, the account, Connect an assistant —
-     each asked of the chosen server, the phone's own settings staying
-     global (David, 20 Oct 2026). "Switch to it" goes when it lands; the
+   - *Smaller*: the notifier's loop for a moved server follows only once
+     the app has learnt the new address (it asks no lookup itself); the
      several-servers proposal's roles split (You on <server>, the admin
-     section) can follow on top of it.
-   - *Smaller, from the two above*: another pairing's lookup is the one
-     its pairing stored (the link's or `POST /pair`'s); `/me`'s lookup is
-     learnt only for the current server. The notifier's loop for a moved
-     server follows only once the app has learnt the new address (it asks
-     no lookup itself). The share screen's Organiser inbox and "just keep"
-     stay the current server's.
+     section) can follow on the picker.
    - *The phone's other streams from other servers*: the notifier's loops
      carry threads and alerts only; mic asks, an agent's asks of the phone,
      notes, catch-ups, the busy card, speech played here and the widgets
