@@ -756,9 +756,8 @@ ahead.
    to another pairing, the list and Home snapshots forgotten on a switch
    (each thread's own snapshot kept: sessions are unique), `server_id` kept
    as the pairing's key; `test/multibase.mjs` against two mocks.
-   **(2) and (3) built together 20 Oct 2026** (sasonica-app branch
-   `multi-base-2`, not merged; the merged list cannot ship without the
-   routing): `getTargets` and `getSessionsState` ask every pairing in
+   **(2) and (3) done 20 Oct 2026** (sasonica-app `cab79fe`, merged; the
+   merged list cannot ship without the routing): `getTargets` and `getSessionsState` ask every pairing in
    parallel, the current server's answer first (its failure is the list's
    error; its places, groups and mail stay its own), each row tagged
    `server {base, name}`, a thread two servers list shown once (the current
@@ -774,8 +773,18 @@ ahead.
    that the current server does not have (404 on its stream) is asked of
    the others and noted. Remove also signs this device out on that server
    (`POST /me/signout`, which any device may do) while its token works.
+   **Offline and search, built 20 Oct 2026** (sasonica-app branch
+   `multi-base-3`, not merged): a server whose last list or state ask got
+   no answer says so on its chip ("hpo · offline"), its rows staying as last
+   had, across a restart too (the saved list's); search (⌕) asks every
+   server, or the one chosen on the same chip strip under its box (kept in
+   the address as `server=`, seeded from the list's choice), its threads and
+   messages merged (messages in the asked order, best taken in turn; each
+   server paged from its own cursor) and labelled like the list, terms,
+   memory and documents the current server's; a thread's own find bar still
+   asks only that thread's server.
    Still the current server's: Home, alerts, the background notifier, a new
-   chat, search, Settings. (4) Home and alerts from every base; the
+   chat, Settings. (4) Home and alerts from every base; the
    background notifier for each base (`NotifyService` reads the list).
    (5) A server picker in Settings for the per-server things (voice, speech
    default, language, the Organiser, coding agents, presets, devices, the
@@ -785,8 +794,12 @@ ahead.
    only (as built); Remove also revokes this device on that server while
    its token still works (built in slice 2–3); Settings gets a server
    picker for the per-server things, the phone's own settings stay global
-   (slice 5). *Assumed, David not asked:* a thread listed by two servers
-   (one day, siblings listing each other's) is shown once.
+   (slice 5); a server that cannot be reached gets a small visible note, its
+   chip saying offline and its last rows kept; search covers every server
+   and is selectable, All servers or one, merged and labelled like the list
+   (both built on `multi-base-3`); "Switch to it" stays until slice 5's
+   picker. *Assumed, David not asked:* a thread listed by two servers (one
+   day, siblings listing each other's) is shown once.
 8. **A Media tab** (David, 28 Sep 2026) — a fourth tab in the app, not a
    companion app, because speech and music share the phone's player and its
    handoff already lives here. Music plays in the app's own ExoPlayer (a
