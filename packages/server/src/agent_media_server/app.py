@@ -354,6 +354,7 @@ CORS_PATHS = CORS_PATHS | MUSIC_PATHS
 # The Organiser: browsing and capturing in the Org tree (org.py). The same
 # arrangement.
 ORG_PATHS = frozenset({"/org", "/org/view", "/org/read", "/org/search",
+                         "/org/todos", "/org/link",
                          "/org/capture", "/org/setup", "/org/say",
                          "/org/state", "/org/refile", "/org/date",
                          "/org/priority", "/org/ask", "/org/zettel",
@@ -2976,6 +2977,19 @@ def _org(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
     elif method == "GET" and path == "/org/search":
         ok, detail = org.search(arg("q"), bearer, everything=arg("all") == "1",
                                   memory=arg("memory") != "0")
+    elif method == "GET" and path == "/org/todos":
+        ok, detail = org.todos(arg("q"), bearer)
+    elif method == "POST" and path == "/org/link":
+        # A thread on a to-do: the heading's :SESSION: property stamped with
+        # the session's roam id (org_edit.py).
+        body = _read_json(h) or {}
+        try:
+            at = max(0, int(body.get("at") or 0))
+        except (TypeError, ValueError):
+            at = 0
+        ok, detail = org_edit.link_session(str(body.get("path") or ""), at,
+                                             str(body.get("title") or ""),
+                                             str(body.get("session") or ""), bearer)
     elif method == "GET" and path == "/org/setup":
         ok, detail = org_setup.status(bearer)
     elif method == "POST" and path == "/org/setup":

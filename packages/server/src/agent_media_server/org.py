@@ -13,6 +13,8 @@ capture only has to land in the capture file.
   GET  /org/read?path=[&at=] → {"path", "title", "text", "links"}
   GET  /org/search?q=        → {"notes": [...], "memories": [...]}
                                  (&all=1 takes in session notes; &memory=0 skips memory)
+  GET  /org/todos?q=         → {"items": [{path, at, title, state}]}
+                                 the open to-dos, for the link-a-thread sheet
   POST /org/capture {"text", "kind": "todo"|"note", "memory": bool}
   POST /org/say {"path", "at"?}  → read a note (or one heading) aloud
   POST /org/ask {"path", "at"?, "text"} → a chat about it (org_chat.py)
@@ -341,6 +343,33 @@ def view(name: str, bearer: str, *, done: bool = False) -> tuple[bool, dict]:
         if vname == name:
             return True, {"view": name, "items": _folder_notes(root() / folder)}
     return False, {"error": f"no such view {name!r}", "status": 404}
+
+
+def todos(q: str, bearer: str, *, limit: int = 40) -> tuple[bool, dict]:
+    """Every open to-do across the editable files (the capture file and the
+    file views), filtered by each word of `q` — the list the link-a-thread
+    sheet picks from. Each item's path, line and title is what /org/link
+    needs to find the heading again."""
+    user, err = auth.gate(bearer)
+    if not user:
+        return False, err
+    words = (q or "").lower().split()
+    prof = profile()
+    files = [prof.capture_file] + [f for _, _, f in prof.files(root())]
+    items = []
+    for fname in dict.fromkeys(files):
+        p = root() / fname
+        if not p.is_file():
+            continue
+        for h in _headings(p, done=False):
+            if not h["state"]:
+                continue
+            hay = f"{h['title']} {fname}".lower()
+            if words and not all(w in hay for w in words):
+                continue
+            items.append({"path": h["path"], "at": h["at"], "title": h["title"],
+                          "state": h["state"]})
+    return True, {"items": items[:limit], "more": max(0, len(items) - limit)}
 
 
 def read(rel: str, at: int, bearer: str) -> tuple[bool, dict]:

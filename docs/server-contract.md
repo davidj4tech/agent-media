@@ -2564,6 +2564,16 @@ text}]}`.
   store is down, the list comes back empty and the notes half still answers.
   `memory=0` skips the store.
 
+#### `GET /org/todos?q=<text>` — gated (`auth.gate`)
+
+`{"ok", "items": [{path, at, title, state}], "more"}` (21 Oct 2026).
+- Every open to-do across the profile's editable files (the capture file and
+  the file views), filtered by each word of `q` — the list the app's
+  link-a-thread sheet picks from. Headings with no TODO keyword are left
+  out, done ones too.
+- `path`, `at` and `title` are what `POST /org/link` takes to find the
+  heading again; at most 40 items, `more` the count beyond that.
+
 #### `POST /org/capture`
 
 `{"text", "kind": "todo"|"note", "memory": bool}` → `{"ok", "path", "at",
@@ -2797,7 +2807,7 @@ Undo again puts the edit back. 409 when there is nothing to undo, or when
 `sha` is no longer the last edit (the answer then carries the current
 `last_edit`).
 
-#### `POST /org/state` · `POST /org/refile` · `POST /org/date` · `POST /org/priority` — gated (`auth.gate`)
+#### `POST /org/state` · `POST /org/refile` · `POST /org/date` · `POST /org/priority` · `POST /org/link` — gated (`auth.gate`)
 
 These change a heading in one of the profile's files: for paragtd, inbox,
 next-actions, waiting-for, tickler, someday, projects, areas and routines; for
@@ -2877,6 +2887,19 @@ the app last saw it) plus `title` (its text).
   written as Org's `[#A]` after the state. 400 for anything else.
 - An `[#A]` TODO whose SCHEDULED or DEADLINE has a clock time is read aloud
   at that time (`media agenda-alarm`, agent_media_core `agenda_alarm.py`).
+
+`/org/link {"path", "at", "title", "session"}` → `{"ok", "path", "at",
+"session"}` (21 Oct 2026)
+- Stamps the heading's `:SESSION:` property with the thread's roam id,
+  `[[id:<harness>:<host>:<sid>]]` — the same stamp an agent puts on a to-do
+  it files (`agent-session-uid --link`), here from the app's link-a-thread
+  sheet. The org bridge exports a note for the linked session, and org-roam
+  backlinks show the to-do from that note.
+- The property goes into the heading's drawer, made after its planning line
+  when it has none; an existing `:SESSION:` is replaced. An empty `session`
+  takes the stamp off, and the drawer with it when it held nothing else.
+- 404 when no harness knows the session. 400, 401 and 409 as for the routes
+  above.
 
 #### `POST /org/zettel` — gated (`auth.gate`)
 

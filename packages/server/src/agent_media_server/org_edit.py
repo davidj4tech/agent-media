@@ -9,6 +9,8 @@ another GTD file — the two things an inbox needs besides capture.
       → {"path", "at", "kind", "date", "time"}
   POST /org/priority {"path", "at", "title", "priority": "A"|"B"|"C"|""}
       → {"path", "at", "priority"}
+  POST /org/link   {"path", "at", "title", "session"}
+      → {"path", "at", "session"}
 
 `at` is the heading's line as the app last saw it and `title` its text. The
 file may have moved on since (a capture, an Emacs save, the sync), so the
@@ -43,6 +45,7 @@ import calendar
 import datetime as dt
 from agent_media_core import _lock as fcntl  # flock, or msvcrt on Windows
 import re
+import socket
 from contextlib import ExitStack
 from pathlib import Path
 
@@ -405,6 +408,79 @@ def refile(rel: str, at: int, title: str, to: str, bearer: str,
 
 
 _TIME = re.compile(r"\d{1,2}:\d{2}(?:-\d{1,2}:\d{2})?")
+
+
+# --- a heading's SESSION link --------------------------------------------------------
+
+def session_uid(session: str) -> str:
+    """`<harness>:<host>:<sid>` — the org-roam :ID: of the session's note,
+    as agent-session-uid prints it — or "" when no harness knows it."""
+    from agent_media_core import harnesses
+    harness = harnesses.harness_of(session)
+    if not harness:
+        return ""
+    return f"{harness}:{socket.gethostname().split('.')[0]}:{session}"
+
+
+def _set_property(lines: list[str], i: int, key: str, value: str) -> None:
+    """The heading's :KEY: property to `value`, in place: into its drawer
+    when it has one (made when it has none), an existing :KEY: line
+    rewritten. `value` "" takes the line out, and the drawer with it when
+    it held nothing else."""
+    indent = " " * (_level(lines[i]) + 1)
+    j = i + 1
+    if j < len(lines) and _PLANNING.match(lines[j]):
+        j += 1
+    if j < len(lines) and lines[j].strip().upper() == ":PROPERTIES:":
+        end = j + 1
+        while end < len(lines) and lines[end].strip().upper() != ":END:" and not _level(lines[end]):
+            end += 1
+        closed = end < len(lines) and lines[end].strip().upper() == ":END:"
+        props = [k for k in range(j + 1, end) if _PROP.match(lines[k])]
+        hit = next((k for k in props
+                    if _PROP.match(lines[k]).group(1).upper() == key), None)
+        if value:
+            if hit is not None:
+                lines[hit] = f"{indent}:{key}: {value}"
+            else:
+                lines.insert(j + 1, f"{indent}:{key}: {value}")
+        elif hit is not None:
+            if closed and len(props) == 1:
+                del lines[j:end + 1]
+            else:
+                del lines[hit]
+        return
+    if value:
+        lines[j:j] = [f"{indent}:PROPERTIES:", f"{indent}:{key}: {value}",
+                      f"{indent}:END:"]
+
+
+def link_session(rel: str, at: int, title: str, session: str, bearer: str) -> tuple[bool, dict]:
+    """Stamp the heading's :SESSION: property with the thread's roam id
+    (`[[id:<harness>:<host>:<sid>]]`), so the session's note shows the to-do
+    in its org-roam backlinks — the stamp an agent adds to a to-do it files,
+    here from the app's link sheet. `session` "" takes the stamp off."""
+    user, err = auth.gate(bearer)
+    if not user:
+        return False, err
+    session = (session or "").strip()
+    uid = ""
+    if session:
+        uid = session_uid(session)
+        if not uid:
+            return False, {"error": "no session by that id", "status": 404}
+    try:
+        path = _gtd_path(rel)
+        with ExitStack() as stack:
+            f = _Locked(path, stack)
+            i = _locate(f.lines, at, title)
+            _set_property(f.lines, i, "SESSION", f"[[id:{uid}]]" if uid else "")
+            f.save()
+            return True, {"path": _rel(path), "at": i + 1, "session": uid}
+    except Refused as e:
+        return False, e.detail
+    except OSError as e:
+        return False, {"error": f"could not change the file ({e})", "status": 500}
 
 
 def set_date(rel: str, at: int, title: str, kind: str, date: str, bearer: str,

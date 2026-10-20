@@ -173,7 +173,8 @@ def test_edits_are_gated_and_kept_to_the_gtd_files(org):
     assert (org / "inbox.org").read_text() == INBOX
 
 
-def test_the_routes(org):
+def test_the_routes(org, monkeypatch):
+    monkeypatch.setattr(org_edit, "session_uid", lambda s: f"claude:testhost:{s}")
     import http.client
     import json
     import threading
@@ -205,9 +206,70 @@ def test_the_routes(org):
         assert "SCHEDULED: <2026-09-24 Thu 19:00>" in (org / "inbox.org").read_text()
         assert post("/org/refile", {"path": "inbox.org", "at": 1, "title": "Gone",
                                       "to": "next"})[0] == 409
+        status, got = post("/org/link", {"path": "inbox.org", "at": _line("Call the bank"),
+                                           "title": "Call the bank", "session": "abc"})
+        assert status == 200 and got["session"] == "claude:testhost:abc"
+        assert ":SESSION: [[id:claude:testhost:abc]]" in (org / "inbox.org").read_text()
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+def test_link_session_stamps_replaces_and_clears_the_property(org, monkeypatch):
+    monkeypatch.setattr(org_edit, "session_uid",
+                        lambda s: f"claude:testhost:{s}" if s == "abc" else "")
+    at = _line("Call the bank")
+    ok, got = org_edit.link_session("inbox.org", at, "Call the bank", "abc", "good")
+    assert ok and got == {"path": "inbox.org", "at": at, "session": "claude:testhost:abc"}
+    assert ("** NEXT [#A] Call the bank :phone:\n"
+            "   :PROPERTIES:\n"
+            "   :SESSION: [[id:claude:testhost:abc]]\n"
+            "   :END:\n") in (org / "inbox.org").read_text()
+    ok, got = org_edit.link_session("inbox.org", at, "Call the bank", "", "good")
+    assert ok and got["session"] == ""
+    assert (org / "inbox.org").read_text() == INBOX
+
+
+def test_link_session_drawer_goes_after_the_planning_line(org, monkeypatch):
+    monkeypatch.setattr(org_edit, "session_uid", lambda s: f"pi:testhost:{s}")
+    at = _line("Fix the TV")
+    ok, _ = org_edit.link_session("inbox.org", at, "Fix the TV ssh", "def", "good")
+    assert ok
+    assert ("** TODO Fix the TV ssh\n"
+            "   SCHEDULED: <2026-09-20 Sun 08:45>\n"
+            "   :PROPERTIES:\n"
+            "   :SESSION: [[id:pi:testhost:def]]\n"
+            "   :END:\n") in (org / "inbox.org").read_text()
+
+
+def test_link_session_replaces_inside_an_existing_drawer(org, monkeypatch):
+    before = ("* TODO Fix the TV ssh\n"
+              "  :PROPERTIES:\n"
+              "  :CREATED: [2026-09-01 Tue 09:00]\n"
+              "  :SESSION: [[id:claude:testhost:old]]\n"
+              "  :END:\n")
+    (org / "inbox.org").write_text(before)
+    monkeypatch.setattr(org_edit, "session_uid", lambda s: f"claude:testhost:{s}")
+    ok, _ = org_edit.link_session("inbox.org", 1, "Fix the TV ssh", "new", "good")
+    assert ok
+    assert (org / "inbox.org").read_text() == before.replace("old", "new")
+    ok, _ = org_edit.link_session("inbox.org", 1, "Fix the TV ssh", "", "good")
+    assert ok
+    assert (org / "inbox.org").read_text() == (
+        "* TODO Fix the TV ssh\n"
+        "  :PROPERTIES:\n"
+        "  :CREATED: [2026-09-01 Tue 09:00]\n"
+        "  :END:\n")
+
+
+def test_link_session_is_gated_and_checked(org, monkeypatch):
+    monkeypatch.setattr(org_edit, "session_uid", lambda s: "")
+    assert org_edit.link_session("inbox.org", 4, "", "abc", "bad")[1]["status"] == 401
+    ok, got = org_edit.link_session("inbox.org", 4, "", "abc", "good")
+    assert not ok and got["status"] == 404
+    monkeypatch.setattr(org_edit, "session_uid", lambda s: f"claude:testhost:{s}")
+    assert org_edit.link_session("roam/n.org", 1, "", "abc", "good")[1]["status"] == 400
+    assert (org / "inbox.org").read_text() == INBOX
 
 
 def test_priority_is_set_changed_and_taken_off(org):

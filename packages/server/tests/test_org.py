@@ -105,11 +105,22 @@ def test_views_list_the_files_and_folders(tree, server):
 
 def test_everything_is_gated(tree, server):
     for path in ("/org", "/org/view?name=inbox", "/org/read?path=inbox.org",
-                 "/org/search?q=telly"):
+                 "/org/search?q=telly", "/org/todos?q=telly"):
         assert _call(server, "GET", path, bearer="bad")[0] == 401
     assert _call(server, "POST", "/org/capture", {"text": "x"}, bearer="bad")[0] == 401
     assert "HIGH" in (tree / "inbox.org").read_text() and "* TODO x" not in (
         tree / "inbox.org").read_text()
+
+
+def test_todos_lists_open_items_matching_the_query(tree, server):
+    status, got = _call(server, "GET", "/org/todos")
+    assert status == 200
+    by_title = {i["title"]: i for i in got["items"]}
+    assert set(by_title) == {"Fix the TV ssh", "Call the bank", "Parcel"}  # not DONE
+    bank = by_title["Call the bank"]
+    assert (bank["path"], bank["state"]) == ("inbox.org", "NEXT") and bank["at"] > 0
+    _, got = _call(server, "GET", "/org/todos?q=bank")
+    assert [i["title"] for i in got["items"]] == ["Call the bank"]
 
 
 def test_a_file_view_reads_states_and_dates(tree, server):
