@@ -24,7 +24,8 @@ What makes it safe to run unattended (David, 18 Oct 2026):
     die with the restart. A restart of sessiond *now* from inside one of its
     sessions is refused as well, because it would end the very chat asking
     for it. Use `after`.
-  - speech (tts-shim, sink-speech, speech-state, clips, the speech fifo):
+  - speech (tts-shim, sink-speech, speech-state, clips, the speech fifo,
+    and the canvas, which carries the speech frames to the phone):
     refused while a reply is being spoken.
 * **`after`**: the restart runs later, outside the caller. Under systemd it
   is a transient user unit (`systemd-run --user --on-active=N`), so it
@@ -200,7 +201,11 @@ def resolve(only: "Optional[list[str]]", svcs: list[Service]
 
 
 def is_speech(s: Service) -> bool:
-    return s.short in SPEECH or s.name in SPEECH
+    # The canvas holds the speech frames hub the phone's player follows: a
+    # restart mid-reply left the phone playing on with its reports read as
+    # stale, so the reply had no timeline, no bold and was never marked heard
+    # (David, 20 Oct 2026: "it was read, just with no follow along").
+    return s.short in SPEECH or s.name in SPEECH or is_canvas(s)
 
 
 def is_sessiond(s: Service) -> bool:
