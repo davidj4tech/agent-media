@@ -856,6 +856,7 @@ def _ask_pane(text: str, *, agent: str, cwd: str, host: str, flags: list[str],
     """The pane driver's fresh session: a background tmux window in `host`,
     the words typed in, the listener's turn shelved against its uuid."""
     # pi takes its id up front; the others are asked for theirs.
+    started = int(time.time())
     fixed = str(uuid.uuid4()) if agent == "pi" else ""
     pane, err = open_window(fixed, cwd, resume=False, host=host, flags=flags, agent=agent,
                             **({"profile": profile} if profile else {}))
@@ -875,7 +876,19 @@ def _ask_pane(text: str, *, agent: str, cwd: str, host: str, flags: list[str],
         return False, {"error": send_err, "session": session or None, "pane": pane}
     took = _ensure_submitted(pane, body, agent=agent)
     if not session:
-        session = sessions.session_of_pane(pane, agent=agent)
+        session = sessions.session_of_pane(pane, agent=agent,
+                                           **({"timeout": 0.0} if agent == "codex" else {}))
+    if not session and took and agent == "codex":
+        from agent_media_core import harnesses
+
+        deadline = time.monotonic() + 10.0
+        while not session:
+            session = sessions.session_of_pane(pane, agent=agent, timeout=0.0)
+            session = session or harnesses.register_new_codex(
+                pane, compose(text, quote), cwd, started, profile)
+            if session or time.monotonic() >= deadline:
+                break
+            time.sleep(0.25)
     if not took:
         return False, _unsent_error(pane, session)
     if session:

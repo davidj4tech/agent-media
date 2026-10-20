@@ -966,6 +966,37 @@ def _codex_session(pid: str) -> str:
     return best
 
 
+def register_new_codex(pane: str, text: str, cwd: str, since: float,
+                       profile: str = "") -> str:
+    """Match a submitted first prompt when the shared daemon owns the rollout.
+
+    Require one exact match, created after this launch, and a live TUI in
+    this pane. Never guess from the newest conversation in a directory.
+    """
+    import sqlite3
+    from . import native_models
+
+    db = native_models.home(CODEX, profile) / "state_5.sqlite"
+    try:
+        with sqlite3.connect(db.as_uri() + "?mode=ro", uri=True, timeout=0.2) as conn:
+            rows = conn.execute(
+                "SELECT id FROM threads WHERE cwd = ? AND first_user_message = ? "
+                "AND created_at >= ?", (cwd, text, since)).fetchall()
+    except (OSError, ValueError, sqlite3.Error):
+        return ""
+    if len(rows) != 1 or not _safe(rows[0][0]):
+        return ""
+    for d in glob.glob("/proc/[0-9]*"):
+        pid = os.path.basename(d)
+        argv = _argv(pid)
+        if (argv and os.path.basename(argv[0]) == CODEX
+                and "app-server" not in argv[1:] and _pane_of(pid) == pane):
+            session = rows[0][0]
+            if register_pane(CODEX, session, int(pid), pane):
+                return session
+    return ""
+
+
 def _started_at(pid: str) -> float:
     """When that process began, near enough to compare sessions against."""
     try:
@@ -1587,7 +1618,7 @@ def running() -> list[Running]:
     registered (started before its hooks were wired) is worked out from its
     own arguments and files instead.
     """
-    out = [r for r in _registered() if r.harness in (PI, GEMINI, GROK) and r.session]
+    out = [r for r in _registered() if r.harness in (CODEX, PI, GEMINI, GROK) and r.session]
     registered = {r.pid for r in out}
     for d in glob.glob("/proc/[0-9]*"):
         pid = os.path.basename(d)
@@ -1605,6 +1636,8 @@ def running() -> list[Running]:
                 if sid:
                     out.append(Running(int(pid), sid, _pane_of(pid), GROK))
         elif os.path.basename(argv[0]) == CODEX:
+            if int(pid) in registered or "app-server" in argv[1:]:
+                continue
             sid = _codex_session(pid)
             if sid:
                 out.append(Running(int(pid), sid, _pane_of(pid), CODEX))

@@ -1465,3 +1465,22 @@ def test_an_auth_check_that_blows_up_is_not_a_refusal(monkeypatch):
     monkeypatch.setattr(core, "program", lambda name: "/x/" + name)
     monkeypatch.setattr(core, "auth_state", lambda name, **k: (_ for _ in ()).throw(OSError("boom")))
     assert send._agent_unready("claude") == ""
+
+
+def test_fresh_codex_shared_daemon_registers_first_prompt(monkeypatch, _asker):
+    from agent_media_core import harnesses
+
+    monkeypatch.setattr(send, "open_window", lambda *a, **k: ("%9", ""))
+    monkeypatch.setattr(send, "_send_to_pane", lambda *a: "")
+    monkeypatch.setattr(sessions, "session_of_pane", lambda *a, **k: "")
+    seen = []
+    sid = "11111111-2222-3333-4444-555555555555"
+    monkeypatch.setattr(harnesses, "register_new_codex",
+                        lambda *a: seen.append(a) or sid)
+    recorded = []
+    monkeypatch.setattr(send, "_record_turn", lambda *a: recorded.append(a))
+    ok, detail = send._ask_pane("hello", agent="codex", cwd="/project", host="p",
+                                flags=[], quote="context", plan=True)
+    assert ok and detail["session"] == sid
+    assert seen[0][:3] == ("%9", send.compose("hello", "context"), "/project")
+    assert recorded == [(sid, "hello", "%9")]
