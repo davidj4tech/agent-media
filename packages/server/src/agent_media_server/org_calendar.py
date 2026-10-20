@@ -18,8 +18,10 @@ deadline heading not yet done whose date has passed is also listed on today,
 when today is in the range and no repeat of it falls there, with
 `overdue: true` and `due` its own date, as Org carries it forward. Events are never overdue.
 
-Later sources (calendar services, the phone's calendar) join the same list;
-docs/proposals/2026-10-20-organiser-calendar.md.
+Every item says its `source`: `org` for these, `calendar` for the events
+of the calendars config.toml names (calendar_sources.py), merged in for the
+owner; `calendars` lists those calendars. The phone's calendar is to join
+the same list (docs/proposals/2026-10-20-organiser-calendar.md).
 """
 
 from __future__ import annotations
@@ -29,7 +31,7 @@ import datetime as dt
 import re
 from pathlib import Path
 
-from . import auth, org
+from . import auth, calendar_sources, org
 
 #: The widest range one request may ask for: a month view with its edges.
 MAX_SPAN_DAYS = 92
@@ -203,6 +205,18 @@ def get(qs_from: str, qs_to: str, bearer: str, *, done: bool = False) -> tuple[b
     if end < start or (end - start).days >= MAX_SPAN_DAYS:
         return False, {"error": f"to is on or after from, at most {MAX_SPAN_DAYS} days on",
                        "status": 400}
+    rows = [{**h, "source": "org"} for h in items(start, end, today=today, done=done)]
+    cals: list[dict] = []
+    if _owner():
+        events, cals = calendar_sources.events(start, end)
+        rows += events
+        rows.sort(key=lambda h: (h["date"], h.get("time") or "", h.get("path") or "~",
+                                 h.get("at") or 0, h["title"]))
     return True, {"from": start.isoformat(), "to": end.isoformat(),
-                  "today": today.isoformat(),
-                  "items": items(start, end, today=today, done=done)}
+                  "today": today.isoformat(), "calendars": cals,
+                  "items": rows[:MAX_ITEMS]}
+
+
+def _owner() -> bool:
+    """Calendars are the owner's: an account paired here sees only Org."""
+    return auth.request_account() == ""

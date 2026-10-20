@@ -2416,8 +2416,8 @@ and the app shows no calendar. Dates are `YYYY-MM-DD`; `from` defaults to
 today and `to` to six days after `from`. `to` before `from`, or a range of
 more than 92 days, is a 400.
 
-`{"ok", "from", "to", "today", "items": [...]}`, sorted by date, then time.
-Each item is one heading on one day: `{path, at, level, state, priority,
+`{"ok", "from", "to", "today", "calendars", "items": [...]}`, sorted by
+date, then time. Each Org item is one heading on one day: `{path, at, level, state, priority,
 title, tags, type, date, overdue, time?, end_time?, end_date?, repeat?,
 due?}`.
 
@@ -2441,7 +2441,45 @@ due?}`.
   ones (paragtd's old astro alerts), as the agenda does.
 - At most 2000 items.
 
-Calendar services and the phone's calendar are to join the same list
+Every item has `source`: `org` for the headings above, `calendar` for an
+event from one of the install's calendars (20 Oct 2026). Those are merged in
+for the owner only (an account paired here sees Org alone), and
+`calendars` lists them: `[{id, name, color, kind: vdir|ics, ok, synced?,
+error?}]`, `synced` when the source last changed (epoch seconds), `error`
+why one cannot be read. A calendar event is `{source: "calendar", type:
+"event", calendar: {id, name, color}, uid, title, location?, date, time?,
+end_time?, end_date?, all_day, overdue: false, state: "", priority: "",
+tags: [], level: 1}`, with no `path` or `at` (it is not in the Org tree):
+
+- Times are this server's local time. An all-day event's `end_date` is its
+  last day (DTEND is the day after); a timed one that runs past midnight has
+  `end_date` and `end_time` on that day.
+- Repeats (RRULE, RDATE, EXDATE) are expanded in the range; one occurrence
+  moved or changed on its own (RECURRENCE-ID) stands in for the one it
+  replaces; a cancelled event is left out.
+
+The calendars come from config.toml (calendar_sources.py), never from code:
+
+```toml
+[[calendar.sources]]
+kind = "vdir"                 # a folder of .ics files, one item each
+path = "~/.calendars"         #   (vdirsyncer, khal); a folder of such
+                              #   folders is a calendar per folder
+[[calendar.sources]]
+kind = "ics"                  # a published calendar address
+url = "https://…/basic.ics"
+name = "Family"               # optional, as is color (#rrggbb)
+refresh_min = 15
+```
+
+A vdir calendar's name and colour are the source's `name`/`color`, else
+the folder's `displayname`/`color` files, else its name. An ICS link is
+fetched at most every `refresh_min` minutes into `<state_dir>/calendar/`
+(0600), the last good copy standing when it fails; the address is never
+logged or sent to the app. Keeping a vdir fresh is the host's (a timer
+running `vdirsyncer sync`). Reading needs the `icalendar` package, a
+dependency of the server; without it each calendar says so in `error`.
+Calendars are read only for now
 (docs/proposals/2026-10-20-organiser-calendar.md).
 
 #### `GET /org/read?path=<rel>[&at=<line>]`
