@@ -24,6 +24,21 @@ def test_catalogue_filters_hidden_models_and_never_returns_credentials(monkeypat
     assert native_models.models("grok") == []
 
 
+def test_catalogue_keeps_latest_version_of_each_family(monkeypatch, tmp_path):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    ids = ["gpt-6-sol", "gpt-6-astra", "gpt-6.1-sol", "gpt-5.6-sol",
+           "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-luna", "gpt-6.10-sol",
+           "gpt-default", "other-2-sol"]
+    (tmp_path / "models_cache.json").write_text(json.dumps({"models": [
+        *({"slug": mid} for mid in ids),
+        {"slug": "gpt-7-terra", "visibility": "hide"}]}))
+    assert [m["id"] for m in native_models.models("codex")] == [
+        "gpt-6-astra", "gpt-5.6-terra", "gpt-6-luna", "gpt-6.10-sol",
+        "gpt-default", "other-2-sol"]
+    # Filtering the picker does not invalidate an existing selection.
+    assert native_models.allowed("gpt-5.6-sol") == "gpt-5.6-sol"
+
+
 def test_codex_context_is_read_instead_of_assistant_message_shape(monkeypatch, tmp_path):
     path = tmp_path / "rollout.jsonl"
     path.write_text(json.dumps({"type": "turn_context", "timestamp": "2026-10-20T00:00:00Z",

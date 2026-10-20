@@ -48,7 +48,36 @@ def models(agent: str, profile: str = "") -> list[dict]:
             continue
         rows.append({"id": mid, "label": str(m.get("display_name") or m.get("name") or mid),
                      "note": str(m.get("description") or "")})
-    return rows
+    return _latest_versions(rows)
+
+
+def _latest_versions(rows: list[dict]) -> list[dict]:
+    """Keep the newest numeric version of each exact model family.
+
+    Suffixes remain part of the family: a newer Sol does not replace a
+    Luna or Terra. Only visible, offered replacements count. Unversioned
+    aliases and unfamiliar IDs pass through unchanged.
+    """
+    pattern = re.compile(r"([a-z][a-z-]*?)-(\d+(?:\.\d+)*)(-[a-z][a-z-]*)?")
+
+    def version(mid: str):
+        match = pattern.fullmatch(mid)
+        if not match:
+            return None
+        parts = tuple(int(p) for p in match[2].split("."))
+        # Treat 6 and 6.0 as the same release.
+        while len(parts) > 1 and parts[-1] == 0:
+            parts = parts[:-1]
+        return (match[1], match[3] or ""), parts
+
+    newest = {}
+    for row in rows:
+        parsed = version(row["id"])
+        if parsed:
+            family, number = parsed
+            newest[family] = max(newest.get(family, ()), number)
+    return [row for row in rows if (parsed := version(row["id"])) is None
+            or parsed[1] == newest[parsed[0]]]
 
 
 def allowed(model: str) -> str:
