@@ -318,19 +318,48 @@ def _move_control() -> tuple[bool, dict]:
     if _kind(to) == _kind(now.get("backend") or ""):
         # Already there: phone players are one place to a move.
         return True, _answer()
-    if to == "rooms" and radio.read().get("on"):
-        return False, {"error": "radio plays on the phone", "status": 409, **_answer()}
+    station = radio.read()
+    if station.get("on"):
+        # The radio goes with it: the station's own player is moved, so it
+        # keeps its list (a play there would end it).
+        if to not in radio.WHERES or station.get("where") == "handoff":
+            return False, {"error": f"the radio does not play on {to}", "status": 409, **_answer()}
+        return _begin_move(to, _move_station, to, int(now.get("pos_ms") or 0),
+                           bool(now.get("paused")))
     uri = _replay_uri(now)
     if not uri:
         return False, {"error": "this can only play where it is", "status": 409, **_answer()}
+    return _begin_move(to, _move, uri, to, _kind(now.get("backend") or ""),
+                       (now.get("pos_ms") or 0) / 1000, bool(now.get("paused")))
+
+
+def _begin_move(to: str, fn, *args) -> tuple[bool, dict]:
+    """`fn(*args)` in the background, reported as the move to `to`."""
     with _LOCK:
         if _MOVE.get("state") == "moving":
             return False, {"error": "a move is under way", "status": 409}
         _MOVE.clear()
         _MOVE.update(to=to, state="moving", error=None, at=time.time())
-    _spawn(_move, uri, to, _kind(now.get("backend") or ""),
-           (now.get("pos_ms") or 0) / 1000, bool(now.get("paused")))
+    _spawn(fn, *args)
     return True, _answer()
+
+
+def _move_station(to: str, pos_ms: int, paused: bool) -> None:
+    """The radio to `to` (agent_media_core.radio.move), reported as a move."""
+    from agent_media_core import radio
+
+    from . import radio as loop
+
+    try:
+        radio.move(to, pos_ms, paused)
+        state, error = "done", None
+    except (ValueError, RuntimeError) as e:
+        state, error = "failed", str(e)
+    with _LOCK:
+        _MOVE.update(state=state, error=error, at=time.time())
+    _reset_cache()
+    loop.wake()
+    print(f"music: radio to {to}: {state}{f' ({error})' if error else ''}", file=sys.stderr)
 
 
 def _spawn(fn, *args) -> None:
@@ -393,7 +422,7 @@ def _radio_control(body: dict) -> tuple[bool, dict]:
         return False, {"error": "uri must be a YouTube track", "status": 400}
     where = _resolve_music_where("default")
     if where not in radio.WHERES:
-        return False, {"error": "radio plays on the phone", "status": 409, **_answer()}
+        return False, {"error": f"the radio does not play on {where}", "status": 409, **_answer()}
     if not playing:
         done, said = _run(["play", uri.strip()])
         if not done:

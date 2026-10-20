@@ -270,6 +270,166 @@ class PhonePlayer:
         with contextlib.suppress(Exception):
             self._sink().pause()
 
+    def resume(self) -> None:
+        with contextlib.suppress(Exception):
+            self._sink().resume()
+
+
+class RoomsPlayer:
+    """The house speakers: Mopidy, whose `mpv:` tracks the Mopidy-Mpv
+    renderer plays into the rooms' music stream (David, 20 Oct 2026: radio on
+    the house speakers).
+
+    This host cannot fetch from YouTube (bot-walled), so a song is fetched on
+    the phone and copied into the rooms cache (sinks.music_fetch.ensure_local),
+    as every house play is: that copy is its download, and a song that will
+    not come is not streamed instead. MPD's queue stands in for mpv's
+    playlist (`song`, `playlistlength`); position and length are the
+    renderer's, since MPD knows neither for an `mpv:` track.
+    """
+
+    personal = True
+
+    def __init__(self, where: str = "rooms") -> None:
+        self.where = where
+
+    @staticmethod
+    def _sink():
+        from .sinks.music import SinkMusic
+        return SinkMusic()
+
+    @staticmethod
+    def _mpd(*lines: str) -> list[str]:
+        from .sinks import music
+        from .types import Target
+
+        with music._connect(Target(name="local")) as s:
+            return [music._cmd(s, line) for line in lines]
+
+    def props(self) -> Optional[dict]:
+        from .sinks import music
+
+        try:
+            status, song = self._mpd("status", "currentsong")
+        except OSError:
+            return None
+        st, cur = music._parse_kv(status), music._parse_kv(song)
+        state = st.get("state", "stop")
+
+        def num(v, kind=float):
+            try:
+                return kind(v)
+            except (TypeError, ValueError):
+                return None
+
+        out = {"path": cur.get("file") or None,
+               "playlist-pos": num(st.get("song"), int) if state != "stop" else None,
+               "playlist-count": num(st.get("playlistlength"), int) or 0,
+               "idle-active": state == "stop",
+               "time-pos": num(st.get("elapsed")), "duration": num(st.get("duration")),
+               "pause": state == "pause"}
+        if str(out["path"] or "").startswith("mpv:"):
+            mp = music.mpv_now_props() or {}
+            for key in ("time-pos", "duration"):
+                if mp.get(key) is not None:
+                    out[key] = mp[key]
+        return out
+
+    def playing(self) -> Optional[str]:
+        p = self.props()
+        if p and not p.get("idle-active"):
+            return vid_of(str(p.get("path") or ""))
+        return None
+
+    @staticmethod
+    def _local(song: dict) -> Optional[str]:
+        from .sinks import music_fetch
+
+        return music_fetch.ensure_local(yt_uri(song["id"]).removeprefix("yt:"))
+
+    def send(self, song: dict, replace: bool = False) -> bool:
+        """Fetch `song` into the rooms cache and queue it (or play it now)."""
+        local = self._local(song)
+        if not local:
+            log.info("radio: %s could not be fetched for the house", song["id"])
+            return False
+        uri = f"mpv:{local}"
+        try:
+            if replace:
+                self._mpd("clear", f'add "{uri}"', "play")
+            else:
+                status, _ = self._mpd("status", f'add "{uri}"')
+                if "state: stop" in status:
+                    # Nothing playing: what was queued plays, as append-play does.
+                    self._mpd(f"play {max(0, int(self._count()) - 1)}")
+        except OSError as e:
+            log.info("radio: Mopidy did not take %s: %s", song["id"], e)
+            return False
+        if replace:
+            threading.Thread(target=self._quiet_phone, daemon=True,
+                             name="radio-quiet-phone").start()
+        return True
+
+    def _count(self) -> int:
+        from .sinks import music
+
+        try:
+            return int(music._parse_kv(self._mpd("status")[0]).get("playlistlength") or 0)
+        except (OSError, ValueError):
+            return 0
+
+    def holds(self, vid: str) -> bool:
+        try:
+            listing = self._mpd("playlistinfo")[0]
+        except OSError:
+            return False
+        return any(vid_of(line.partition(": ")[2]) == vid
+                   for line in listing.splitlines() if line.startswith("file: "))
+
+    @staticmethod
+    def _quiet_phone() -> None:
+        """One place at a time: a station put on in the house stops the
+        phone's players."""
+        for where in ("sasonica", "phone"):
+            PhonePlayer(where)._quiet_self()
+
+    def _quiet_self(self) -> None:
+        try:
+            if self.playing():
+                self._sink().stop()
+        except Exception:  # noqa: BLE001 — best-effort tidying
+            log.debug("radio: could not quiet the house", exc_info=True)
+
+    def prefetch(self, song: dict) -> bool:
+        return self._local(song) is not None
+
+    def label(self, song: dict) -> None:
+        """Mopidy names a track from its file; nothing to hand it."""
+
+    def clear(self) -> None:
+        """Everything after the song playing leaves the queue."""
+        from .sinks import music
+
+        with contextlib.suppress(OSError, ValueError):
+            pos = music._parse_kv(self._mpd("status")[0]).get("song")
+            self._mpd(f"delete {int(pos) + 1}:" if pos is not None else "clear")
+
+    def next(self) -> None:
+        with contextlib.suppress(OSError):
+            self._mpd("next")
+
+    def seek(self, ms: int) -> None:
+        with contextlib.suppress(Exception):
+            self._sink().seek_cur(position_ms=int(ms))
+
+    def pause(self) -> None:
+        with contextlib.suppress(Exception):
+            self._sink().pause()
+
+    def resume(self) -> None:
+        with contextlib.suppress(Exception):
+            self._sink().resume()
+
 
 #: The hand-off app's report, as the frames channel answers it (speech_frames.REPORT).
 HANDOFF_REPORT = "user-data/agent-media/report"
@@ -419,7 +579,8 @@ class HandoffPlayer:
 
 
 #: Players a station can run on (`_resolve_music_where` names, and `handoff`).
-PLAYERS = {"sasonica": PhonePlayer, "phone": PhonePlayer, "handoff": HandoffPlayer}
+PLAYERS = {"sasonica": PhonePlayer, "phone": PhonePlayer, "rooms": RoomsPlayer,
+           "handoff": HandoffPlayer}
 
 
 def handoff_ready() -> Optional[str]:

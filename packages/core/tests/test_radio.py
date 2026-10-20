@@ -186,11 +186,11 @@ def test_off_leaves_the_music_playing(station):
     assert radio.is_on() is False
 
 
-def test_only_a_youtube_track_on_the_phone(station):
+def test_only_a_youtube_track_on_a_radio_player(station):
     with pytest.raises(ValueError):
         radio.start("/storage/music/song.mp3", "sasonica", playing=True)
     with pytest.raises(ValueError):
-        radio.start(SEED["id"], "rooms", playing=False)
+        radio.start(SEED["id"], "abs", playing=False)
 
 
 def test_a_station_runs_on_the_player_its_seed_is_on(station, monkeypatch):
@@ -580,3 +580,69 @@ def test_a_paused_song_cut_off_comes_back_paused(station):
     radio.tick()
     assert sent[-1] == (SEED["id"], True) and player.seeks == [100000]
     assert player.paused_at == ["sasonica"]
+
+
+# ---- moving a station (David, 20 Oct 2026: the radio follows Plays on) ----
+
+class Old:
+    """The player a station moves from: what was done to it."""
+
+    def __init__(self):
+        self.done: list = []
+
+    def _quiet_self(self):
+        self.done.append("stop")
+
+    def resume(self):
+        self.done.append("resume")
+
+
+@pytest.fixture()
+def old(monkeypatch):
+    o = Old()
+    monkeypatch.setattr(radio.radio_io, "player", lambda where: o)
+    monkeypatch.setattr(radio, "_MOVE_WAIT_S", 0.0)
+    return o
+
+
+def test_a_station_moves_with_its_song_and_list(station, old):
+    player, sent, _, _ = station
+    radio.start(f"yt:https://www.youtube.com/watch?v={SEED['id']}", "sasonica", playing=True)
+    radio.tick()  # one queued behind the seed
+    queued = player.items[1]
+    sent.clear()
+    radio.move("rooms", pos_ms=95000, paused=False)
+    st = radio.read()
+    assert st["where"] == "rooms" and not st.get("moving")
+    assert sent == [(SEED["id"], True)]          # the song playing, put on there
+    assert player.paused_at == ["sasonica"] and player.seeks == [95000]
+    assert old.done == ["stop"]                  # the phone stopped once it plays
+    assert st["queue"][0]["id"] == queued        # what was queued comes back to the list
+
+
+def test_a_move_that_fails_leaves_the_station_where_it_was(station, old):
+    player, sent, _, _ = station
+    radio.start(f"yt:https://www.youtube.com/watch?v={SEED['id']}", "sasonica", playing=True)
+    player.refuse.append(SEED["id"])
+    with pytest.raises(RuntimeError):
+        radio.move("rooms")
+    st = radio.read()
+    assert st["where"] == "sasonica" and not st.get("moving")
+    assert old.done == ["resume"]
+
+
+def test_no_tick_while_moving(station):
+    player, sent, _, _ = station
+    radio.start(f"yt:https://www.youtube.com/watch?v={SEED['id']}", "sasonica", playing=True)
+    with radio._station() as st:
+        st["moving"] = "rooms"
+    sent.clear()
+    radio.tick()
+    assert sent == []
+
+
+def test_a_station_moves_only_to_a_radio_player(station, old):
+    radio.start(f"yt:https://www.youtube.com/watch?v={SEED['id']}", "sasonica", playing=True)
+    for to in ("abs", "handoff"):
+        with pytest.raises(ValueError):
+            radio.move(to)

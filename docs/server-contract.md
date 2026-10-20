@@ -2284,11 +2284,15 @@ was (paused again if it was paused); on a failure the old place resumes.
 It runs in the background: the answer comes at once, and every answer for
 a minute after carries `"move": {"to", "state": "moving" | "done" |
 "failed", "error"}`. Nothing happens (no `move`) when nothing plays or it
-already plays there — the phone's players count as one place. 409 when a
-radio station is on and the place is the house speakers (radio plays on
-the phone), when what plays is not a YouTube track or web address (a book,
-a file), or while a move is under way. The app sends it after a choice in
-the picker (David, 20 Oct 2026).
+already plays there — the phone's players count as one place. With a
+radio station on, the station moves instead (`radio.move`): the song is put
+on in the new player at the same spot, the old one stopped once it plays,
+and what was queued behind it goes back to the station's list, so the
+radio plays on there; the station's loop waits while it moves. 409 when
+the station cannot play there (`abs`) or plays in the hand-off app, when
+what plays is not a YouTube track or web address (a book, a file), or while
+a move is under way. The app sends it after a choice in the picker (David,
+20 Oct 2026).
 
 #### `GET /music/recent` — gated (like `/speech/now`) (28 Sep 2026)
 
@@ -2340,7 +2344,14 @@ past those. Off is `{"on": false, "seed": null, "next": [], "available"}`.
   it. `radio` gains `"kind": "mix" | "dj"` and `"note"`, the DJ's sentence on
   the mood (`""` for a Mix station); a DJ station's `seed` is
   `{"id": null, "title": "Claude DJ"}`.
-- `{"action": "radio", "dj": true, "player"?: "handoff" | "sasonica" | "phone"}`
+- **The house speakers** (20 Oct 2026) are a radio player too (`rooms`,
+  radio_io.RoomsPlayer): a station started while music plays on the house,
+  or with Plays on set to House speakers, runs on Mopidy. Each song is
+  fetched on the phone and copied into the rooms cache before it is
+  queued (the house cannot fetch from YouTube), so a phone that is asleep
+  or away holds the station up; a song that will not come is skipped, never
+  streamed. Putting a station on in the house stops the phone's players.
+- `{"action": "radio", "dj": true, "player"?: "handoff" | "sasonica" | "phone" | "rooms"}`
   (30 Sep 2026): `handoff` is the Sasonica app's hand-off player — each pick
   asked of the listener's own music app by name (licensed-music proposal,
   step 3; needs MEDIA_RADIO_HANDOFF_ENDPOINT, and no YouTube). Without
@@ -2366,8 +2377,8 @@ past those. Off is `{"on": false, "seed": null, "next": [], "available"}`.
   coming up is played on, not taken as the end. A song the player lost
   part-way (the app restarted) is put on again where it was.
 
-Pinned by `packages/server/tests/test_music_route.py` and
-`packages/core/tests/test_radio.py`.
+Pinned by `packages/server/tests/test_music_route.py`,
+`packages/core/tests/test_radio.py` and `packages/core/tests/test_radio_rooms.py`.
 
 Clients: S (the Media tab).
 

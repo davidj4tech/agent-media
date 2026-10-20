@@ -361,11 +361,28 @@ def test_a_move_to_where_it_is_does_nothing(server, signed_in, audio_host, playe
     assert res.status == 200 and player == [] and "move" not in obj
 
 
-def test_the_radio_does_not_move_to_the_house(server, signed_in, audio_host, player, mover, monkeypatch):
+def test_the_radio_moves_as_a_station(server, signed_in, audio_host, player, mover, monkeypatch):
+    from agent_media_core import cli, radio
+
+    from agent_media_server import radio as loop
+
+    moved: list = []
+    monkeypatch.setattr(cli, "_resolve_music_where", lambda w: "rooms")
+    monkeypatch.setattr(radio, "read", lambda: {"on": True, "where": "sasonica"})
+    monkeypatch.setattr(radio, "move", lambda to, pos_ms, paused: moved.append((to, pos_ms, paused)))
+    monkeypatch.setattr(loop, "wake", lambda: None)
+    res, obj = call(server, "POST", "/music", {"action": "move"}, AUTH)
+    assert res.status == 200, obj
+    # The station's own player is moved; a play would have ended it.
+    assert moved == [("rooms", 7000, False)] and player == []
+    assert music._move_state() == {"to": "rooms", "state": "done", "error": None}
+
+
+def test_the_radio_moves_only_to_a_radio_player(server, signed_in, audio_host, player, mover, monkeypatch):
     from agent_media_core import cli, radio
 
     monkeypatch.setattr(cli, "_resolve_music_where", lambda w: "rooms")
-    monkeypatch.setattr(radio, "read", lambda: {"on": True})
+    monkeypatch.setattr(radio, "read", lambda: {"on": True, "where": "handoff"})
     res, obj = call(server, "POST", "/music", {"action": "move"}, AUTH)
     assert res.status == 409 and player == []
 

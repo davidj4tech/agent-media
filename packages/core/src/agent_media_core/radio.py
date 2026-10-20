@@ -250,7 +250,7 @@ def start(uri: str, where: str, playing: bool) -> dict:
         # other (David, 29 Sep 2026).
         where = _playing_on(vid) or where
     if where not in radio_io.PLAYERS:
-        raise ValueError("radio plays on the phone")
+        raise ValueError(f"the radio does not play on {where}")
     songs = mix(vid)
     if not songs:
         raise RuntimeError("YouTube's Mix for this track could not be listed")
@@ -273,7 +273,7 @@ def start_dj(where: str) -> dict:
     or take), then that replaces it. On the hand-off player the DJ's picks
     go to the listener's music app by name, and YouTube is never asked."""
     if where not in radio_io.PLAYERS:
-        raise ValueError("radio plays on the phone")
+        raise ValueError(f"the radio does not play on {where}")
     if getattr(radio_io.PLAYERS[where], "personal", False) and not radio_io.youtube_on():
         # The phone's players are fed from YouTube, which is off here.
         raise ValueError(OFF_HERE)
@@ -387,6 +387,72 @@ def play(vid: str) -> Optional[dict]:
     return snapshot()
 
 
+#: How long a move waits for the song to play in its new place.
+_MOVE_WAIT_S = 90.0
+
+
+def move(to: str, pos_ms: int = 0, paused: bool = False) -> dict:
+    """The station to another player, the song playing carried on at
+    `pos_ms` (David, 20 Oct 2026: the radio follows Plays on). The old player
+    is paused, the song put on in `to` — for the house, its download — and
+    once it plays there the old one is stopped; what was queued behind it
+    goes back to the front of the list. ValueError when there is no station
+    or `to` cannot take one; RuntimeError when the song would not play there,
+    the old player then playing on."""
+    if to not in radio_io.PLAYERS or to == "handoff":
+        raise ValueError(f"the radio does not play on {to}")
+    with _station() as st:
+        if not st["on"]:
+            raise ValueError("no station is on")
+        if st.get("moving"):
+            raise ValueError("the station is moving already")
+        old, cur = st["where"], st.get("current")
+        if old == to:
+            return snapshot()
+        if old == "handoff":
+            raise ValueError("the radio plays in your music app")
+        song = next((s for s in st["sent"] + [st.get("seed") or {}] if s.get("id") == cur), None)
+        if not cur:
+            raise ValueError("nothing to move")
+        song = song or {"id": cur, "title": "", "channel": ""}
+        st["moving"] = to
+    try:
+        _pause(old)
+        if not _send(to, song, replace=True):
+            raise RuntimeError(f"{to} would not take the song")
+        deadline = time.monotonic() + _MOVE_WAIT_S
+        while True:
+            p = _props(to) or {}
+            if not p.get("idle-active") and _vid(str(p.get("path") or "")) == cur \
+                    and isinstance(p.get("time-pos"), (int, float)):
+                break
+            if time.monotonic() > deadline:
+                raise RuntimeError(f"it did not start on {to}")
+            time.sleep(1.0)
+    except Exception:
+        with _station() as st:
+            st["moving"] = None
+        with contextlib.suppress(Exception):
+            radio_io.player(old).resume()
+        raise
+    radio_io.player(old)._quiet_self()
+    if pos_ms > 2000:
+        _seek(to, pos_ms)
+    if paused:
+        _pause(to)
+    _label(to, song)
+    with _station() as st:
+        # What the old player had queued behind the song (the seed is never
+        # in `sent`) comes back to the front of the list, as play's does.
+        ids = [s["id"] for s in st["sent"]]
+        after = st["sent"][ids.index(cur) + 1:] if cur in ids else \
+            [s for s in st["sent"] if s["id"] not in st["played"]]
+        st["sent"] = [s for s in st["sent"] if s not in after]
+        st["queue"][:0] = after
+        st["where"], st["moving"] = to, None
+    return snapshot()
+
+
 def _skip(where: str) -> None:
     """To the next song: the queued one, else the next on the list, now."""
     p = _props(where) or {}
@@ -416,7 +482,10 @@ def tick() -> None:
     """One look at the player: follow what came up, stay a song ahead, and
     top the list up. Blocks while a song downloads."""
     with _station() as st:
-        if not st["on"]:
+        if not st["on"] or st.get("moving"):
+            # A move is putting the song on elsewhere (move): the old player
+            # is paused and the new one not yet playing, which would read as
+            # a song lost.
             return
         where = st["where"]
         if getattr(radio_io.PLAYERS.get(where, radio_io.PhonePlayer), "personal", False) and not radio_io.youtube_on():
