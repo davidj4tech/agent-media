@@ -261,3 +261,94 @@ def test_the_tool_reads_a_time_or_minutes(server, host, pixel, quiet_listening, 
     t.join(5)
     assert got["status"] == "ok"
     assert got["result"]["until"] == pytest.approx(t0 + 90 * 60, abs=5)
+
+
+# --- location: an ask, and the phone's own background share (§6.21, §6.21b)
+
+@pytest.fixture()
+def where_listening():
+    phone.listening(("location",), True)
+    yield
+    phone.listening(("location",), False)
+
+
+def test_a_location_ask_comes_back_checked(server, host, pixel, where_listening, tmp_path):
+    _, obj = call(server, "POST", "/phone/ask", {"kind": "location", "why": "the weather"}, host)
+    a = obj["ask"]
+    assert a["expires"] == pytest.approx(a["at"] + 120)
+    call(server, "POST", "/phone/answer",
+         {"id": a["id"], "decision": "allow",
+          "result": {"lat": -37.81, "lon": 144.96, "accuracy_m": 1000, "at": 1.7e9,
+                     "precise": False, "extra": "dropped"}}, pixel)
+    got = phone.wait(a["id"])[1]["ask"]
+    assert got["status"] == "ok"
+    assert got["result"] == {"lat": -37.81, "lon": 144.96, "accuracy_m": 1000.0,
+                             "at": 1.7e9, "precise": False}
+    # The audit keeps that it was asked, never where.
+    line = _audit(tmp_path)[-1]
+    assert line["kind"] == "location" and line["status"] == "ok"
+    assert "-37.81" not in json.dumps(line)
+
+
+@pytest.mark.parametrize("result", [None, {}, {"lat": 91, "lon": 0}, {"lat": "x", "lon": 1},
+                                    {"lat": float("nan"), "lon": 0}])
+def test_a_location_ask_without_a_fix_is_failed(server, host, pixel, where_listening, result):
+    _, obj = call(server, "POST", "/phone/ask", {"kind": "location", "why": "w"}, host)
+    body = {"id": obj["ask"]["id"], "decision": "allow"}
+    if result is not None:
+        body["result"] = result
+    # NaN is not JSON; post it through the module.
+    if result and result.get("lat") != result.get("lat"):
+        phone.answer(body["id"], "allow", result, pixel["Authorization"].removeprefix("Bearer "))
+    else:
+        call(server, "POST", "/phone/answer", body, pixel)
+    assert phone.wait(obj["ask"]["id"])[1]["ask"]["status"] == "failed"
+
+
+def test_the_background_share(server, host, pixel):
+    assert call(server, "GET", "/device/location", headers=host)[1]["location"] is None
+    fix = {"lat": -37.8136, "lon": 144.9631, "accuracy_m": 12, "at": time.time() - 60}
+    # A device posts it, never the host; the host reads it, never a device.
+    assert call(server, "POST", "/device/location", fix, host)[0].status == 401
+    assert call(server, "POST", "/device/location", fix)[0].status == 401
+    res, obj = call(server, "POST", "/device/location", fix, pixel)
+    assert res.status == 200, obj
+    assert call(server, "GET", "/device/location", headers=pixel)[0].status == 401
+    loc = call(server, "GET", "/device/location", headers=host)[1]["location"]
+    assert loc["lat"] == -37.8136 and loc["precise"] is True and loc["device"] == "Pixel 8a"
+    assert 55 <= loc["age_s"] <= 70
+    # The switch going off forgets it.
+    assert call(server, "POST", "/device/location", {"off": True}, pixel)[0].status == 200
+    assert call(server, "GET", "/device/location", headers=host)[1]["location"] is None
+
+
+@pytest.mark.parametrize("body", [{"lat": 0}, {"lat": 0, "lon": 200},
+                                  {"lat": 0, "lon": 0, "at": 1.0},
+                                  {"lat": 0, "lon": 0, "at": 9e12}])
+def test_a_bad_share_is_400(server, pixel, body):
+    assert call(server, "POST", "/device/location", body, pixel)[0].status == 400
+
+
+def test_a_stale_share_is_gone(server, host, pixel, monkeypatch):
+    call(server, "POST", "/device/location",
+         {"lat": 1, "lon": 2, "at": time.time() - 60}, pixel)
+    later = time.time() + phone.STALE_S
+    monkeypatch.setattr(phone.time, "time", lambda: later)
+    assert phone.shared() is None
+
+
+def test_the_tool_takes_a_fresh_share_without_asking(server, host, pixel, where_listening,
+                                                     monkeypatch):
+    from agent_media_core import phone_ask
+
+    monkeypatch.setattr(phone_ask, "_base", lambda: "http://%s:%d" % server)
+    monkeypatch.setattr(phone_ask, "session_of_caller", lambda: None)
+    at = time.time() - 120
+    call(server, "POST", "/device/location", {"lat": -37.8, "lon": 145.0, "at": at}, pixel)
+    got = phone_ask.ask("location", "the weather", timeout_s=1)
+    assert got["status"] == "ok" and got["shared"] is True
+    assert got["result"] == {"lat": -37.8, "lon": 145.0, "at": round(at, 3), "precise": True}
+    assert phone.open_asks(("location",)) == []
+    # An old share is not enough: David is asked.
+    monkeypatch.setattr(phone_ask, "SHARED_FRESH_S", 60)
+    assert phone_ask.ask("location", "the weather", timeout_s=1) == {"status": "timeout"}

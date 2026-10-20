@@ -260,6 +260,9 @@ device gets its token):
                   POST /phone/answer {id, decision, result?} (a device);
                   POST /phone/cancel {id} (host). Phones on
                   /sessions/events?phone=<kinds> get a `phone` frame (phone.py, §6.21)
+  POST /device/location {lat, lon, accuracy_m?, at?, precise?} | {off: true}
+                  (a device, its background share switch) → kept in memory;
+                  GET /device/location (host token) → {location: … | null}
   POST /notes {id, title, text, priority?, ttl_s?, keep?} (host token) → a
                   notification in the phone's shade; POST /notes/clear {id}.
                   Phones on /sessions/events?notes=1 get a `notes` frame
@@ -330,7 +333,7 @@ CORS_PATHS = frozenset({
     "/contacts/import", "/contacts/timeline/backfill", "/bridges",
     "/mail/message", "/mail/attachment", "/mail/say",
     "/mic/ask", "/mic/cancel",
-    "/phone/ask", "/phone/answer", "/phone/cancel",
+    "/phone/ask", "/phone/answer", "/phone/cancel", "/device/location",
     "/notes", "/notes/clear",
     "/speech/state", "/music/state", "/handoff/state", "/book/state",
     "/follow/trace",
@@ -1328,6 +1331,16 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
             wait_s = 0.0
         ok, detail = phone.wait((qs.get("id") or [""])[0], wait_s)
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+        return True
+    if path == "/device/location":
+        # Where the phone last said it was, when its background share is on
+        # (§6.21b): an agent on this host, the host's token.
+        from . import phone
+
+        if not (_TOKEN_OK is not None and _TOKEN_OK(h)):
+            _json(h, 401, {"ok": False, "error": "unauthorized"})
+            return True
+        _json(h, 200, {"ok": True, "location": phone.shared()})
         return True
     agents_m = THREAD_AGENTS.fullmatch(path)
     log_m = AGENT_LOG.fullmatch(path)
@@ -2422,6 +2435,13 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
             return True
         ok, detail = speech_frames.report(dev, _read_json(h),
                                           channel=path.split("/")[1])
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/device/location":
+        # A phone's background location share (§6.21b, phone.py): a paired
+        # device only, and only while its Settings switch is on.
+        from . import phone
+
+        ok, detail = phone.share(_bearer(h), _read_json(h))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path in ("/phone/ask", "/phone/answer", "/phone/cancel"):
         # The phone as an agent's eyes and hands (server-contract.md §6.21,

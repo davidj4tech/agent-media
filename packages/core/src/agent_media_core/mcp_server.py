@@ -335,19 +335,29 @@ def phone_ask(why: str, kind: str = "photo", until: str = "",
     Use it when he asks for quiet until something ends (a meeting on his
     calendar, a nap), never on your own initiative.
 
+    `kind="location"`: where the phone is, as {"lat", "lon", "accuracy_m",
+    "at", "precise"} (`precise` false when David chose rough location only:
+    about a kilometre). If he has background sharing on and the phone said
+    where it was in the last half hour, that comes back at once with
+    "shared": true and nothing is asked; otherwise he is asked. Use it only
+    when the task needs where he is (local weather, travel time, what is
+    near), and say so in `why`. If location is off in his app's Settings
+    you get "no_phone".
+
     Every ask needs his yes. Ask only for what the task needs, say why in one
     plain sentence ("show me the router's lights, to see whether the WAN
     light is on"), and if he says no, do not ask again for the same thing.
 
     Args:
         why: One sentence, shown to David as-is.
-        kind: "photo" or "dnd" (location is to come).
+        kind: "photo", "dnd" or "location".
         until: For "dnd": when the quiet ends.
         timeout_s: How long to wait (the phone gives up after 5 minutes for
             a photo, 2 for the others).
 
     Returns {"status": "ok", "result": ...} — a photo's {"path", "width",
-    "height"}, a dnd's {"on": true, "until"} — or status "denied",
+    "height"}, a dnd's {"on": true, "until"}, a location's {"lat", "lon",
+    "accuracy_m", "at", "precise"} — or status "denied",
     "timeout", "no_phone" (no phone connected that can), "failed" (with
     "error"), "gone" or "error".
     """

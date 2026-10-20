@@ -3847,7 +3847,12 @@ kept 2 min after settling for the tool's last poll. A photo's `result` is
 the path the upload returned. A dnd's is `{on: true, until}` (allowed
 without `on: true` is `failed`): the phone set Do Not Disturb to priority
 only, and puts back what it was at `until` — unless it was changed by hand
-in between.
+in between. A location's (20 Oct 2026) is `{lat, lon, accuracy_m?, at,
+precise}`, checked here: lat/lon missing or out of range is `failed`, other
+keys are dropped; `precise` is false when the app's "Rough location only" is
+on (the phone rounds to 0.01°, accuracy at least 1 km). The phone offers
+`location` in `?phone=` only while Settings → "Let agents ask where I am" is
+on (off by default).
 
 **The `phone` frame.** `GET /sessions/events?phone=photo[,location,dnd]`
 (§6.13) says what this phone can be asked for (unknown kinds dropped) —
@@ -3862,6 +3867,27 @@ waits and times out rather than saying `no_phone`.
 `$XDG_STATE_HOME/agent-media/phone-asks.jsonl`: id, kind, why, session,
 title, at, status, device, settled_at, a photo's path, an error. No
 coordinates.
+
+### 6.21b The phone's location, shared in the background (built 20 Oct 2026)
+
+The one standing thing, and the phone's own choice: with Settings → "Share
+my location in the background" on (off by default; David, 20 Oct 2026:
+"location data … as an optional extra with the default being off"), the app
+posts where it is now and then, and an agent reads it without asking. Code:
+`phone.py` (`share`, `shared`); tests in `test_phone.py`.
+
+- `POST /device/location {lat, lon, accuracy_m?, at?, precise?}` — a paired
+  device only (401 otherwise). `at` is the fix time, epoch seconds (default
+  now); 400 for lat/lon out of range or an `at` more than 5 min ahead or
+  older than 2 h. `{off: true}`: the switch went off, forget this phone's.
+  → `{ok: true}`.
+- `GET /device/location` — **the host's own token only**. → `{location:
+  {lat, lon, accuracy_m?, at, precise, device, age_s} | null}`: the freshest
+  phone's, null when none shares or the newest is over 2 h old.
+- Kept in memory only, the newest per phone: never written to disk or
+  logged, gone on a restart until the next post.
+- `phone_ask(kind="location")` (core `phone_ask.py`) answers from this when
+  it is under 30 min old (`shared: true`, nothing asked), else asks (§6.21).
 
 ### 6.21a Restarting the phone's services — down the connection it opens (built 18 Oct 2026)
 

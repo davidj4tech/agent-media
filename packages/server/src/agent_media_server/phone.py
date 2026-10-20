@@ -10,11 +10,19 @@ app, which does it (a photo: the camera, then `/upload`) and answers
 the outcome. Every ask needs a yes; nothing is standing. David, 1 Oct 2026
 (docs/proposals/2026-10-01-the-phone-as-eyes-and-hands.md).
 
+The one standing thing is the phone's own choice: with "Share my location
+in the background" on in the app's Settings (off by default; David, 20 Oct
+2026), it posts `POST /device/location` now and then, and an agent reads the
+latest with `GET /device/location` instead of asking. Kept in memory only,
+the newest per phone, gone after STALE_S or when the phone says `off`.
+
     ask(kind, why, session, params) → an open ask, or `no_phone` at once when no
                                phone that can do it is listening
     wait(id, wait_s)         → its status, once settled or after wait_s
     answer(id, decision, result, bearer) → a paired device's allow / deny
     cancel(id)               → the tool gave up
+    share(bearer, body)      → a phone's background fix, or `off`
+    shared()                 → the freshest one, or None
     open_asks(kinds)         → the `phone` frame's `asks`
     listening(kinds)         → a stream with these kinds is connected / gone
     version()                → goes up whenever the open set changes
@@ -49,6 +57,8 @@ KEEP_S = 120
 #: How far ahead a `dnd` may run: a phone left quiet by mistake for a day
 #: would miss everything.
 DND_MAX_S = 12 * 3600
+#: A shared location older than this is not where David is any more.
+STALE_S = 2 * 3600
 #: Longest `why` kept, and longest long-poll.
 WHY_MAX = 200
 WAIT_MAX_S = 60.0
@@ -59,6 +69,8 @@ _ASKS: dict[str, dict] = {}
 #: kind → connected streams that can do it.
 _LISTENING: dict[str, int] = {}
 _VERSION = 0
+#: device id → its latest background fix (share).
+_SHARED: dict[str, dict] = {}
 
 
 def _audit_path() -> Path:
@@ -142,6 +154,73 @@ def _until(params, now: float) -> tuple[float | None, str]:
     if until > now + DND_MAX_S:
         return None, "until is at most 12 hours from now"
     return round(until, 3), ""
+
+
+def _location(res, now: float) -> dict | None:
+    """A fix as the phone sent it, checked: `{lat, lon, accuracy_m?, at,
+    precise}`. None when lat/lon are missing or out of range. `at` (epoch
+    seconds) defaults to now; `precise` is False for "Rough location only"."""
+    if not isinstance(res, dict):
+        return None
+    try:
+        lat, lon = float(res["lat"]), float(res["lon"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):  # also NaN
+        return None
+    out = {"lat": lat, "lon": lon}
+    try:
+        acc = float(res.get("accuracy_m"))
+        if acc >= 0:
+            out["accuracy_m"] = round(acc, 1)
+    except (TypeError, ValueError):
+        pass
+    try:
+        at = float(res.get("at"))
+    except (TypeError, ValueError):
+        at = now
+    out["at"] = round(at if at == at else now, 3)
+    out["precise"] = res.get("precise") is not False
+    return out
+
+
+def share(bearer: str, body) -> tuple[bool, dict]:
+    """`POST /device/location {lat, lon, accuracy_m?, at?, precise?}` or
+    `{off: true}` — a paired device's background fix (or its switch going
+    off: forget it). Only the newest per phone is kept, in memory."""
+    user, err = auth.gate(bearer)
+    dev_id = auth.device_id(bearer)
+    if not user or not dev_id:
+        return False, err or {"status": 401, "error": "a paired device only"}
+    if not isinstance(body, dict):
+        return False, {"status": 400, "error": "not JSON"}
+    with _COND:
+        if body.get("off") is True:
+            _SHARED.pop(dev_id, None)
+            return True, {}
+        now = time.time()
+        fix = _location(body, now)
+        if fix is None:
+            return False, {"status": 400, "error": "lat and lon, in range"}
+        if fix["at"] > now + 300 or fix["at"] < now - STALE_S:
+            return False, {"status": 400, "error": "at is not recent"}
+        fix["device"] = str(user.get("username") or "").removeprefix("device:") or "a device"
+        _SHARED[dev_id] = fix
+    return True, {}
+
+
+def shared() -> dict | None:
+    """`GET /device/location`: the freshest shared fix with its `age_s`, or
+    None (no phone shares, or none has for STALE_S)."""
+    now = time.time()
+    with _COND:
+        for k, f in list(_SHARED.items()):
+            if f["at"] < now - STALE_S:
+                del _SHARED[k]
+        if not _SHARED:
+            return None
+        f = max(_SHARED.values(), key=lambda f: f["at"])
+        return {**f, "age_s": round(max(0.0, now - f["at"]))}
 
 
 def ask(kind, why, session=None, params=None) -> tuple[bool, dict]:
@@ -233,6 +312,12 @@ def answer(ask_id, decision, result, bearer: str) -> tuple[bool, dict]:
                 _settle(a, "failed", device=device, error="no photo came back")
             elif a["kind"] == "dnd" and res.get("on") is not True:
                 _settle(a, "failed", device=device, error="the phone did not go quiet")
+            elif a["kind"] == "location":
+                fix = _location(res, time.time())
+                if fix is None:
+                    _settle(a, "failed", device=device, error="no location came back")
+                else:
+                    _settle(a, "ok", device=device, result=fix)
             else:
                 _settle(a, "ok", device=device, result=res)
         out = _public(a)
@@ -289,4 +374,5 @@ def _reset_for_tests() -> None:
     with _COND:
         _ASKS.clear()
         _LISTENING.clear()
+        _SHARED.clear()
         _VERSION = 0

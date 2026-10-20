@@ -7,7 +7,8 @@ or the time runs out. Used by the `phone_ask` MCP tool. David, 1 Oct 2026
 (docs/proposals/2026-10-01-the-phone-as-eyes-and-hands.md).
 
 Statuses: `ok` (with `result`: a photo's `{path, width, height}`, a file
-under ~/shared/ the agent reads with its own tools; a dnd's `{on, until}`),
+under ~/shared/ the agent reads with its own tools; a dnd's `{on, until}`;
+a location's `{lat, lon, accuracy_m, at, precise}`),
 `denied`, `timeout`,
 `no_phone` (no phone that can do it is connected — said at once), `failed`
 (with `error`), `cancelled`, `gone` (the server restarted), `error` (the
@@ -25,6 +26,9 @@ from pathlib import Path
 
 #: Longest single poll; the server caps it at 60 s.
 POLL_S = 30.0
+#: A location the phone shared in the background (§6.21b) this recently is
+#: answer enough: no ask, no tap.
+SHARED_FRESH_S = 30 * 60
 
 
 def _token() -> str:
@@ -128,11 +132,30 @@ def _outcome(a: dict) -> dict:
     return out
 
 
+def shared_location() -> dict | None:
+    """The phone's background-shared location (`GET /device/location`),
+    with `age_s`; None when it does not share or cannot be reached."""
+    try:
+        code, obj = _call("GET", "/device/location")
+    except (OSError, ValueError):
+        return None
+    return obj.get("location") if code == 200 else None
+
+
 def ask(kind: str, why: str, timeout_s: float = 300.0,
         session: str | None = None, until: str = "") -> dict:
     """Ask, then wait up to `timeout_s` (the ask's own time on the phone is
     the server's: 5 min for a photo, 2 for the others). `session` defaults
-    to the caller's. A `dnd` needs `until` (until_epoch's forms)."""
+    to the caller's. A `dnd` needs `until` (until_epoch's forms). A
+    `location` the phone shared in the last SHARED_FRESH_S comes back at
+    once, with `shared: true`, and nothing is asked."""
+    if kind == "location":
+        loc = shared_location()
+        if loc and float(loc.get("age_s") or 0) <= SHARED_FRESH_S:
+            res = {k: loc[k] for k in ("lat", "lon", "accuracy_m", "at", "precise")
+                   if k in loc}
+            return {"status": "ok", "result": res, "shared": True,
+                    "age_s": loc.get("age_s")}
     body = {"kind": kind, "why": why, "session": session or session_of_caller()}
     if kind == "dnd":
         at = until_epoch(until)
