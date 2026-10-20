@@ -773,19 +773,39 @@ ahead.
    that the current server does not have (404 on its stream) is asked of
    the others and noted. Remove also signs this device out on that server
    (`POST /me/signout`, which any device may do) while its token works.
-   **Offline and search, built 20 Oct 2026** (sasonica-app branch
-   `multi-base-3`, not merged): a server whose last list or state ask got
+   **Offline and search, done 20 Oct 2026** (sasonica-app `feeed04`,
+   merged): a server whose last list or state ask got
    no answer says so on its chip ("hpo · offline"), its rows staying as last
    had, across a restart too (the saved list's); search (⌕) asks every
    server, or the one chosen on the same chip strip under its box (kept in
    the address as `server=`, seeded from the list's choice), its threads and
    messages merged (messages in the asked order, best taken in turn; each
-   server paged from its own cursor) and labelled like the list, terms,
-   memory and documents the current server's; a thread's own find bar still
-   asks only that thread's server.
-   Still the current server's: Home, alerts, the background notifier, a new
-   chat, Settings. (4) Home and alerts from every base; the
-   background notifier for each base (`NotifyService` reads the list).
+   server paged from its own cursor) and labelled like the list; a thread's
+   own find bar still asks only that thread's server.
+   **(4) Home, needs pairing, documents and memory, built 20 Oct 2026**
+   (sasonica-app branch `multi-base-4`, not merged): Home's Needs you,
+   Working, unread replies, Recent and alerts are every server's, each
+   labelled, threads noted for routing, alerts kept apart by server (their
+   ids are each server's own) and Ack sent to the server that raised it;
+   speaking now, the queue, hosts, digests, sign-ins, places and agents stay
+   the current server's. A server that refuses this device's token (401 or
+   403) says "needs pairing" on its chip instead of offline, and the chip
+   opens the pairing screen with its address (pairing again replaces that
+   server's pairing). Search's documents and memory follow its server choice
+   like threads, each labelled; a document opens from its own server
+   (`/doc?path=…&server=…`, the reader's calls routed there), and a chat
+   another server starts (a document's Ask) is that server's thread from
+   then on. Still the current server's: a new chat, Settings, terms.
+   **Still to do, the background notifier:** `NotifyService.java` reads the
+   one pairing (`sasonica.chat.device`) from SecureStore and holds one
+   (base, token, levels) loop; it needs to read `sasonica.chat.otherPairings`
+   too and poll or stream each server, keep each server's own cursor and
+   seen set, label a notice with its server and open the thread there (the
+   app's routing already does once the thread is noted, which a notice's
+   tap should do first), back off per server, and a per-server switch for
+   which servers notify (This phone, the several-servers proposal). Its
+   JUnit tests can cover the list and the cursors; the rest needs an
+   install on a phone.
    (5) A server picker in Settings for the per-server things (voice, speech
    default, language, the Organiser, coding agents, presets, devices, the
    account), the phone's own settings staying global; a new chat on a
@@ -798,7 +818,13 @@ ahead.
    chip saying offline and its last rows kept; search covers every server
    and is selectable, All servers or one, merged and labelled like the list
    (both built on `multi-base-3`); "Switch to it" stays until slice 5's
-   picker. *Assumed, David not asked:* a thread listed by two servers (one
+   picker; Home merges the thread sections and alerts from every server,
+   each labelled, an alert's Ack going to its server, speaking now, the
+   queue, hosts, digests and sign-ins staying the current server's; a
+   server that refuses the token says "needs pairing" on its chip, which
+   opens the pairing screen for it; search's documents and memory are
+   selectable like threads, and a document opens on its own server (all
+   three built on `multi-base-4`). *Assumed, David not asked:* a thread listed by two servers (one
    day, siblings listing each other's) is shown once.
 8. **A Media tab** (David, 28 Sep 2026) — a fourth tab in the app, not a
    companion app, because speech and music share the phone's player and its
