@@ -89,6 +89,25 @@ def test_other_agents_cannot(pane, monkeypatch):
     assert ok and d["can"] == {"model": False, "plan": False}
 
 
+def test_codex_thread_uses_its_catalogue_when_pane_reports_claude(pane, monkeypatch):
+    from agent_media_core import harnesses, native_models
+    from agent_media_server import codex_control, native_settings
+
+    monkeypatch.setattr(harnesses, "harness_of", lambda s: "codex")
+    monkeypatch.setattr(codex_control, "state", lambda s: None)
+    monkeypatch.setattr(native_models, "current", lambda s: ("gpt-example", 0))
+    offered = [{"id": "gpt-example", "label": "Example", "note": ""}]
+    monkeypatch.setattr(native_models, "models", lambda *a: offered)
+    monkeypatch.setattr(native_settings, "plan_on", lambda p: False)
+
+    ok, data = ss.get(SID, "t")
+
+    assert ok
+    assert data["agent"] == "codex"
+    assert data["model"] == "gpt-example"
+    assert data["models"] == offered
+
+
 def test_a_new_chat_takes_only_a_sheet_alias_and_only_for_claude():
     assert ss.clean_new("claude", "Sonnet", "plan") == ("sonnet", "plan")
     assert ss.clean_new("claude", "gpt-9", "") == ("", "")

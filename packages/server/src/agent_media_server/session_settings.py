@@ -165,7 +165,13 @@ def state(session: str) -> dict:
                 "model_id": mid, "plan": plan, "driver": driver.HEADLESS,
                 "can": {"model": True, "plan": True}}
     pane = sessions.live_sessions().get(session, "")
-    agent = sessions._agent_of_pane(pane) if pane else sessions.agent_of(session)
+    from agent_media_core import harnesses
+
+    # A shared pane can show a shell or another agent. The thread's own
+    # transcript identifies its harness even when pane detection falls back
+    # to Claude.
+    agent = harnesses.harness_of(session) or (
+        sessions._agent_of_pane(pane) if pane else sessions.agent_of(session))
     if agent == "codex":
         from . import codex_control
 
