@@ -782,30 +782,39 @@ ahead.
    messages merged (messages in the asked order, best taken in turn; each
    server paged from its own cursor) and labelled like the list; a thread's
    own find bar still asks only that thread's server.
-   **(4) Home, needs pairing, documents and memory, built 20 Oct 2026**
-   (sasonica-app branch `multi-base-4`, not merged): Home's Needs you,
+   **(4) Home, needs pairing, documents and memory, done 20 Oct 2026**
+   (sasonica-app `a6b567f`, merged): Home's Needs you,
    Working, unread replies, Recent and alerts are every server's, each
    labelled, threads noted for routing, alerts kept apart by server (their
    ids are each server's own) and Ack sent to the server that raised it;
    speaking now, the queue, hosts, digests, sign-ins, places and agents stay
-   the current server's. A server that refuses this device's token (401 or
-   403) says "needs pairing" on its chip instead of offline, and the chip
+   the current server's. A server that refuses this device's token (a 401,
+   or a 403 to the list or its states) says "needs pairing" on its chip
+   instead of offline, and the chip
    opens the pairing screen with its address (pairing again replaces that
    server's pairing). Search's documents and memory follow its server choice
    like threads, each labelled; a document opens from its own server
    (`/doc?path=…&server=…`, the reader's calls routed there), and a chat
    another server starts (a document's Ask) is that server's thread from
    then on. Still the current server's: a new chat, Settings, terms.
-   **Still to do, the background notifier:** `NotifyService.java` reads the
-   one pairing (`sasonica.chat.device`) from SecureStore and holds one
-   (base, token, levels) loop; it needs to read `sasonica.chat.otherPairings`
-   too and poll or stream each server, keep each server's own cursor and
-   seen set, label a notice with its server and open the thread there (the
-   app's routing already does once the thread is noted, which a notice's
-   tap should do first), back off per server, and a per-server switch for
-   which servers notify (This phone, the several-servers proposal). Its
-   JUnit tests can cover the list and the cursors; the rest needs an
-   install on a phone.
+   **Home's strip, Fix it, the 403 rule and the notifier, built 20 Oct
+   2026** (sasonica-app branch `multi-base-5`, not merged): Home has the same
+   server chip strip, the choice shared with the list's filter; Fix it on
+   another server's alert starts the chat on that server; a 403 flags a
+   server only from `/targets` or `/sessions/state` (elsewhere it can be a
+   role refusing one route), a 401 from anywhere. The background notifier:
+   `NotifyService.java` keeps its stream to the current server as it was and
+   runs one lighter loop per other server (`Siblings.java`, reading
+   `sasonica.chat.otherPairings` through SecretBox), threads and alerts
+   only, each with its own alerts cursor (`alerts_after@<key>`), NotifyRules
+   and Backoff, a refused token parking that loop alone; its notices name
+   the server (sub-text), a "Needs you" from one has Open only (the answer
+   buttons are the current server's), and a tap opens `/t/<s>?server=<base>`,
+   which the thread page notes before it asks anything; Settings →
+   Notifications turns another server off on this phone (`server_off@<key>`,
+   `setServerNotify`). JUnit (`SiblingsTest`) covers the list, the keys, the
+   plan of loops and the cursors; the APK builds (`assembleDebug`), and the
+   rest wants a phone.
    (5) A server picker in Settings for the per-server things (voice, speech
    default, language, the Organiser, coding agents, presets, devices, the
    account), the phone's own settings staying global; a new chat on a
@@ -824,7 +833,11 @@ ahead.
    server that refuses the token says "needs pairing" on its chip, which
    opens the pairing screen for it; search's documents and memory are
    selectable like threads, and a document opens on its own server (all
-   three built on `multi-base-4`). *Assumed, David not asked:* a thread listed by two servers (one
+   three built on `multi-base-4`); Fix it on another server's alert starts
+   the chat on that alert's server, Home gets the same server strip, and the
+   notifier listens to every server (built on `multi-base-5`). *The
+   coordinator's call (20 Oct 2026):* "needs pairing" only on a 401, or on a
+   403 from the list or its states. *Assumed, David not asked:* a thread listed by two servers (one
    day, siblings listing each other's) is shown once.
 8. **A Media tab** (David, 28 Sep 2026) — a fourth tab in the app, not a
    companion app, because speech and music share the phone's player and its
