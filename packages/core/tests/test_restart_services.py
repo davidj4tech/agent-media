@@ -195,6 +195,16 @@ def test_speech_services_refused_while_speaking(host, monkeypatch, capsys):
     assert _run("--only", "mcp") == 0   # not a speech service
 
 
+def test_canvas_refused_while_speaking(host, monkeypatch, capsys):
+    """The canvas carries the speech frames to the phone: restarting it
+    mid-reply cut the phone's player off from the reply's timeline."""
+    monkeypatch.setattr(cli, "_speech_in_flight", lambda: True)
+    assert _run("--only", "canvas") == 3
+    assert "a reply is being spoken" in capsys.readouterr().out
+    monkeypatch.setattr(cli, "_speech_in_flight", lambda: False)
+    assert _run("--only", "canvas") == 0
+
+
 def test_after_schedules_a_transient_unit_and_returns(host, capsys, monkeypatch):
     monkeypatch.setenv("MEDIA_SESSIOND_SESSION", "33333333-cccc")
     assert _run("--only", "sessiond", "--after", "10") == 0
