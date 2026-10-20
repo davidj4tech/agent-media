@@ -3776,7 +3776,8 @@ An **ask**:
 ```
 {"id": "3f9a01c2", "device": "Living room TV", "device_id": "d_1a2b3c4d5e6f",
  "session": "0f1e…" | null, "title": "Sasonica web" | null,
- "at": 1790053383.513, "expires": 1790053473.513}
+ "at": 1790053383.513, "expires": 1790053473.513,
+ "taken": false, "chat": null}
 ```
 
 - `id`: 8 hex. `device` / `device_id`: the asking device's name and id (§9);
@@ -3806,6 +3807,28 @@ took the ask. Any gated caller may cancel any ask.
 
 - → `{"ok": true, "id"}` · 404 `no such open ask` (unknown, cancelled or
   expired). Also wakes the stream.
+
+#### `POST /mic/answer {"id", "session"?}` — the phone that took it (20 Oct 2026)
+
+What the phone sends instead of a cancel, so the TV can follow it into a new
+chat (David, 20 Oct 2026: "I wonder how it would go if it did follow it").
+
+- Without `session` — the tap: the ask is **taken**. It leaves every phone's
+  `mic` frame (their notifications go), but is kept `TAKEN_S` (180 s) from
+  now for the TV to read.
+- With `session` — the new chat the phone's words started (the `/ask` that
+  answered a new-chat ask): kept as `chat`, and the 180 s start again.
+- → `{"ok": true, "ask": {…, "taken": true, "chat": "…" | null}}` · 400 `not a
+  session id` · 404 `no such open ask` · 401/403 as `/reply`.
+
+#### `GET /mic/ask?id=` — the ask as it stands (20 Oct 2026)
+
+The TV on its new-chat screen, while its bar is up, reads this every couple of
+seconds; once `chat` is set it opens that thread. An ask carries `taken`
+(false until a phone takes it) and `chat` (null until a new chat started).
+→ `{"ok": true, "ask": {…}}` · 404 when gone (cancelled, expired, a restart) ·
+401/403 as `/reply`. In a thread the TV needs none of this: the words arrive
+there.
 
 Expiry is noticed by the stream's watcher on its tick (≤ 3 s late), and a
 `mic` frame without the ask follows. Both routes are in `CORS_PATHS`.
@@ -5530,10 +5553,18 @@ Pinned by `packages/server/tests/test_devices.py`.
    ```json
    {"ok": true, "token": "<43 chars: secrets.token_urlsafe(32)>",
     "device_id": "d_7f3a09c1b2e4", "name": "Pixel 8a",
-    "server": {"name": "red5", "base": "http://red5:8781"}}
+    "server": {"name": "red5", "base": "http://red5:8781"},
+    "server_id": "q3Zr0bW8kXy1Tz5m"}
    ```
 
-   - `server.name` is the host's `gethostname()`. `server.base` is the
+   - `server_id` (20 Oct 2026) is this server's stable id, made once into
+     `<state_dir>/server-id` (the id sasonica.com's server list uses,
+     `servers_report.py`): an app paired with several servers (roadmap
+     item 7, docs/proposals/2026-10-20-several-servers.md) tells them
+     apart by it rather than by an address a quick tunnel changes.
+     `POST /enrol` and `GET /me` carry it too.
+   - `server.name` is `MEDIA_SERVER_NAME` (20 Oct 2026), else the host's
+     `gethostname()`, as on sasonica.com's list. `server.base` is the
      address the request came in on: `Host` as the client sent it, and
      `https` when a TLS-terminating proxy in front says so in
      `X-Forwarded-Proto` (the Cloudflare link), else `http`.
@@ -5696,7 +5727,7 @@ authenticate requests. Code: `agent_media_server/oidc.py`,
 
 ```
 POST /enrol {"id_token": "<jwt>", "device": "Pixel 8a"}     no credential, like /pair
-  → {"ok", "token", "device_id", "name", "enrol", "account", "server": {"name", "base"}}
+  → {"ok", "token", "device_id", "name", "enrol", "account", "server": {"name", "base"}, "server_id"}
   → 403 {"code": "bad_id_token"}   untrusted issuer, wrong audience, expired, bad signature
   → 403 {"code": "not_enrolled"}   a valid sign-in for an account not allowed here
   → 404 {"code": "no_accounts"}    this server takes no account sign-ins
@@ -5711,7 +5742,9 @@ code for the ID token at the issuer's token endpoint (a public client, no
 secret) and then goes on as for an `id_token`.
 
 `GET /me` (a device token) → `{"ok", "device_id", "name", "enrol",
-"account", "username", "picture", "issuer", "lookup"}`: this device as the server knows it, `account` the
+"account", "username", "picture", "issuer", "lookup", "server_id",
+"server_name"}` (`server_id` and `server_name` as `POST /pair` gives them,
+20 Oct 2026): this device as the server knows it, `account` the
 email of the account that enrolled it (null for a code-paired device) — the
 app's "Signed in as" (29 Sep 2026). `picture` is the account's picture (the
 OIDC `picture` claim, an https URL only; null when there is none) for the

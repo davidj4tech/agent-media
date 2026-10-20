@@ -253,7 +253,9 @@ device gets its token):
   GET  /alerts[?open=1] → open alerts, then recent digests and clears
   POST /alerts/ack {"id"} → seen it: no re-notify, nothing cleared
   POST /mic/ask   {"session"?} → a TV with no mic asks the phones to speak
-                  for it; POST /mic/cancel {"id"} → the ask is gone. Phones on
+                  for it; POST /mic/cancel {"id"} → the ask is gone; POST
+                  /mic/answer {"id", "session"?} → a phone took it (and the
+                  chat it started); GET /mic/ask?id= → as it stands. Phones on
                   /sessions/events?mic=1 get a `mic` frame (mic.py, §6.20)
   POST /phone/ask {kind, why, session?} (host token) → an agent asks the
                   phone for a photo, …; GET /phone/ask?id=&wait= its outcome;
@@ -332,7 +334,7 @@ CORS_PATHS = frozenset({
     "/contacts/google/signout", "/contacts/labels", "/contacts/suggestions",
     "/contacts/import", "/contacts/timeline/backfill", "/bridges",
     "/mail/message", "/mail/attachment", "/mail/say",
-    "/mic/ask", "/mic/cancel",
+    "/mic/ask", "/mic/cancel", "/mic/answer",
     "/phone/ask", "/phone/answer", "/phone/cancel", "/device/location",
     "/notes", "/notes/clear",
     "/speech/state", "/music/state", "/handoff/state", "/book/state",
@@ -1316,6 +1318,14 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         kinds = ",".join(parse_qs(query).get("kinds") or []).split(",")
         return phone_jobs.serve(h, auth.jobs_device_id(_bearer(h)),
                                 [k.strip() for k in kinds if k.strip()])
+    if path == "/mic/ask":
+        # The TV on a new chat, following the phone into the chat its words
+        # started (§6.20, mic.status; David, 20 Oct 2026).
+        from . import mic
+
+        ok, detail = mic.status((parse_qs(query).get("id") or [""])[0], _bearer(h))
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+        return True
     if path == "/phone/ask":
         # An agent's tool waiting on the phone's answer (§6.21): the host's
         # token, a long poll of up to a minute.
@@ -1538,7 +1548,11 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
                            # device paired before it existed (16 Oct 2026), or
                            # over another address, learns it here without
                            # pairing again.
-                           "lookup": _lookup_for(_base_url(h)) or None})
+                           "lookup": _lookup_for(_base_url(h)) or None,
+                           # Which server this is, for an app paired with
+                           # several (roadmap item 7): stable across
+                           # addresses, the id sasonica.com lists it by.
+                           "server_id": _server_id(), "server_name": _server_name()})
     elif path == "/enrol":
         # Where the app signs in with an account (oidc.py): open, like /pair.
         from . import oidc
@@ -1852,13 +1866,13 @@ def _pair(h: BaseHTTPRequestHandler) -> None:
     print(f"pair: paired {got['device_id']} ({got['name']!r}) from {ip}", file=sys.stderr)
     # `name` is the one the device will be known by — the name given at the
     # desk wins over the one the phone sent — so the app can say "paired as".
-    server = {"name": socket.gethostname(), "base": _base_url(h)}
+    server = {"name": _server_name(), "base": _base_url(h)}
     lookup = _lookup_for(server["base"])
     if lookup:
         server["lookup"] = lookup
     _json(h, 200, {"ok": True, "token": got["token"], "device_id": got["device_id"],
                    "name": got["name"], "enrol": bool(got.get("enrol")),
-                   "server": server,
+                   "server": server, "server_id": _server_id(),
                    # Only for a jobs-only device (`pair --jobs`): `media jobs
                    # pair` checks it; the app's answer is unchanged.
                    **({"jobs": True} if got.get("jobs") else {})})
@@ -2103,7 +2117,30 @@ def _enrol(h: BaseHTTPRequestHandler) -> None:
                    "name": got["name"], "enrol": got["enrol"],
                    "account": str(claims.get("email") or ""), "username": got["username"],
                    "picture": oidc.picture_of(claims) or None,
-                   "server": {"name": socket.gethostname(), "base": _base_url(h)}})
+                   "server": {"name": _server_name(), "base": _base_url(h)},
+                   "server_id": _server_id()})
+
+
+def _server_name() -> str:
+    """What this server calls itself to a pairing app (§9 `server.name`):
+    MEDIA_SERVER_NAME, else the host name — the name sasonica.com's list
+    gives it too (servers_report.py)."""
+    import os
+    import socket
+
+    return os.environ.get("MEDIA_SERVER_NAME", "").strip() or socket.gethostname()
+
+
+def _server_id() -> str:
+    """This server's stable id (made once into `<state_dir>/server-id`), so an
+    app paired with several servers knows one by more than its address,
+    which a quick tunnel changes (roadmap item 7; several-servers proposal)."""
+    from . import servers_report
+
+    try:
+        return servers_report.server_id()
+    except OSError:
+        return ""
 
 
 def _devices_code(h: BaseHTTPRequestHandler) -> None:
@@ -2143,7 +2180,7 @@ def _devices_code(h: BaseHTTPRequestHandler) -> None:
     _json(h, 200, {"ok": True, "code": code, "expires": round(expires, 3),
                    "name": name, "enrol": bool(body.get("enrol")),
                    "links": {"app": app_link, "browser": browser_link},
-                   "server": {"name": socket.gethostname(), "base": base}})
+                   "server": {"name": _server_name(), "base": base}})
 
 
 def _devices_revoke(h: BaseHTTPRequestHandler) -> None:
@@ -2378,7 +2415,7 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
             print(f"stop: refused ({detail.get('error')}) for "
                   f"{str(body.get('session'))[:8]}", file=sys.stderr, flush=True)
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
-    elif path in ("/mic/ask", "/mic/cancel"):
+    elif path in ("/mic/ask", "/mic/cancel", "/mic/answer"):
         # The phone as the TV's mic (server-contract.md §6.20, mic.py; David,
         # 30 Sep 2026): a TV with no mic asks, every phone on the session
         # stream with `?mic=1` is told at once; the TV's Cancel, its words
@@ -2390,6 +2427,8 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
             body = {}
         if path == "/mic/ask":
             ok, detail = mic.ask(body.get("session"), _bearer(h))
+        elif path == "/mic/answer":
+            ok, detail = mic.answer(body.get("id"), body.get("session"), _bearer(h))
         else:
             ok, detail = mic.cancel(body.get("id"), _bearer(h))
         if ok and path == "/mic/ask":

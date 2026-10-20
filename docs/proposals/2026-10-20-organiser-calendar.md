@@ -84,14 +84,33 @@ UID) is shown once, and the server's copy wins.
 - Calendar colours on a phone. On the Pine Note (DU4, 4 greys): outlines
   and text only, calendars told apart by line style, no fills.
 
+## For everyone, not one setup
+
+David, 20 Oct 2026, agreed: every step is built for any install, red5 being
+only the first. So:
+
+- Sources are per server, in config.toml (`[[calendar.sources]]`), added
+  and removed from the app's Settings, never written into the code. red5's
+  vdirsyncer folders are one source among others.
+- A folder of .ics files (a vdir, as vdirsyncer, khal and others keep) and
+  an ICS link need no sign-in from us, so they come first. Parsing is the
+  `icalendar` library (BSD) and repeats `recurring-ical-events` (LGPL,
+  imported as a library, never copied in; check against the licensing
+  decision before adding it).
+- Google and Microsoft sign-in need a registered app. A public release
+  needs one each, held by South Pen Labs, and Google's review of the
+  calendar scope before strangers can use it. Until then, and for anyone
+  self-hosting, the server takes the install's own client id from config.
+- Nothing here assumes the tailnet (docs/decisions/2026-10-18-off-the-tailnet.md).
+
 ## Order
 
 1. `GET /calendar` with Org items only (repeaters expanded), plus the four
-   views in the app. Useful on its own, with no accounts.
-2. CalDAV read: a timer for vdirsyncer, and red5's Google calendars on the
-   grid.
+   views in the app. Useful on its own, with no accounts. DONE 20 Oct 2026.
+2. Sources in config, and the first two kinds: a vdir folder and an ICS
+   link, merged into `GET /calendar`; on red5, vdirsyncer on a timer again
+   and its folders added as sources.
 3. The phone's calendar upload.
-4. ICS links.
 5. Create and edit through CalDAV and the phone. Moving Org items.
 6. Microsoft Graph, read and write.
 

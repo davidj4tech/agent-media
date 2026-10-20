@@ -686,6 +686,208 @@ ahead.
    room's speakers at home, the e-ink canvas at the desk — the voice and the
    figures going where he is, the thread the same everywhere. Not a step of
    its own; the test that (b)–(c) are done.
+   **Plan for the first step** (20 Oct 2026, David: "y" to starting it).
+   *Where the app holds one server today:* one pairing in
+   `sasonica.chat.device` (sealed in the keystore in the shell, read by
+   `NotifyService.java` too) and the address in `sasonica.chat.baseUrl`.
+   Every call goes through `api/index.ts` `reach()`/`request()` with
+   `serverBase()` + `authHeaders()`: the lists, the thread stream
+   (`openThreadStream`), replies, the Organiser (`api/org.ts`),
+   `pictureUrl`. Also on the one pairing: `relocate()` (its lookup),
+   Settings, Devices (revoking itself), the profile menu (sign-in, sign
+   out), About, `useSpeech`, `lib/bridges.ts`, the background notifier,
+   and `finishAccountSignIn` (replacing a pairing on the same server).
+   Pairing another server replaced the device; `forgetSnapshots` runs only
+   on leaving the demo, so the old server's cached list painted until the
+   new one answered. *The server already named itself:* `POST /pair`,
+   `POST /enrol` and `POST /devices/code` answered `server: {name, base}`
+   (`gethostname()`). Added (20 Oct 2026, with the several-servers
+   proposal, item 36): `server_id` on `/pair`, `/enrol` and `/me` (the id
+   sasonica.com's list already used), and `MEDIA_SERVER_NAME` for the name,
+   so a base on the phone is "Pixel". Later, `server` on `GET /targets`
+   so rows from a pairing made before the id was kept get one.
+   *Storage:* the current pairing stays exactly where it is
+   (`sasonica.chat.device`); the others go in `sasonica.chat.otherPairings`,
+   a JSON array of the same Device shape, sealed the same way. So the
+   existing pairing needs no migration (it is the current one), the native
+   notifier is unchanged, and an older build ignores the new key and keeps
+   working. A pairing is known by its `server_id` (kept as `server.id`)
+   when both sides have one, else by its normalised address: the same
+   server paired again replaces its own pairing, another is added.
+   *Against docs/proposals/2026-10-20-several-servers.md* (item 36, written
+   the same day): the same idea, a list with a token each and `server_id`
+   as the key, which this uses. It differs in four places, to be merged:
+   (i) storage — the proposal has `sasonica.chat.servers` (one key per
+   entry's token) and `sasonica.chat.active`; this keeps the current one in
+   `sasonica.chat.device` and the rest in one sealed list, so nothing
+   migrates and the notifier, older builds and the e2e suites that seed
+   `sasonica.chat.device` are untouched. The proposal's shape can come when
+   the notifier takes a list (slice 4). (ii) The proposal's switcher in the
+   header is superseded by David's "Merged, with a filter" (20 Oct 2026):
+   one list, rows labelled, a chip per server; slice 1's Switch in Settings
+   is only the way to reach another server until the merged list lands,
+   and then names the home base (below). (iii) Unpair here forgets the
+   pairing on the device only, as before; the proposal also revokes the row
+   on that server while the token works — worth adding. (iv) The proposal
+   puts roles step 1 and Settings in three sections before the list; this
+   starts with the list, which needs no roles. Snapshots and drafts keyed
+   by server (the proposal) are slice 2 here.
+   *Which base a request goes to:* in slice 1, the current one, as now. From
+   slice 3, a per-thread call takes the base of the row that owns the
+   session (a `session → base` map filled by the merged list; a link to a
+   session not in it asks each base); anything not per-thread (Settings,
+   voice, Organiser, People, Media, alerts) stays with the current base,
+   the "home" one. `relocate()` becomes per pairing.
+   *Merged vs per base:* merged — `/targets` sessions (each row tagged with
+   its base and label), `/sessions/state`, later Home and alerts. Per base —
+   places and projects (a new chat asks which server), settings, voice,
+   Organiser, contacts, devices, account.
+   *UI:* Settings → This device lists the current pairing, then "Also
+   paired with" (each: Switch to it, Remove) and "Pair another server"; the
+   pairing screen says another server is added and the same one replaced,
+   and a pairing link still waits for a tap. With more than one pairing the
+   thread list labels each row with its server, and (David, 20 Oct 2026:
+   "Merged, with a filter") the filter row gains a chip per server to show
+   just that one (`lib/threadFilter.ts`, `test/filter.mjs`).
+   *Slices, smallest first:* **(1) done 20 Oct 2026** (sasonica-app
+   `ac5b156`, merged): the list of pairings, pairing another server adds it
+   (it becomes current, the other kept with its token), Settings switches
+   and removes, Unpair (and sign out, revoking itself in Devices) falls back
+   to another pairing, the list and Home snapshots forgotten on a switch
+   (each thread's own snapshot kept: sessions are unique), `server_id` kept
+   as the pairing's key; `test/multibase.mjs` against two mocks.
+   **(2) and (3) done 20 Oct 2026** (sasonica-app `cab79fe`, merged; the
+   merged list cannot ship without the routing): `getTargets` and `getSessionsState` ask every pairing in
+   parallel, the current server's answer first (its failure is the list's
+   error; its places, groups and mail stay its own), each row tagged
+   `server {base, name}`, a thread two servers list shown once (the current
+   server's, else the first's), a server that does not answer keeping its
+   last rows; a strip of server chips above the projects (All servers, then
+   each) and a server label on each row, both only with more than one
+   server; the chosen server kept with the filter, not per project.
+   Routing (`app/api/servers.ts`): each other server's threads noted
+   (localStorage `sasonica.chat.threadServers`), and every call about one
+   thread — the session in the path (`/threads/<s>/…`), in `?session=`, or
+   in the body — goes to the server that listed it with that server's
+   token, pictures included; a thread not yet listed (a link, a notice)
+   that the current server does not have (404 on its stream) is asked of
+   the others and noted. Remove also signs this device out on that server
+   (`POST /me/signout`, which any device may do) while its token works.
+   **Offline and search, done 20 Oct 2026** (sasonica-app `feeed04`,
+   merged): a server whose last list or state ask got
+   no answer says so on its chip ("hpo · offline"), its rows staying as last
+   had, across a restart too (the saved list's); search (⌕) asks every
+   server, or the one chosen on the same chip strip under its box (kept in
+   the address as `server=`, seeded from the list's choice), its threads and
+   messages merged (messages in the asked order, best taken in turn; each
+   server paged from its own cursor) and labelled like the list; a thread's
+   own find bar still asks only that thread's server.
+   **(4) Home, needs pairing, documents and memory, done 20 Oct 2026**
+   (sasonica-app `a6b567f`, merged): Home's Needs you,
+   Working, unread replies, Recent and alerts are every server's, each
+   labelled, threads noted for routing, alerts kept apart by server (their
+   ids are each server's own) and Ack sent to the server that raised it;
+   speaking now, the queue, hosts, digests, sign-ins, places and agents stay
+   the current server's. A server that refuses this device's token (a 401,
+   or a 403 to the list or its states) says "needs pairing" on its chip
+   instead of offline, and the chip
+   opens the pairing screen with its address (pairing again replaces that
+   server's pairing). Search's documents and memory follow its server choice
+   like threads, each labelled; a document opens from its own server
+   (`/doc?path=…&server=…`, the reader's calls routed there), and a chat
+   another server starts (a document's Ask) is that server's thread from
+   then on. Still the current server's: a new chat, Settings, terms.
+   **Home's strip, Fix it, the 403 rule and the notifier, done 20 Oct
+   2026** (sasonica-app `03ff708`, merged): Home has the same
+   server chip strip, the choice shared with the list's filter; Fix it on
+   another server's alert starts the chat on that server; a 403 flags a
+   server only from `/targets` or `/sessions/state` (elsewhere it can be a
+   role refusing one route), a 401 from anywhere. The background notifier:
+   `NotifyService.java` keeps its stream to the current server as it was and
+   runs one lighter loop per other server (`Siblings.java`, reading
+   `sasonica.chat.otherPairings` through SecretBox), threads and alerts
+   only, each with its own alerts cursor (`alerts_after@<key>`), NotifyRules
+   and Backoff, a refused token parking that loop alone; its notices name
+   the server (sub-text), a "Needs you" from one has Open only (the answer
+   buttons are the current server's), and a tap opens `/t/<s>?server=<base>`,
+   which the thread page notes before it asks anything; Settings →
+   Notifications turns another server off on this phone (`server_off@<key>`,
+   `setServerNotify`). JUnit (`SiblingsTest`) covers the list, the keys, the
+   plan of loops and the cursors; the APK builds (`assembleDebug`), and the
+   rest wants a phone.
+   **Answers and a refused server named, done 20 Oct 2026** (sasonica-app
+   `68aac71`, merged): a "Needs you" from another server
+   has its answer buttons, AnswerReceiver sending to that server with its
+   own token (the notice carries the server's key, the token is looked up),
+   the follow-up after a 409 and the Answered line posted the same way; the
+   listening notification names a server only when its loop stopped on a
+   refused token ("hpo needs pairing"), and drops the name once it gets
+   through again. **Done 20 Oct 2026** (sasonica-app `7502d7f`, merged):
+   while it names one, its tap opens `/pairing?server=<base>`
+   with that server filled in (David, 20 Oct 2026).
+   **Every pairing's lookup and a new chat on a chosen server, built 20 Oct
+   2026** (sasonica-app branch `multi-base-8`, not merged; David picked them
+   next, in that order): a request to another paired server that cannot get
+   through (a refused connection, or a dead tunnel's 502/503/504/530) asks
+   that pairing's own lookup (`relocateOther`, spaced as the current one's),
+   stores the new address on the pairing, tells the notifier and is tried
+   once more there; its threads, chip state and the list's choice of it
+   follow. The new-chat screen has a strip of servers (the current one by
+   default, another as `?server=`), each choice a fresh screen whose places,
+   agents, presets, project roots, personas, model sheet and ask are that
+   server's; the mic's new chat comes through it, the list's + starts on the
+   server in view, and a share's files go to the server of the chat they are
+   sent to (a new one's chosen on the share screen).
+   **What is left of the first step** (20 Oct 2026; everything above is the
+   app talking to each base itself, no base-to-base link):
+   - *A server picker in Settings* for the per-server things — voice, speech
+     default, language, the Organiser and its setup, coding agents (keys,
+     logins, setup), presets, project roots, personas, bridges, Google
+     Contacts, Devices and pairing codes, the account, Connect an assistant —
+     each asked of the chosen server, the phone's own settings staying
+     global (David, 20 Oct 2026). "Switch to it" goes when it lands; the
+     several-servers proposal's roles split (You on <server>, the admin
+     section) can follow on top of it.
+   - *Smaller, from the two above*: another pairing's lookup is the one
+     its pairing stored (the link's or `POST /pair`'s); `/me`'s lookup is
+     learnt only for the current server. The notifier's loop for a moved
+     server follows only once the app has learnt the new address (it asks
+     no lookup itself). The share screen's Organiser inbox and "just keep"
+     stay the current server's.
+   - *The phone's other streams from other servers*: the notifier's loops
+     carry threads and alerts only; mic asks, an agent's asks of the phone,
+     notes, catch-ups, the busy card, speech played here and the widgets
+     are still the current server's alone. Which of them should follow
+     every server is David's to say (the proposal asks it of Speech here).
+   - *Smaller*: search's terms highlight from the current server only; a
+     thread shown once when two servers list it is an assumption, untested
+     (no fixture shares a session).
+   After those, the base-to-base steps above, (a) to (d), in their order.
+   *Decided (David, 20 Oct 2026):* sign out signs out of the current server
+   only (as built); Remove also revokes this device on that server while
+   its token still works (built in slice 2–3); Settings gets a server
+   picker for the per-server things, the phone's own settings stay global
+   (slice 5); a server that cannot be reached gets a small visible note, its
+   chip saying offline and its last rows kept; search covers every server
+   and is selectable, All servers or one, merged and labelled like the list
+   (both built on `multi-base-3`); "Switch to it" stays until slice 5's
+   picker; Home merges the thread sections and alerts from every server,
+   each labelled, an alert's Ack going to its server, speaking now, the
+   queue, hosts, digests and sign-ins staying the current server's; a
+   server that refuses the token says "needs pairing" on its chip, which
+   opens the pairing screen for it; search's documents and memory are
+   selectable like threads, and a document opens on its own server (all
+   three built on `multi-base-4`); Fix it on another server's alert starts
+   the chat on that alert's server, Home gets the same server strip, and the
+   notifier listens to every server (built on `multi-base-5`); a "Needs
+   you" from another server gets its answer buttons, sent to that server
+   with its token, and the listening notification names a server only when
+   its loop stopped because it refused this phone (both built on
+   `multi-base-6`); while the listening notification names one, its tap
+   opens pairing for that server (built on `multi-base-7`). *The
+   coordinator's call (20 Oct 2026):* "needs pairing" only on a 401, or on a
+   403 from the list or its states. *Assumed, David not asked:* a thread listed by two servers (one
+   day, siblings listing each other's) is shown once.
 8. **A Media tab** (David, 28 Sep 2026) — a fourth tab in the app, not a
    companion app, because speech and music share the phone's player and its
    handoff already lives here. Music plays in the app's own ExoPlayer (a
@@ -1347,7 +1549,11 @@ ahead.
     presets, project roots, personas, bridges, contacts, devices). Needs
     roles step 1 first (docs/proposals/2026-10-18-roles.md). The plan and
     its open questions are in docs/proposals/2026-10-20-several-servers.md.
-    Not started.
+    **The pairing list and `server_id` are item 7's first step** (built
+    20 Oct 2026, branch `multi-base`; item 7's plan lists where it differs
+    from the proposal). Its switcher gives way to one merged list with a
+    filter per server (David, 20 Oct 2026: "Merged, with a filter"). The
+    settings split is not started.
 
 ## Loose ends
 
