@@ -749,27 +749,44 @@ ahead.
    thread list labels each row with its server, and (David, 20 Oct 2026:
    "Merged, with a filter") the filter row gains a chip per server to show
    just that one (`lib/threadFilter.ts`, `test/filter.mjs`).
-   *Slices, smallest first:* **(1) done 20 Oct 2026** (sasonica-app branch
-   `multi-base`, not merged): the list of pairings, pairing another server
-   adds it (it becomes current, the other kept with its token), Settings
-   switches and removes, Unpair (and sign out, revoking itself in Devices)
-   falls back to another pairing, the list and Home snapshots forgotten on
-   a switch (each thread's own snapshot kept: sessions are unique);
-   `test/multibase.mjs` against two mocks. (2) The merged thread list:
-   every pairing's `/targets` and `/sessions/state` asked in parallel, rows
-   tagged and merged, a server that does not answer shown quietly with its
-   rows from the last snapshot (snapshots kept per base), the label on each
-   row and the per-server filter chip. (3) Per-thread routing: open, stream,
-   reply, answer, stop, rename, archive, move and the rest to the row's
-   base. (4) Home and alerts from every base; the background notifier for
-   each base (`NotifyService` reads the list). (5) A new chat on a chosen
-   server; Devices and the account per server.
-   *Open questions:* does sign out from the profile menu sign out of the
-   current server only (built so) or all of them; is the current server
-   still a thing once the list is merged (the home base for Settings and
-   voice), or does Settings get a server picker; and should a session
-   appearing on two bases (one day, siblings listing each other's) be shown
-   once.
+   *Slices, smallest first:* **(1) done 20 Oct 2026** (sasonica-app
+   `ac5b156`, merged): the list of pairings, pairing another server adds it
+   (it becomes current, the other kept with its token), Settings switches
+   and removes, Unpair (and sign out, revoking itself in Devices) falls back
+   to another pairing, the list and Home snapshots forgotten on a switch
+   (each thread's own snapshot kept: sessions are unique), `server_id` kept
+   as the pairing's key; `test/multibase.mjs` against two mocks.
+   **(2) and (3) built together 20 Oct 2026** (sasonica-app branch
+   `multi-base-2`, not merged; the merged list cannot ship without the
+   routing): `getTargets` and `getSessionsState` ask every pairing in
+   parallel, the current server's answer first (its failure is the list's
+   error; its places, groups and mail stay its own), each row tagged
+   `server {base, name}`, a thread two servers list shown once (the current
+   server's, else the first's), a server that does not answer keeping its
+   last rows; a strip of server chips above the projects (All servers, then
+   each) and a server label on each row, both only with more than one
+   server; the chosen server kept with the filter, not per project.
+   Routing (`app/api/servers.ts`): each other server's threads noted
+   (localStorage `sasonica.chat.threadServers`), and every call about one
+   thread — the session in the path (`/threads/<s>/…`), in `?session=`, or
+   in the body — goes to the server that listed it with that server's
+   token, pictures included; a thread not yet listed (a link, a notice)
+   that the current server does not have (404 on its stream) is asked of
+   the others and noted. Remove also signs this device out on that server
+   (`POST /me/signout`, which any device may do) while its token works.
+   Still the current server's: Home, alerts, the background notifier, a new
+   chat, search, Settings. (4) Home and alerts from every base; the
+   background notifier for each base (`NotifyService` reads the list).
+   (5) A server picker in Settings for the per-server things (voice, speech
+   default, language, the Organiser, coding agents, presets, devices, the
+   account), the phone's own settings staying global; a new chat on a
+   chosen server; `relocate()` per pairing.
+   *Decided (David, 20 Oct 2026):* sign out signs out of the current server
+   only (as built); Remove also revokes this device on that server while
+   its token still works (built in slice 2–3); Settings gets a server
+   picker for the per-server things, the phone's own settings stay global
+   (slice 5). *Assumed, David not asked:* a thread listed by two servers
+   (one day, siblings listing each other's) is shown once.
 8. **A Media tab** (David, 28 Sep 2026) — a fourth tab in the app, not a
    companion app, because speech and music share the phone's player and its
    handoff already lives here. Music plays in the app's own ExoPlayer (a
