@@ -31,6 +31,23 @@ def _no_live_phone_backend(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_live_rooms(monkeypatch):
+    """Keep the suite away from the house speakers' Snapcast server.
+
+    The env file names it (MEDIA_SNAP_JSONRPC_HOST) and the music stream
+    (MEDIA_DUCK_ROOMS_STREAM), and the rooms' volume and mute are set through
+    it (route/coordinator.py's duck, music_rooms.set_room): an un-scrubbed
+    test would mute or turn down a room someone is listening in. The host is
+    pointed at a closed local port rather than unset, since unset means the
+    local snapserver, which on the rooms hub is the real one. A test that
+    wants rooms fakes the snapcast calls and sets the stream itself.
+    """
+    monkeypatch.delenv("MEDIA_DUCK_ROOMS_STREAM", raising=False)
+    monkeypatch.setenv("MEDIA_SNAP_JSONRPC_HOST", "127.0.0.1")
+    monkeypatch.setenv("MEDIA_SNAP_JSONRPC_PORT", "9")
+
+
+@pytest.fixture(autouse=True)
 def _no_remote_say(monkeypatch):
     """Keep the suite on the local render path.
 

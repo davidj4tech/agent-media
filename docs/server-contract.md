@@ -2210,8 +2210,9 @@ another player cleanly, and restarting it elsewhere is a replay the listener
 can already ask for. Replays (`/speech/ctl replay`) play on the new choice;
 a reply the phone rendered itself (`clips_remote`) has no audio on this host
 to send anywhere else. Music: the next `media music play` given no
-`--where` (and shares, which call it). Music that is playing is not moved,
-and the MCP `music_play` tool keeps its own default.
+`--where` (and shares, which call it). Music that is playing is not moved
+by this call — `POST /music {"action": "move"}` (§6.9a) moves it — and the
+MCP `music_play` tool keeps its own default.
 
 The choice is per host, in that host's state dir (`speech-target`,
 `music-where`). It matters on the host that starts replies (`origin`); set
@@ -2244,7 +2245,13 @@ The app's Media tab (docs/proposals/2026-09-28-music-tab.md, step 1).
   the chapter when past its first 3 s), and a tap on a track is
   `seek` to its `start_ms`.
 - `where` is the `music` block of `GET /audio/targets` (§6.9), for the
-  tab's picker; a choice is `POST /audio/target` as before.
+  tab's picker; a choice is `POST /audio/target` as before. It adds
+  `rooms` (20 Oct 2026): the house speakers one by one, `[{"id", "label",
+  "connected", "on", "volume"}]` by label — each a snapclient on the music
+  stream (`MEDIA_DUCK_ROOMS_STREAM`) other than the phone's
+  (`MEDIA_SNAP_PHONE_PREFIX`); `on` is not muted, `volume` 0-100 (a ducked
+  room's own level, not the duck's). `[]` when the host has no music
+  stream, `null` when the Snapcast server did not answer. Kept 2.5 s.
 - Reading asks the phone, so an answer is kept 1.5 s.
 
 #### `POST /music` — gated (like `/speech/ctl`)
@@ -2260,6 +2267,28 @@ the state) when the verb failed.
 `"play"` and `"add"` take a `uri` (`yt:`, `http://` or `https://`) and put
 it on now or after what is playing (`media music play [--add]`, to the
 default place): Recently played's tap.
+
+`{"action": "room", "id", "on"?, "volume"?}` (20 Oct 2026) switches one
+house speaker on or off (Snapcast mute) and/or sets its volume (0-100);
+at least one of the two. 400 for an id that is not a room in `rooms`, a
+non-boolean `on` or a volume outside 0-100; 502 when Snapcast did not
+answer. Under a reply's duck the change goes into the duck's restore
+baseline and the room sits at the duck level until it lifts, so the
+restore never undoes it (agent_media_core.music_rooms).
+
+`{"action": "move"}` (20 Oct 2026) takes what is playing to where the next
+untargeted play goes (`POST /audio/target`'s music choice), at the same
+spot: it pauses it, plays the same track there (`media music play --where`),
+waits up to 90 s for it to start, stops the old place and seeks to where it
+was (paused again if it was paused); on a failure the old place resumes.
+It runs in the background: the answer comes at once, and every answer for
+a minute after carries `"move": {"to", "state": "moving" | "done" |
+"failed", "error"}`. Nothing happens (no `move`) when nothing plays or it
+already plays there — the phone's players count as one place. 409 when a
+radio station is on and the place is the house speakers (radio plays on
+the phone), when what plays is not a YouTube track or web address (a book,
+a file), or while a move is under way. The app sends it after a choice in
+the picker (David, 20 Oct 2026).
 
 #### `GET /music/recent` — gated (like `/speech/now`) (28 Sep 2026)
 

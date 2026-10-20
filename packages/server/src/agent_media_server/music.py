@@ -15,6 +15,12 @@ server-contract.md §6.9a. Step 1 of docs/proposals/2026-09-28-music-tab.md
 plays a song from its list now, and `{"action": "dislike"}` is 👎:
 that song off the station, and the next one on.
 
+`where.rooms` is the house speakers one by one (agent_media_core.music_rooms):
+`{"action": "room", "id", "on"?, "volume"?}` switches one on or off and sets
+how loud it is. `{"action": "move"}` takes what is playing to where the next
+play goes (the picker's choice), at the same spot: it runs in the background
+and the answer's `move` says how it went (David, 20 Oct 2026).
+
 `now` is `media music status --json`: the live player's track, position and
 state, whichever player that is (Sasonica's own, the Termux mpv, Mopidy), so
 the tab and the desk popup can never disagree. `where` is the music block of
@@ -49,6 +55,8 @@ ACTIONS = {
     "book": "book",
     # The station, run here rather than by the CLI (radio.py).
     "radio": "radio", "dislike": "dislike",
+    # The house speakers one by one, and what is playing to another place.
+    "room": "room", "move": "move",
 }
 
 _CACHE_TTL_S = 2.5
@@ -153,10 +161,180 @@ def _radio() -> dict:
         return {"on": False, "seed": None, "next": [], "available": False}
 
 
+_ROOMS_TTL_S = 2.5
+_ROOMS: list = [0.0, None]
+
+
+def _rooms(fresh: bool = False) -> list[dict] | None:
+    """The house speakers (music_rooms.rooms), kept a moment; None when the
+    Snapcast server cannot be reached, [] when this host has no rooms."""
+    from agent_media_core import music_rooms, snapcast
+
+    t = time.monotonic()
+    with _LOCK:
+        if not fresh and _ROOMS[1] is not None and t - _ROOMS[0] < _ROOMS_TTL_S:
+            return _ROOMS[1]
+    try:
+        got = music_rooms.rooms(timeout=1.5)
+    except (snapcast.SnapcastError, OSError) as e:
+        print(f"music: rooms failed: {e}", file=sys.stderr)
+        return None
+    with _LOCK:
+        _ROOMS[:] = [time.monotonic(), got]
+    return got
+
+
+#: The last move: `{"to", "state": "moving" | "done" | "failed", "error", "at"}`.
+_MOVE: dict = {}
+#: A finished move is reported this long, so the tab that asked sees it.
+_MOVE_SHOWN_S = 60.0
+
+
+def _move_state() -> dict | None:
+    with _LOCK:
+        m = dict(_MOVE)
+    if not m or (m["state"] != "moving" and time.time() - m["at"] > _MOVE_SHOWN_S):
+        return None
+    return {k: m[k] for k in ("to", "state", "error")}
+
+
 def _answer() -> dict:
     now, chapters = _now()
-    return {"now": now, "art": _art(now), "chapters": chapters,
-            "where": audio.channel_block("music"), "radio": _radio()}
+    where = audio.channel_block("music")
+    out = {"now": now, "art": _art(now), "chapters": chapters,
+           "where": {**where, "rooms": _rooms()}, "radio": _radio()}
+    move = _move_state()
+    if move:
+        out["move"] = move
+    return out
+
+
+def _room_control(body: dict) -> tuple[bool, dict]:
+    """`room`: one house speaker on or off, and how loud."""
+    from agent_media_core import music_rooms, snapcast
+
+    cid, on, volume = body.get("id"), body.get("on"), body.get("volume")
+    if not isinstance(cid, str) or not cid:
+        return False, {"error": "id must be a room's id", "status": 400}
+    if on is not None and not isinstance(on, bool):
+        return False, {"error": "on must be true or false", "status": 400}
+    if volume is not None and (isinstance(volume, bool) or not isinstance(volume, (int, float))
+                               or not 0 <= volume <= 100):
+        return False, {"error": "volume must be 0-100", "status": 400}
+    if on is None and volume is None:
+        return False, {"error": "give on or volume", "status": 400}
+    try:
+        music_rooms.set_room(cid, on=on, volume=None if volume is None else int(round(volume)))
+    except ValueError as e:
+        return False, {"error": str(e), "status": 400}
+    except (snapcast.SnapcastError, OSError) as e:
+        return False, {"error": f"the speakers did not answer: {e}", "status": 502, **_answer()}
+    _rooms(fresh=True)
+    return True, _answer()
+
+
+#: How long a move waits for the new place to start playing.
+_MOVE_WAIT_S = 90.0
+
+
+def _replay_uri(now: dict) -> str | None:
+    """What to play elsewhere to carry on with `now`: the track asked for, or
+    the YouTube video its file is; None for anything else (a book, a file)."""
+    uri = now.get("uri") or ""
+    if uri.startswith(("yt:", "http://", "https://")):
+        return uri
+    from agent_media_core.sinks.music_fetch import watch_id
+
+    vid = watch_id(now.get("media_id") or "") or watch_id(uri)
+    return f"yt:https://www.youtube.com/watch?v={vid}" if vid else None
+
+
+def _kind(where: str) -> str:
+    """`_resolve_music_where`'s answer, or a status backend, as rooms/phone."""
+    return "rooms" if where in ("rooms", "mopidy") else "phone"
+
+
+def _move(uri: str, to: str, from_kind: str, pos_s: float, paused: bool) -> None:
+    """Pause where it is, play `uri` at `to`, and once it plays there stop
+    the old place and seek to where it was. Back where it was on a failure."""
+    from agent_media_core import cli
+    from agent_media_core.sinks.music import SinkMusic
+    from agent_media_core.sinks.music_router import SinkMusicRouter
+
+    def done(state: str, error: str | None = None) -> None:
+        with _LOCK:
+            _MOVE.update(state=state, error=error, at=time.time())
+        _reset_cache()
+        print(f"music: move to {to}: {state}{f' ({error})' if error else ''}", file=sys.stderr)
+
+    _run(["pause"])
+    ok, said = _run(["play", uri, "--where", to])
+    if not ok:
+        _run(["resume"])
+        return done("failed", said or "play failed")
+    from agent_media_core.sinks.music_fetch import watch_id
+
+    # A track left loaded there is not this one starting.
+    want = watch_id(uri)
+    deadline = time.monotonic() + _MOVE_WAIT_S
+    while True:
+        try:
+            st = cli._music_status_json(SinkMusicRouter(SinkMusic()), where=_kind(to))
+        except Exception:  # noqa: BLE001 — keep asking until the deadline
+            st = {}
+        if st.get("pos_ms") is not None and _kind(st.get("backend") or "") == _kind(to) \
+                and (not want or st.get("media_id") == want):
+            break
+        if time.monotonic() > deadline:
+            _run(["resume"])
+            return done("failed", "it did not start there")
+        time.sleep(1.0)
+    # The old place: the house's Mopidy is stopped directly (a phone player
+    # is the live one now); a phone player is still the live one, so the
+    # verb reaches it.
+    if from_kind == "rooms":
+        try:
+            SinkMusic().stop()
+        except OSError:
+            pass
+    else:
+        _run(["stop"])
+    if pos_s > 2:
+        _run(["seek", _clock(pos_s)])
+    if paused:
+        _run(["pause"])
+    done("done")
+
+
+def _move_control() -> tuple[bool, dict]:
+    """`move`: what is playing to where the next play goes."""
+    from agent_media_core import radio
+    from agent_media_core.cli import _resolve_music_where
+
+    now, _ = _now()
+    if now.get("pos_ms") is None:
+        return True, _answer()
+    to = _resolve_music_where("default")
+    if _kind(to) == _kind(now.get("backend") or ""):
+        # Already there: phone players are one place to a move.
+        return True, _answer()
+    if to == "rooms" and radio.read().get("on"):
+        return False, {"error": "radio plays on the phone", "status": 409, **_answer()}
+    uri = _replay_uri(now)
+    if not uri:
+        return False, {"error": "this can only play where it is", "status": 409, **_answer()}
+    with _LOCK:
+        if _MOVE.get("state") == "moving":
+            return False, {"error": "a move is under way", "status": 409}
+        _MOVE.clear()
+        _MOVE.update(to=to, state="moving", error=None, at=time.time())
+    _spawn(_move, uri, to, _kind(now.get("backend") or ""),
+           (now.get("pos_ms") or 0) / 1000, bool(now.get("paused")))
+    return True, _answer()
+
+
+def _spawn(fn, *args) -> None:
+    threading.Thread(target=fn, args=args, name="music-move", daemon=True).start()
 
 
 def _radio_control(body: dict) -> tuple[bool, dict]:
@@ -282,6 +460,10 @@ def control(body: dict, bearer: str) -> tuple[bool, dict]:
         return False, {"error": "unknown action", "status": 400}
     if action in ("radio", "dislike"):
         return _radio_control(body)
+    if action == "room":
+        return _room_control(body)
+    if action == "move":
+        return _move_control()
     argv = [ACTIONS[action]]
     if action in ("seek", "seek-by"):
         key = "to" if action == "seek" else "by"

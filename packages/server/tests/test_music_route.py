@@ -43,7 +43,8 @@ def test_now_is_the_status_and_the_picker(server, signed_in, audio_host, player,
     assert obj["radio"] == {"on": False, "seed": None, "next": [], "available": False}
     assert obj["art"] == "https://i.ytimg.com/vi/nMDHjVVj3bA/hqdefault.jpg"
     assert obj["now"] == NOW and obj["chapters"] == []
-    assert keys(obj["where"]) == {"current", "next", "overridden", "options"}
+    assert keys(obj["where"]) == {"current", "next", "overridden", "options", "rooms"}
+    assert obj["where"]["rooms"] == []  # no music stream on this host
 
 
 @pytest.mark.parametrize("body,argv", [
@@ -256,3 +257,126 @@ def test_radio_is_409_on_a_server_that_has_not_turned_it_on(server, signed_in, a
     assert station == [] and player == []
     res, obj = call(server, "POST", "/music", {"action": "radio", "off": True}, AUTH)
     assert res.status == 200
+
+
+# ---- the house speakers one by one, and moving what plays (20 Oct 2026) ----
+
+ROOMS = [{"id": "hpo-music", "label": "hpo", "connected": True, "on": True, "volume": 40}]
+
+
+@pytest.fixture()
+def rooms(monkeypatch):
+    from agent_media_core import music_rooms
+
+    sets: list = []
+    monkeypatch.setattr(music_rooms, "rooms", lambda timeout=2.0: [dict(r) for r in ROOMS])
+
+    def set_room(cid, on=None, volume=None, timeout=2.0):
+        if cid != "hpo-music":
+            raise ValueError("no room")
+        sets.append((cid, on, volume))
+        return dict(ROOMS[0])
+
+    monkeypatch.setattr(music_rooms, "set_room", set_room)
+    music._ROOMS[:] = [0.0, None]
+    yield sets
+    music._ROOMS[:] = [0.0, None]
+
+
+def test_where_lists_the_rooms(server, signed_in, audio_host, player, rooms):
+    res, obj = call(server, "GET", "/music", headers=AUTH)
+    assert res.status == 200 and obj["where"]["rooms"] == ROOMS
+
+
+def test_unreachable_rooms_are_null(server, signed_in, audio_host, player, monkeypatch):
+    from agent_media_core import music_rooms, snapcast
+
+    def down(timeout=2.0):
+        raise snapcast.SnapcastError("connect: refused")
+
+    monkeypatch.setattr(music_rooms, "rooms", down)
+    music._ROOMS[:] = [0.0, None]
+    res, obj = call(server, "GET", "/music", headers=AUTH)
+    assert res.status == 200 and obj["where"]["rooms"] is None
+
+
+@pytest.mark.parametrize("body,want", [
+    ({"action": "room", "id": "hpo-music", "on": False}, ("hpo-music", False, None)),
+    ({"action": "room", "id": "hpo-music", "volume": 62.4}, ("hpo-music", None, 62)),
+    ({"action": "room", "id": "hpo-music", "on": True, "volume": 0}, ("hpo-music", True, 0)),
+])
+def test_a_room_is_set(server, signed_in, audio_host, player, rooms, body, want):
+    res, obj = call(server, "POST", "/music", body, AUTH)
+    assert res.status == 200, obj
+    assert rooms == [want] and player == []
+
+
+@pytest.mark.parametrize("body", [
+    {"action": "room"}, {"action": "room", "id": "hpo-music"},
+    {"action": "room", "id": "hpo-music", "on": "yes"},
+    {"action": "room", "id": "hpo-music", "volume": 101},
+    {"action": "room", "id": "hpo-music", "volume": True},
+    {"action": "room", "id": "p8a-music", "on": True},
+])
+def test_a_bad_room_is_400(server, signed_in, audio_host, player, rooms, body):
+    res, obj = call(server, "POST", "/music", body, AUTH)
+    assert res.status == 400 and obj["ok"] is False
+    assert rooms == []
+
+
+@pytest.fixture()
+def mover(monkeypatch):
+    """The move's thread run inline, its player reads faked."""
+    from agent_media_core import cli, radio
+    from agent_media_core.sinks import music as sink_music
+
+    monkeypatch.setattr(music, "_spawn", lambda fn, *args: fn(*args))
+    monkeypatch.setattr(radio, "read", lambda: {"on": False})
+    stopped: list = []
+    monkeypatch.setattr(sink_music.SinkMusic, "stop", lambda self, *a: stopped.append("mopidy"))
+    there = {"backend": "mopidy", "media_id": "nMDHjVVj3bA", "pos_ms": 0}
+    monkeypatch.setattr(cli, "_music_status_json", lambda m, patient=False, where="": dict(there))
+    with music._LOCK:
+        music._MOVE.clear()
+    yield stopped
+    with music._LOCK:
+        music._MOVE.clear()
+
+
+def test_a_move_plays_it_there_at_the_same_spot(server, signed_in, audio_host, player, mover, monkeypatch):
+    from agent_media_core import cli
+
+    monkeypatch.setattr(cli, "_resolve_music_where", lambda w: "rooms")
+    res, obj = call(server, "POST", "/music", {"action": "move"}, AUTH)
+    assert res.status == 200, obj
+    assert player == [["pause"], ["play", NOW["uri"], "--where", "rooms"], ["stop"], ["seek", "0:00:07"]]
+    assert music._move_state() == {"to": "rooms", "state": "done", "error": None}
+
+
+def test_a_move_to_where_it_is_does_nothing(server, signed_in, audio_host, player, mover, monkeypatch):
+    from agent_media_core import cli
+
+    monkeypatch.setattr(cli, "_resolve_music_where", lambda w: "sasonica")
+    res, obj = call(server, "POST", "/music", {"action": "move"}, AUTH)
+    assert res.status == 200 and player == [] and "move" not in obj
+
+
+def test_the_radio_does_not_move_to_the_house(server, signed_in, audio_host, player, mover, monkeypatch):
+    from agent_media_core import cli, radio
+
+    monkeypatch.setattr(cli, "_resolve_music_where", lambda w: "rooms")
+    monkeypatch.setattr(radio, "read", lambda: {"on": True})
+    res, obj = call(server, "POST", "/music", {"action": "move"}, AUTH)
+    assert res.status == 409 and player == []
+
+
+def test_a_failed_move_goes_back(server, signed_in, audio_host, player, mover, monkeypatch):
+    from agent_media_core import cli
+
+    monkeypatch.setattr(cli, "_resolve_music_where", lambda w: "rooms")
+    ran: list = []
+    monkeypatch.setattr(music, "_run", lambda argv: (ran.append(argv), (argv[0] != "play", "no"))[1])
+    res, obj = call(server, "POST", "/music", {"action": "move"}, AUTH)
+    assert res.status == 200
+    assert ran == [["pause"], ["play", NOW["uri"], "--where", "rooms"], ["resume"]]
+    assert music._move_state()["state"] == "failed"
