@@ -23,10 +23,12 @@ from . import audio, auth, sessions, threads
 #: the popup's other keys (keep a pane muted, focus tmux, open URLs) are the
 #: desk's. `again` is a headset's play with nothing loaded on the phone: the
 #: last reply from where it was stopped, else the open thread's newest.
+#: `stop` ends the reply being heard (`media stop`) and never touches the
+#: turn, unlike POST /session/stop: full screen's speech rail (20 Oct 2026).
 _APP_SPEECH_ACTIONS = frozenset({
     "toggle", "skip-", "skip+", "para-", "para+", "jump-end",
     "prev", "replay", "replay-id", "again", "speed-", "speed+", "speed0", "vol-", "vol+", "mute",
-    "goto-sentence",
+    "goto-sentence", "stop",
 })
 
 #: The highest sentence index a request may name. Far past any reply (the

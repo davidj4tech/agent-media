@@ -25,6 +25,9 @@ def test_the_player_gets_the_popups_listening_keys():
     assert canvas.ctl_argv("speech", "replay", 1, "--id 3") == ["replay", "1"]
     # A transcript line's own turn, by history id — not an index, not clamped.
     assert canvas.ctl_argv("speech", "replay-id", 48213) == ["replay", "--id", "48213"]
+    # Stop ends the reply being heard, as `media stop`; it never touches the turn.
+    assert "stop" in canvas._APP_SPEECH_ACTIONS
+    assert canvas.ctl_argv("speech", "stop", 1) == ["stop"]
 
 
 def test_every_verb_the_canvas_sends_is_one_the_cli_accepts():

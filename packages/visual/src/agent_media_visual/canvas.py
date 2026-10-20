@@ -1521,6 +1521,9 @@ def ctl_argv(channel: str, action: str, arg: int,
             # reply where it was stopped, else the open thread's newest.
             "again": ["replay", "--again"],
             "jump-end": ["jump", "end"],
+            # The reply being heard, ended: what `media stop` does. Never
+            # the turn (that is POST /session/stop's).
+            "stop": ["stop"],
             "vol-": ["volume", "-5"],
             "vol+": ["volume", "5"],
             "mute": ["mute"],
