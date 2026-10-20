@@ -141,3 +141,17 @@ def test_a_later_part_skips_the_one_before(isolated, monkeypatch):
     assert S._speech_cut("s1", before, ask=True)          # part 1's read-out
     assert not S._speech_cut("s1", before, ask=False)     # the lead-in plays
     assert not S._speech_cut("s1", time.time() + 1, ask=True)  # part 2 plays
+
+
+def test_a_question_asked_again_is_read_again(isolated, monkeypatch):
+    """The card was cut short and the same question comes back as a new tool
+    call: it is read again, though its words were heard a moment ago (David,
+    20 Oct 2026). The same call fired twice is still read once."""
+    monkeypatch.setattr(H, "_dedup_seen", lambda state, text, ttl_seconds=300: True)
+    one = {"tool_name": "AskUserQuestion", "tool_input": CARD, "session_id": "s1", "tool_use_id": "t1"}
+    H._handle_pretooluse(one)
+    H._handle_pretooluse(one)
+    assert len(isolated) == 1
+    H._handle_pretooluse({**one, "tool_use_id": "t2"})
+    assert len(isolated) == 2
+    assert isolated[1].text == isolated[0].text

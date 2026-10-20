@@ -702,10 +702,16 @@ def _emit_ask(ask: str, payload: dict, lead: str = "", structure: list | None = 
     # its own it lets the question be read twice. Key on the raw `ask` (not
     # `msg`) so the two fires collapse even when one carries lead-in prose or a
     # different location label than the other.
-    if not _claim_once(ask):
+    # A question asked again is a new tool call with the same words — after
+    # the card was cut short by something said to the session, say — and is
+    # read again (David, 20 Oct 2026): with its tool call's id the claim is
+    # that call's, and the text check, which cannot tell the two apart, is
+    # left to a fire that has no id.
+    tool_use_id = str(payload.get("tool_use_id") or "")
+    if not _claim_once(f"{tool_use_id}\n{ask}" if tool_use_id else ask):
         return 0
     state = StateStore()
-    if _dedup_seen(state, msg):
+    if not tool_use_id and _dedup_seen(state, msg):
         return 0
     _write_stamp(_stamp_dir() / "notif-last", int(time.time()))
     priority = Priority.NORMAL if (
