@@ -838,8 +838,8 @@ ahead.
    server's; the mic's new chat comes through it, the list's + starts on the
    server in view, and a share's files go to the server of the chat they are
    sent to (a new one's chosen on the share screen).
-   **The Settings server picker, built 20 Oct 2026** (sasonica-app branch
-   `multi-base-9`, not merged; David: "yeah, let's do it"): with more than
+   **The Settings server picker, done 20 Oct 2026** (sasonica-app, merged;
+   David: "yeah, let's do it"): with more than
    one pairing, Settings has a strip of servers above its per-server
    sections, the current one chosen to begin with and the choice kept per
    device; on Settings and its pages (voice, coding agents, presets,
@@ -860,17 +860,77 @@ ahead.
    Organiser inbox and Just keep go to the server chosen on its strip, and
    each other server's `GET /me` lookup is learnt once a page load and kept
    on its pairing.
+   **The phone's features from every server** (David, 20 Oct 2026, picking
+   all four): (1) an agent's mic, photo and location asks of the phone from
+   every server, answered to the server that asked; (2) catch-ups and the
+   busy card from every server, labelled; (3) Home's hosts, digests and
+   sign-ins merged and labelled; (4) speech played here from any server, one
+   reply at a time. **(1)–(3) built 20 Oct 2026** (sasonica-app branch
+   `multi-base-10`, not merged, three commits): each other server's notifier
+   loop also asks for `&mic=1&phone=<kinds>&catchup=1&free=1`, its asks,
+   catch-ups and busy card posted with the server's name, tagged apart by
+   its key, Allow/Deny, the photo's upload, the location answer and the busy
+   card's buttons sent to that server with its token (PhoneAsk's and
+   BusyCardReceiver's server key, never the token in an intent), a mic ask
+   opening its thread or a new chat with `server=` so the app answers it
+   there and starts the chat there; Home's machines (each once), digests
+   (read, paged and replayed on their server) and sign-ins (Approve and Deny
+   to their server) are every server's, labelled, and follow Home's strip.
+   Notes stay the current server's.
+   **(4) Speech played here from any server — design, not built** (20 Oct
+   2026). *Today:* the phone's reply player (`MpvServer` under
+   `SpeechService`) is driven by one server: that server's speech broker
+   (`sinks/speech.py`, `claim_and_play`) sends mpv ops as frames down the
+   phone's one full stream (`speech_frames.py`: load, clear, stop, pos,
+   next, prev, seek, pause, mute, …, and the claim `am-claim` /
+   `am-owner`, "there is one server"), and reads the player back from the
+   phone's `POST /speech/state` reports. A second server sending its own
+   frames to the same player would replace the first one's playlist
+   mid-sentence and both brokers would read one player's state as their own.
+   *The design:* the phone keeps one owner at a time. (a) Each other
+   server's loop asks for `speech=frames` too; `SpeechFrames` keeps a
+   channel per server (its own `seq`, base and token) over the one player.
+   (b) The owner is the server whose frame started what is playing; while it
+   plays (or is paused mid-reply), another server's `load`/claim is not
+   applied: that server is told the phone is busy, through the busy signal
+   it already has (core `free.py`, §6.22 — a new reason, `other-server`,
+   alongside meeting, call and quiet), so its broker holds the reply as it
+   holds one in a meeting, and the busy card / catch-up already say "holding
+   1 for later". (c) When the owner's player goes idle (its last clip ended,
+   stopped, nothing queued), the phone clears the busy reason on the others;
+   each released server speaks what it held as it does after a meeting (one
+   at a time: the first to send a `load` becomes the owner, the rest are told
+   busy again), so two servers' replies never overlap. (d) Follow-along: the
+   app shows the owner's — `/speech/now` asked of the server that owns the
+   player (the phone knows, and tells the page), and the thread page's live
+   line is its thread's server's anyway. (e) Ducking: one player, one audio
+   focus, as now; music, the hand-off player and the book stay the current
+   server's channels. (f) Stop, pause, next and previous on the rail, the
+   lock screen and a headset go to the owner (previous moves within that
+   server's history only); Stop also releases the others. (g) Heard marks
+   stay each server's own: the owner marks what its player finished from the
+   reports it gets, as now, and a held reply is marked when it is spoken.
+   *Why not built:* it changes the server's broker and busy rules
+   (agent-media), the phone's frame handling and the page's follow-along at
+   once, and it can only be proved by listening on a phone, which these
+   slices may not do. *Decisions for David:* (i) one owner at a time with
+   the others held (above), or a reply marked Interrupt on another server
+   cutting in; (ii) whether a held reply is spoken as soon as the phone is
+   free, or waits as a catch-up as after a meeting; (iii) whether "speech
+   played here" and the voice are one phone setting for every server, or
+   per server in the Settings picker; (iv) whether previous on the rail
+   should step back into another server's last reply; (v) whether music and
+   the book player should also come from every server (one owner too), or
+   stay the current server's.
    **What is left of the first step** (20 Oct 2026; everything above is the
    app talking to each base itself, no base-to-base link):
    - *Smaller*: the notifier's loop for a moved server follows only once
      the app has learnt the new address (it asks no lookup itself); the
      several-servers proposal's roles split (You on <server>, the admin
      section) can follow on the picker.
-   - *The phone's other streams from other servers*: the notifier's loops
-     carry threads and alerts only; mic asks, an agent's asks of the phone,
-     notes, catch-ups, the busy card, speech played here and the widgets
-     are still the current server's alone. Which of them should follow
-     every server is David's to say (the proposal asks it of Speech here).
+   - *Speech played here from every server*: the design above, once David
+     has settled its decisions. Notes and the widgets stay the current
+     server's.
    - *Smaller*: search's terms highlight from the current server only; a
      thread shown once when two servers list it is an assumption, untested
      (no fixture shares a session).
