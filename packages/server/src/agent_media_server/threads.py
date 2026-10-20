@@ -441,13 +441,9 @@ def _writer_alive(ex: dict) -> bool:
         return True
     if pid <= 0:
         return True
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except OSError:
-        return True
-    return True
+    from agent_media_core import procinfo
+
+    return procinfo.alive(pid)
 
 
 def reading_unread(session: str, now: float | None = None) -> bool:

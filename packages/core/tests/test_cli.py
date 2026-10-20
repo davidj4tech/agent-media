@@ -153,6 +153,11 @@ def test_toggle_idle_replays_active_pane(monkeypatch, tmp_path):
     # Isolate the state store: the remote-speech branch consults the real
     # now_playing mirror, so a test run during live playback flips branches.
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    # The local branch. With the env file's speech on a tcp:// socket (the
+    # phone), cmd_toggle takes the remote one and asks that player whether
+    # it is idle — and pauses it when it is not: the run paused a real
+    # reply and then failed here for want of the replay.
+    monkeypatch.setattr(cli, "_remote_speech", lambda: False)
     replayed = {}
 
     def fake_replay(i):

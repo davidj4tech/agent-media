@@ -16,6 +16,9 @@ from agent_media_core import feed_debounce as dbn
 @pytest.fixture(autouse=True)
 def _configured(monkeypatch):
     monkeypatch.setenv("MEDIA_FEED_BASE_URL", "http://red5:8782")
+    # A host that keeps no Conversations library (the env file's
+    # MEDIA_CONVERSATIONS_LIBRARY=0) arms nothing; these tests are of one that does.
+    monkeypatch.delenv("MEDIA_CONVERSATIONS_LIBRARY", raising=False)
     monkeypatch.setattr(dbn.shutil, "which", lambda n: f"/usr/bin/{n}")
 
 

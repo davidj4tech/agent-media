@@ -48,6 +48,16 @@ def _no_live_rooms(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_inherited_dj_duck(monkeypatch):
+    """The env file switches DJ-style ducking on (MEDIA_DJ_DUCK=1, 20 Oct
+    2026), and something earlier in the suite loads that file into
+    os.environ: after_speech then waits the DJ's beat and the coordinator
+    tests' exact sleeps fail in a full run and pass alone. test_dj_duck
+    sets it itself."""
+    monkeypatch.delenv("MEDIA_DJ_DUCK", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_remote_say(monkeypatch):
     """Keep the suite on the local render path.
 
@@ -261,5 +271,12 @@ def _no_live_jobs_server(monkeypatch):
     `media doctor --fix`) asks this host's own canvas — by default
     127.0.0.1:8781 with the real ~/.amux token. On red5 that is the live
     server, and the job would pull and restart the real phone. Pointed
-    nowhere; a test that wants a server sets MEDIA_PHONE_JOBS_URL itself."""
+    nowhere; a test that wants a server sets MEDIA_PHONE_JOBS_URL itself.
+
+    MEDIA_PHONE_JOBS goes too: the env file's `=1` turns every phone-side
+    command (music_local.phone_argv, phone_player's ssh transport) into a
+    job for the phone's worker instead of ssh, so the ssh tests read config
+    rather than code — they failed here and passed in CI. A test of the job
+    route sets it itself."""
     monkeypatch.setenv("MEDIA_PHONE_JOBS_URL", "http://127.0.0.1:9")
+    monkeypatch.delenv("MEDIA_PHONE_JOBS", raising=False)

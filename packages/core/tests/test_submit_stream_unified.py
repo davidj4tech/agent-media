@@ -28,6 +28,9 @@ def _isolate(tmp_path, monkeypatch):
     monkeypatch.delenv("MEDIA_STREAM_CLIPS", raising=False)
     monkeypatch.setattr(S, "render_text", _render)
     monkeypatch.setattr(S, "_clip_duration", lambda _p: 2.0)
+    # Pane %7 is asked of tmux, and on a desk with a %7 its window's name
+    # wins over the thread's: the place a headless session has is none.
+    monkeypatch.setattr(S, "_source_place", lambda metadata, pane: ("", ""))
 
 
 def _render(text, outfile, **_):
