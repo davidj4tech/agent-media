@@ -9,8 +9,12 @@ thread already listening. The words are sent from the phone (`/reply`, §6.2);
 the TV just sees them arrive. David, 30 Sep 2026.
 
     ask(session, bearer)   → an open ask, the asking device's old one replaced
-    cancel(id, bearer)     → gone: the TV's Cancel, its words arrived, or the
-                             phone took it
+    cancel(id, bearer)     → gone: the TV's Cancel, or its words arrived
+    answer(id, session, bearer)
+                           → the phone took it (out of the `mic` frame), and,
+                             once its new chat has started, which chat that is
+    status(id, bearer)     → the ask as it stands, for the TV on a new chat to
+                             follow the phone into it (David, 20 Oct 2026)
     open_asks(exclude)     → every open, unexpired ask but the connecting
                              device's own — the `mic` frame's `asks`
     version()              → goes up whenever that set changes (an expiry
@@ -31,6 +35,9 @@ from . import auth, sessions
 #: How long an ask stays open (the TV's bar and the phone's notification
 #: give up at the same 90 s).
 TTL_S = 90
+#: How long a taken ask is kept from the take, for the TV to learn which chat
+#: it became: dictation, its countdown and the chat's start fit well inside.
+TAKEN_S = 180
 
 _LOCK = threading.Lock()
 #: id → ask.
@@ -85,7 +92,8 @@ def ask(session, bearer: str) -> tuple[bool, dict]:
     rec = {"id": secrets.token_hex(4), "device": name,
            "device_id": user.get("device") or None, "session": session,
            "title": _title_of(session) if session else None,
-           "at": round(now, 3), "expires": round(now + TTL_S, 3)}
+           "at": round(now, 3), "expires": round(now + TTL_S, 3),
+           "taken": False, "chat": None}
     global _VERSION
     with _LOCK:
         _prune(now)
@@ -100,7 +108,7 @@ def ask(session, bearer: str) -> tuple[bool, dict]:
 
 def cancel(ask_id, bearer: str) -> tuple[bool, dict]:
     """`POST /mic/cancel {"id"}` — any gated caller may: the TV that asked, or
-    the phone that took it."""
+    a phone from before `answer` (whose take was a cancel)."""
     user, err = auth.gate(bearer)
     if not user:
         return False, err
@@ -117,12 +125,61 @@ def cancel(ask_id, bearer: str) -> tuple[bool, dict]:
     return True, {"id": ask_id}
 
 
+def answer(ask_id, session, bearer: str) -> tuple[bool, dict]:
+    """`POST /mic/answer {"id", "session"?}` — the phone that took the ask.
+    Without `session`: taken (the tap) — out of every phone's `mic` frame, but
+    kept TAKEN_S for the TV to read. With it: the new chat the phone's words
+    started, which the TV on its new-chat screen then opens."""
+    user, err = auth.gate(bearer)
+    if not user:
+        return False, err
+    if session in (None, ""):
+        session = None
+    elif not isinstance(session, str) or not sessions._SESSION.fullmatch(session):
+        return False, {"status": 400, "error": "not a session id"}
+    global _VERSION
+    now = time.time()
+    with _LOCK:
+        pruned = _prune(now)
+        rec = _ASKS.get(ask_id) if isinstance(ask_id, str) else None
+        if rec is not None:
+            was_open = not rec["taken"]
+            rec["taken"] = True
+            rec["expires"] = round(max(rec["expires"], now + TAKEN_S), 3)
+            if session:
+                rec["chat"] = session
+            out = dict(rec)
+        if pruned or (rec is not None and was_open):
+            _VERSION += 1
+    if pruned or (rec is not None and was_open):
+        _bump()
+    if rec is None:
+        return False, {"status": 404, "error": "no such open ask"}
+    return True, {"ask": out}
+
+
+def status(ask_id, bearer: str) -> tuple[bool, dict]:
+    """`GET /mic/ask?id=` — the ask as it stands: `taken`, and `chat` once
+    the phone's new chat has started. 404 when gone (cancelled, expired, or
+    a server restart)."""
+    user, err = auth.gate(bearer)
+    if not user:
+        return False, err
+    with _LOCK:
+        _prune(time.time())
+        rec = _ASKS.get(ask_id) if isinstance(ask_id, str) else None
+        out = dict(rec) if rec else None
+    if out is None:
+        return False, {"status": 404, "error": "no such open ask"}
+    return True, {"ask": out}
+
+
 def open_asks(exclude_device: str | None = None) -> list[dict]:
     """Every open, unexpired ask, oldest first, but those made by
     `exclude_device` (a device id; None or "" excludes nothing)."""
     now = time.time()
     with _LOCK:
-        rows = [dict(a) for a in _ASKS.values() if a["expires"] > now
+        rows = [dict(a) for a in _ASKS.values() if a["expires"] > now and not a["taken"]
                 and not (exclude_device and a.get("device_id") == exclude_device)]
     return sorted(rows, key=lambda a: (a["at"], a["id"]))
 

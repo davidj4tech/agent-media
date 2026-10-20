@@ -119,3 +119,57 @@ def test_cross_origin_like_reply(server):
     assert res.status == 204
     assert res.getheader("Access-Control-Allow-Origin") == "*"
     assert call(server, "OPTIONS", "/mic/cancel")[0].status == 204
+
+
+# The TV following the phone into a new chat (David, 20 Oct 2026).
+
+NEW_CHAT = "22222222-3333-4444-8555-666666666666"
+
+
+def test_the_phone_takes_then_names_its_chat(server, tv, phone):
+    a = call(server, "POST", "/mic/ask", {}, tv[0])[1]["ask"]
+    assert a["taken"] is False and a["chat"] is None
+    v = mic.version()
+    res, obj = call(server, "POST", "/mic/answer", {"id": a["id"]}, phone[0])
+    assert res.status == 200, obj
+    assert obj["ask"]["taken"] is True and obj["ask"]["chat"] is None
+    assert mic.open_asks(phone[1]) == [], "taken: out of every phone's frame"
+    assert mic.version() == v + 1, "the take is a change the stream sends"
+    res, obj = call(server, "GET", f"/mic/ask?id={a['id']}", None, tv[0])
+    assert res.status == 200 and obj["ask"]["taken"] is True and obj["ask"]["chat"] is None
+    res, obj = call(server, "POST", "/mic/answer", {"id": a["id"], "session": NEW_CHAT}, phone[0])
+    assert res.status == 200 and obj["ask"]["chat"] == NEW_CHAT
+    assert mic.version() == v + 1, "naming the chat changes no phone's frame"
+    res, obj = call(server, "GET", f"/mic/ask?id={a['id']}", None, tv[0])
+    assert obj["ask"]["chat"] == NEW_CHAT
+
+
+def test_a_taken_ask_outlives_the_ask_s_90_s(server, tv, phone, monkeypatch):
+    a = call(server, "POST", "/mic/ask", {}, tv[0])[1]["ask"]
+    t0 = a["at"] + 80
+    monkeypatch.setattr(mic.time, "time", lambda: t0)
+    taken = call(server, "POST", "/mic/answer", {"id": a["id"]}, phone[0])[1]["ask"]
+    assert taken["expires"] == pytest.approx(t0 + mic.TAKEN_S)
+    monkeypatch.setattr(mic.time, "time", lambda: a["expires"] + 30)
+    res, obj = call(server, "POST", "/mic/answer", {"id": a["id"], "session": NEW_CHAT}, phone[0])
+    assert res.status == 200 and obj["ask"]["chat"] == NEW_CHAT
+    named = obj["ask"]
+    assert named["expires"] == pytest.approx(a["expires"] + 30 + mic.TAKEN_S), "time to read it"
+    monkeypatch.setattr(mic.time, "time", lambda: named["expires"] + 1)
+    assert call(server, "GET", f"/mic/ask?id={a['id']}", None, tv[0])[0].status == 404
+
+
+def test_answer_and_status_refusals(server, tv, phone, monkeypatch):
+    assert call(server, "POST", "/mic/answer", {"id": "abcd1234"}, phone[0])[0].status == 404
+    assert call(server, "GET", "/mic/ask?id=abcd1234", None, tv[0])[0].status == 404
+    assert call(server, "GET", "/mic/ask", None, tv[0])[0].status == 404
+    a = call(server, "POST", "/mic/ask", {}, tv[0])[1]["ask"]
+    res, obj = call(server, "POST", "/mic/answer", {"id": a["id"], "session": "nope"}, phone[0])
+    assert res.status == 400 and obj["ok"] is False
+    assert mic.open_asks(phone[1]) == [mic.open_asks()[0]], "a refused answer takes nothing"
+    call(server, "POST", "/mic/cancel", {"id": a["id"]}, tv[0])
+    assert call(server, "GET", f"/mic/ask?id={a['id']}", None, tv[0])[0].status == 404
+    monkeypatch.setattr(auth_abs, "abs_identity", lambda bearer: (None, 401))
+    assert call(server, "POST", "/mic/answer", {"id": a["id"]})[0].status == 401
+    assert call(server, "GET", f"/mic/ask?id={a['id']}")[0].status == 401
+    assert call(server, "OPTIONS", "/mic/answer")[0].status == 204

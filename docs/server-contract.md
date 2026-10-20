@@ -3725,7 +3725,8 @@ An **ask**:
 ```
 {"id": "3f9a01c2", "device": "Living room TV", "device_id": "d_1a2b3c4d5e6f",
  "session": "0f1e…" | null, "title": "Sasonica web" | null,
- "at": 1790053383.513, "expires": 1790053473.513}
+ "at": 1790053383.513, "expires": 1790053473.513,
+ "taken": false, "chat": null}
 ```
 
 - `id`: 8 hex. `device` / `device_id`: the asking device's name and id (§9);
@@ -3755,6 +3756,28 @@ took the ask. Any gated caller may cancel any ask.
 
 - → `{"ok": true, "id"}` · 404 `no such open ask` (unknown, cancelled or
   expired). Also wakes the stream.
+
+#### `POST /mic/answer {"id", "session"?}` — the phone that took it (20 Oct 2026)
+
+What the phone sends instead of a cancel, so the TV can follow it into a new
+chat (David, 20 Oct 2026: "I wonder how it would go if it did follow it").
+
+- Without `session` — the tap: the ask is **taken**. It leaves every phone's
+  `mic` frame (their notifications go), but is kept `TAKEN_S` (180 s) from
+  now for the TV to read.
+- With `session` — the new chat the phone's words started (the `/ask` that
+  answered a new-chat ask): kept as `chat`, and the 180 s start again.
+- → `{"ok": true, "ask": {…, "taken": true, "chat": "…" | null}}` · 400 `not a
+  session id` · 404 `no such open ask` · 401/403 as `/reply`.
+
+#### `GET /mic/ask?id=` — the ask as it stands (20 Oct 2026)
+
+The TV on its new-chat screen, while its bar is up, reads this every couple of
+seconds; once `chat` is set it opens that thread. An ask carries `taken`
+(false until a phone takes it) and `chat` (null until a new chat started).
+→ `{"ok": true, "ask": {…}}` · 404 when gone (cancelled, expired, a restart) ·
+401/403 as `/reply`. In a thread the TV needs none of this: the words arrive
+there.
 
 Expiry is noticed by the stream's watcher on its tick (≤ 3 s late), and a
 `mic` frame without the ask follows. Both routes are in `CORS_PATHS`.

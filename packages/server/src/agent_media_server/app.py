@@ -252,7 +252,9 @@ device gets its token):
   GET  /alerts[?open=1] → open alerts, then recent digests and clears
   POST /alerts/ack {"id"} → seen it: no re-notify, nothing cleared
   POST /mic/ask   {"session"?} → a TV with no mic asks the phones to speak
-                  for it; POST /mic/cancel {"id"} → the ask is gone. Phones on
+                  for it; POST /mic/cancel {"id"} → the ask is gone; POST
+                  /mic/answer {"id", "session"?} → a phone took it (and the
+                  chat it started); GET /mic/ask?id= → as it stands. Phones on
                   /sessions/events?mic=1 get a `mic` frame (mic.py, §6.20)
   POST /phone/ask {kind, why, session?} (host token) → an agent asks the
                   phone for a photo, …; GET /phone/ask?id=&wait= its outcome;
@@ -328,7 +330,7 @@ CORS_PATHS = frozenset({
     "/contacts/google/signout", "/contacts/labels", "/contacts/suggestions",
     "/contacts/import", "/contacts/timeline/backfill", "/bridges",
     "/mail/message", "/mail/attachment", "/mail/say",
-    "/mic/ask", "/mic/cancel",
+    "/mic/ask", "/mic/cancel", "/mic/answer",
     "/phone/ask", "/phone/answer", "/phone/cancel",
     "/notes", "/notes/clear",
     "/speech/state", "/music/state", "/handoff/state", "/book/state",
@@ -1306,6 +1308,14 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         kinds = ",".join(parse_qs(query).get("kinds") or []).split(",")
         return phone_jobs.serve(h, auth.jobs_device_id(_bearer(h)),
                                 [k.strip() for k in kinds if k.strip()])
+    if path == "/mic/ask":
+        # The TV on a new chat, following the phone into the chat its words
+        # started (§6.20, mic.status; David, 20 Oct 2026).
+        from . import mic
+
+        ok, detail = mic.status((parse_qs(query).get("id") or [""])[0], _bearer(h))
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+        return True
     if path == "/phone/ask":
         # An agent's tool waiting on the phone's answer (§6.21): the host's
         # token, a long poll of up to a minute.
@@ -2384,7 +2394,7 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
             print(f"stop: refused ({detail.get('error')}) for "
                   f"{str(body.get('session'))[:8]}", file=sys.stderr, flush=True)
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
-    elif path in ("/mic/ask", "/mic/cancel"):
+    elif path in ("/mic/ask", "/mic/cancel", "/mic/answer"):
         # The phone as the TV's mic (server-contract.md §6.20, mic.py; David,
         # 30 Sep 2026): a TV with no mic asks, every phone on the session
         # stream with `?mic=1` is told at once; the TV's Cancel, its words
@@ -2396,6 +2406,8 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
             body = {}
         if path == "/mic/ask":
             ok, detail = mic.ask(body.get("session"), _bearer(h))
+        elif path == "/mic/answer":
+            ok, detail = mic.answer(body.get("id"), body.get("session"), _bearer(h))
         else:
             ok, detail = mic.cancel(body.get("id"), _bearer(h))
         if ok and path == "/mic/ask":
