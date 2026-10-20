@@ -226,6 +226,16 @@ class Coordinator:
         self._last_line = line
         self._reply_text(line)
 
+    def _duck_cue(self, cue: str) -> None:
+        """Carry the DJ cue to the broker for a player that fades itself
+        (route/dj.py, Sasonica's DjCue); empty clears it. Same worker as the
+        flags above."""
+        speech_target = Target(name=audio_targets.speech_default())
+        try:
+            self._flag_writer.submit(_speech.set_duck_cue, cue, speech_target)
+        except RuntimeError:  # pragma: no cover — executor shut down
+            pass
+
     def _priority(self, priority: str) -> None:
         """Carry this reply's priority to the broker, for the phone to read.
 
@@ -559,6 +569,9 @@ class Coordinator:
             # music would — a duck at its depth; the stop, when the cue is one,
             # is the player's to make below.
             cue = self._cue(ContentType.MUSIC)
+            # And the phone's own player, which fades itself: told now, before
+            # its speech player starts (the app reads it as the reply sounds).
+            self._duck_cue(cue.wire())
             rooms_fade_ms = cue.fade_down_ms
             if rooms_level is None and cue.strategy == InterruptionStrategy.DUCK:
                 rooms_level = cue.level
@@ -796,6 +809,12 @@ class Coordinator:
         except Exception:  # noqa: BLE001
             pass
         owner, fades = self._volume_owner(claim=True)
+        if getattr(owner, "self_ducks", False):
+            # It fades and stops itself from the cue (_duck_cue); a pause from
+            # here would cut it off before its fade.
+            extras["strategy"] = "duck"
+            extras["duck_level"] = level
+            return True
         try:
             if fades and cue.fade_down_ms > 0:
                 dj.fade(lambda v: owner.duck(self.music_target, v),
@@ -869,6 +888,8 @@ class Coordinator:
         self._last_line = ""
         # A DJ lets the last word land before the music comes back: a beat of
         # quiet, then the rooms and the player fade up together.
+        if dj.enabled():
+            self._duck_cue("")
         np_now = self.state.get_now_playing("music") if dj.enabled() else None
         interruption_now = ((np_now or {}).get("extras") or {}).get("interruption") or {}
         rooms_thread: Optional[threading.Thread] = None

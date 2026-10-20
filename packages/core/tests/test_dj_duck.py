@@ -233,3 +233,40 @@ def test_the_rooms_fade_together(state, monkeypatch):
     assert clients == {"hpo-music": 100, "p8a-music": 80}
     assert any(10 < v < 80 for cid, v in calls if cid == "p8a-music")
     assert state.get_rooms_duck() is None
+
+
+# ---- a player that fades itself (Sasonica's DjCue) -----------------------
+
+def test_the_cue_on_the_wire():
+    assert dj.plan_cue(CT.MUSIC, est_s=2).wire() == (
+        "level=0.25;down=80;up=120;beat=0;stop=0")
+    assert dj.plan_cue(CT.MUSIC, ask=True).wire().endswith("stop=1")
+    assert dj.plan_cue(CT.MUSIC, ask=True).wire().startswith("level=0.00;")
+
+
+def test_the_cue_is_sent_before_the_reply_and_cleared_after(state, monkeypatch):
+    sent = []
+    monkeypatch.setattr(coord_mod._speech, "set_duck_cue",
+                        lambda cue, target: sent.append(cue))
+    music = FakeMusic(volume=100)
+    c = _coord(state, music)
+    c.before_speech(est_s=2)
+    c._flag_writer.submit(lambda: None).result()
+    assert sent == ["level=0.25;down=80;up=120;beat=0;stop=0"]
+    c.after_speech()
+    c._flag_writer.submit(lambda: None).result()
+    assert sent[-1] == ""
+
+
+def test_a_player_that_fades_itself_is_left_alone(state, monkeypatch):
+    monkeypatch.setattr(coord_mod._speech, "set_duck_cue", lambda cue, target: None)
+    music = FakeMusic(volume=100)
+    music.fades = False
+    music.self_ducks = True
+    c = _coord(state, music)
+    c.before_speech(ask=True, est_s=6)
+    # Neither paused nor ducked from here: the app fades and stops itself.
+    assert not music.paused and music.vols == []
+    c.after_speech()
+    assert not music.events
+    assert music.volume == 100
