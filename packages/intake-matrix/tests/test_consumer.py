@@ -126,23 +126,28 @@ def test_a_held_voice_note_is_kept_unplayed(said, monkeypatch):
     assert row["extras"]["session"] == intake.matrix.thread_of(ROOM)
 
 
-@pytest.mark.parametrize("level,held,how,want", [
-    ("quiet", False, "default", "hold"),
-    ("quiet", False, "priority", "toast"),
-    ("normal", False, "quiet", "hold"),
-    ("normal", False, "default", "play"),
-    ("normal", True, "default", "toast"),
+@pytest.mark.parametrize("own,person,held,want", [
+    (None, None, False, "hold"),          # no level of its own, no person's: quiet
+    (None, "auto", False, "play"),        # the person's level reaches their room
+    (None, "normal", True, "toast"),
+    ("normal", "quiet", False, "play"),   # the room's own level wins
+    ("quiet", "interrupt", False, "hold"),
 ])
-def test_a_persons_setting_turns_the_decision(monkeypatch, level, held, how, want):
-    """The room's speech level decides, then the sender's own setting
-    (agent_media_core.contact_notify) turns it."""
-    from agent_media_core import contact_notify, speak_priority
+def test_a_persons_level_is_their_rooms(monkeypatch, tmp_path, own, person, held, want):
+    """The room's own level, else its person's, else quiet (the server's
+    fallback, contacts_level.py) decides (David, 20 Oct 2026: one scale)."""
+    from agent_media_core import speak_priority
     from agent_media_core.intake import toast
 
-    monkeypatch.setattr(speak_priority, "level_of", lambda thread: level)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
     monkeypatch.setattr(toast, "should_hold", lambda thread: held)
-    contact_notify.set_resolver(lambda key, ch: how if (key, ch) == ("t1", "chats") else None)
+    if own:
+        speak_priority.set_level("t1", own, keep=True)
+    speak_priority.set_fallback(
+        lambda s: ((person, "person") if person else ("quiet", "room")) if s == "t1" else None)
     try:
         assert intake._decide("t1") == want
+        assert speak_priority.source_of("t1") == ("own" if own else
+                                                  "person" if person else "room")
     finally:
-        contact_notify.set_resolver(None)
+        speak_priority.set_fallback(None)

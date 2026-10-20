@@ -584,27 +584,37 @@ def envelope(r: Room, *, limit: int, before: str = "", around: str = "",
 
 
 def _seed_quiet(threads: list[str]) -> None:
-    """A room starts at the quiet speech level (David, 9 Oct 2026): every
-    message is kept with a Play, nothing read out in the house. Once per
-    room (`seeded-quiet.json`), so a level chosen later — even the default,
-    which clears the room's own — is never put back."""
+    """Retired (20 Oct 2026): a room starts quiet as its fallback level now
+    (contacts_level.py: its person's level, else quiet), not as a level of
+    its own written once, so a person's level reaches their rooms. Kept as
+    a no-op for the callers."""
+    return None
+
+
+def unseed_quiet() -> None:
+    """Once: the levels the old seed wrote become the rooms' fallback. A
+    room still at the seeded quiet loses its own level (it falls back to its
+    person's, else quiet, the same until a person is given one); a seeded
+    room David set to the default kept the default as it was then, as its
+    own, so it does not turn quiet. `seeded-quiet.json` is renamed when done."""
     from agent_media_core import speak_priority
 
     path = matrix.state_dir() / "seeded-quiet.json"
     try:
-        seeded = set(json.loads(path.read_text()))
+        seeded = json.loads(path.read_text())
     except (OSError, ValueError):
-        seeded = set()
-    new = [t for t in threads if t not in seeded]
-    if not new:
         return
-    for t in new:
-        if t not in speak_priority.levels():
-            speak_priority.set_level(t, "quiet")
+    own = speak_priority.levels()
+    was_default = speak_priority.default_level()
+    for t in seeded if isinstance(seeded, list) else []:
+        if own.get(t) == "quiet":
+            speak_priority.clear_level(t)
+        elif t not in own:
+            speak_priority.set_level(t, was_default, keep=True)
     try:
-        path.write_text(json.dumps(sorted(seeded | set(new))))
+        path.replace(path.with_name("seeded-quiet.done.json"))
     except OSError as e:
-        log.warning("matrix: seeded list not saved: %s", e)
+        log.warning("matrix: seeded list not retired: %s", e)
 
 
 def _name_of(room_id: str, user: str) -> str:
@@ -730,7 +740,10 @@ def start() -> None:
     for room_id in config.rooms:
         r = Room(room_id, config, owner)
         _ROOMS[r.thread] = r
-    _seed_quiet(list(_ROOMS))
+    # A room with no level of its own: its person's, else quiet (contacts_level.py).
+    from . import contacts_level
+
+    contacts_level.register()
     if intake is not None:
         on_event, _stop = intake.consumer(config, name_of=_name_of)
         s.subscribe(on_event)

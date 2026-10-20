@@ -200,9 +200,10 @@ device gets its token):
   GET  /contacts/<id>/mail[?limit=] → their newest mail (from, subject,
                   date, a link to the message), live from notmuch
                   (contacts_mail.py, §6.25)
-  POST /contacts/<id>/notify {"channel", "mode"} → their own notification
-                  setting, chats or email: default, priority or quiet
-                  (contacts_notify.py, §6.25)
+  POST /contacts/<id>/level {"level"} → their speech level, default or a
+                  thread level, the level of their chats and mail
+                  (contacts_level.py, §6.25); /notify {"channel", "mode"},
+                  the older form, is read as one
   GET  /mail/message?id=[&images=1][&format=html] → one email from notmuch:
                   headers, a body made safe, its attachments (mail_read.py)
   GET  /mail/attachment?id=&part= → one attachment's bytes
@@ -398,8 +399,8 @@ CONTACT_MAIL = re.compile(r"/contacts/([0-9a-f-]{36})/mail")
 ROOM_AVATAR = re.compile(r"/rooms/([0-9a-f-]{36})/avatar")
 # An edit from the card, written back to Google (contacts_edit.py, §6.25).
 CONTACT_EDIT = re.compile(r"/contacts/([0-9a-f-]{36})/edit")
-# Their own notification setting (contacts_notify.py, §6.25).
-CONTACT_NOTIFY = re.compile(r"/contacts/([0-9a-f-]{36})/notify")
+# Their speech level (contacts_level.py, §6.25); /notify is the older form.
+CONTACT_LEVEL = re.compile(r"/contacts/([0-9a-f-]{36})/(level|notify)")
 # One search for them on a network, and the pick (contacts_find.py, §6.25).
 CONTACT_FIND = re.compile(r"/contacts/([0-9a-f-]{36})/find")
 # A bridge's icon, its sign-ins and signing out (bridges.py, §6.26).
@@ -422,7 +423,7 @@ def cors_path(path: str) -> bool:
                                                         CONTACT_TIMELINE, CONTACT_NOTES,
                                                         CONTACT_SAME, CONTACT_PHOTO, CONTACT_MAIL,
                                                         CONTACT_FIND, ROOM_AVATAR,
-                                                        CONTACT_EDIT, CONTACT_NOTIFY,
+                                                        CONTACT_EDIT, CONTACT_LEVEL,
                                                         *BRIDGE_ROUTES))
 
 
@@ -783,12 +784,14 @@ def _contact_edit(h: BaseHTTPRequestHandler, cid: str) -> None:
         _json(h, 200, got)
 
 
-def _contact_notify(h: BaseHTTPRequestHandler, cid: str) -> None:
-    """`POST /contacts/<id>/notify {"channel", "mode"}` (§6.25): their own
-    notification setting in the caller's book; the card's `notify` after.
-    Gated as the card is; 400 for a channel or mode not known, 404 for no
-    such contact."""
-    from . import contacts_notify
+def _contact_level(h: BaseHTTPRequestHandler, cid: str, older: bool) -> None:
+    """`POST /contacts/<id>/level {"level"}` (§6.25): their speech level in
+    the caller's book, "default" or a thread level; the card's `level`
+    after. `/notify {"channel", "mode"}` (an app of 20 Oct 2026) is read as
+    one: its chats mode priority as auto, quiet as quiet, default as default;
+    its email mode the same. Gated as the card is; 400 for a level not known,
+    404 for no such contact."""
+    from . import contacts_level
 
     user, err = auth.gate(_bearer(h))
     if not user:
@@ -796,15 +799,18 @@ def _contact_notify(h: BaseHTTPRequestHandler, cid: str) -> None:
         return
     body = _read_json(h)
     body = body if isinstance(body, dict) else {}
+    level = str(body.get("level") or "")
+    if older:
+        mode = str(body.get("mode") or "")
+        level = contacts_level.FROM_NOTIFY.get(mode) or ("default" if mode == "default" else "")
     try:
-        got = contacts_notify.set_mode(cid, str(body.get("channel") or ""),
-                                       str(body.get("mode") or ""))
+        got = contacts_level.set_level(cid, level)
     except KeyError:
         _json(h, 404, {"ok": False, "error": "no such contact"})
     except ValueError as e:
         _json(h, 400, {"ok": False, "error": str(e)})
     else:
-        _json(h, 200, {"ok": True, "notify": got})
+        _json(h, 200, {"ok": True, "level": got})
 
 
 def _mail_gate(h: BaseHTTPRequestHandler, bearer: str) -> bool:
@@ -919,7 +925,8 @@ def _mail_say(h: BaseHTTPRequestHandler) -> None:
         _json(h, 422, {"ok": False, "error": "nothing in that email to read"})
         return
     try:
-        p = subprocess.Popen([sys.executable, "-m", "agent_media_core.cli", "say"],
+        # --private: played, never kept in speech history (David, 20 Oct 2026).
+        p = subprocess.Popen([sys.executable, "-m", "agent_media_core.cli", "say", "--private"],
                              stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL, start_new_session=True)
         p.stdin.write(text.encode())
@@ -2169,8 +2176,9 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         _contact_find(h, CONTACT_FIND.fullmatch(path).group(1))
     elif CONTACT_EDIT.fullmatch(path):
         _contact_edit(h, CONTACT_EDIT.fullmatch(path).group(1))
-    elif CONTACT_NOTIFY.fullmatch(path):
-        _contact_notify(h, CONTACT_NOTIFY.fullmatch(path).group(1))
+    elif CONTACT_LEVEL.fullmatch(path):
+        m = CONTACT_LEVEL.fullmatch(path)
+        _contact_level(h, m.group(1), m.group(2) == "notify")
     elif path == "/mail/say":
         _mail_say(h)
     elif path in ("/contacts/google/login", "/contacts/google/finish",

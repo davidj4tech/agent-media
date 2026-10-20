@@ -1382,6 +1382,29 @@ def _speech_events_path() -> Path:
     return state / "agent-media" / "speech-events.jsonl"
 
 
+def _forget_clips(uris) -> None:
+    """Remove a private reading's rendered clips once played, with the words
+    and markers kept beside each (`<stem>.txt`, `<stem>.tts`): rendered speech
+    is otherwise kept until the audio pruner clears it."""
+    for u in uris or []:
+        try:
+            p = Path(str(u))
+        except (TypeError, ValueError):
+            continue
+        if not p.name:
+            continue
+        for f in {p, *p.parent.glob(p.stem + ".*")} if p.parent.is_dir() else {p}:
+            try:
+                f.unlink()
+            except OSError:
+                pass
+
+
+def _private(event) -> bool:
+    """A reading played and never kept (`media say --private`)."""
+    return bool((getattr(event, "metadata", None) or {}).get("private"))
+
+
 def _speech_event(kind: str, **fields) -> None:
     """Append a start/end breadcrumb to the speech event log.
 
@@ -1392,6 +1415,8 @@ def _speech_event(kind: str, **fields) -> None:
     without opening the sqlite store. Best-effort throughout: speech must never
     fail because its diary could not be written.
     """
+    if fields.pop("private", None) and fields.get("text"):
+        fields["text"] = "(private)"    # an email read aloud: never kept in words
     try:
         path = _speech_events_path()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -3665,6 +3690,7 @@ def _record_silenced(state: StateStore, event: Event, target: Target,
             source=event.source.value,
             text=text,
             extras={"silenced": reason, "alert": True,
+                    **({"private": True} if (event.metadata or {}).get("private") else {}),
                     **({"busy_why": (verdict or {}).get("why")}
                        if reason == "busy" else {}),
                     **{k: v for k, v in (event.metadata or {}).items()
@@ -3810,7 +3836,7 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
         duck_timer = threading.Timer(_duck_grace_s(), coordinator.duck_music_now)
         duck_timer.daemon = True
         duck_timer.start()
-        _speech_event("start", text=text[:400], session=session,
+        _speech_event("start", text=text[:400], session=session, private=_private(event),
                       source=event.source.value, target="remote-say")
         # The remote renders and plays; nothing is on this host to observe. Say
         # so explicitly, or the popup and `speech now-playing` sit blank for the
@@ -3889,7 +3915,7 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
                 duck_timer.cancel()
             follower.stop()
             coordinator.after_speech()
-            _speech_event("end", text=text[:160], session=session,
+            _speech_event("end", text=text[:160], session=session, private=_private(event),
                           source=event.source.value, target="remote-say")
             # History too: replay can't work (the audio never existed here),
             # but the transcript is what `speech history` and the clip browser
@@ -3907,6 +3933,8 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
                     text=text,
                     extras={"kind": "remote-say", "cmd": cmd[:200],
                             **source_extras,
+                            **({"private": True} if (event.metadata or {}).get("private")
+                               else {}),
                             # The transcript must not claim what the room
                             # didn't hear; the clip browser reads this too.
                             **({"failed": failure} if failure else {}),
@@ -4634,6 +4662,9 @@ def _submit_event(event: Event,
                 # thread list reads (StateStore.left_paused).
                 extras["stopped_at"] = {"sentence": left_paused_at,
                                         "at": time.time(), "paused": True}
+        if (event.metadata or {}).get("private"):
+            extras["private"] = True        # played, never kept (StateStore.add_history)
+            _forget_clips(extras.get("clip_uris") or [str(first_clip)])
         row = state.add_history(
             sink="speech",
             uri=str(first_clip),
@@ -4880,6 +4911,7 @@ def _submit_event(event: Event,
             # broker. Its "end" twin is in the finally below, so every exit
             # (finished, superseded, yielded-then-done, error) closes the pair.
             _speech_event("start", text=_text()[:400], session=source_session,
+                          private=_private(event),
                           pane=source_pane, source=event.source.value,
                           target=target.name)
             mute_watcher = _MuteDuckWatcher(sink, target, coordinator)
@@ -5688,6 +5720,7 @@ def _submit_event(event: Event,
             _before_thread.join()
             coordinator.after_speech()
             _speech_event("end", text=_text()[:160], session=source_session,
+                          private=_private(event),
                           pane=source_pane, source=event.source.value,
                           target=target.name, played=bool(played_any))
             state.clear_now_playing("speech")

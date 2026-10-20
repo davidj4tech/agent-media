@@ -5408,6 +5408,11 @@ def cmd_say(a) -> int:
         # explicit because the producer is the only party that knows without
         # flattering itself (see sinks.speech.set_priority).
         metadata["alert"] = True
+    if getattr(a, "private", False):
+        # Played and never kept: no history row, so recent, history, catch-up
+        # and replay never list it (an email read aloud on a tap; David,
+        # 20 Oct 2026). StateStore.add_history drops it.
+        metadata["private"] = True
     if getattr(a, "supersede", False):
         # supersede implies urgent: barge in AND drop the same-session messages
         # this one interrupts/precedes, rather than letting them resume.
@@ -9560,6 +9565,9 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("--key", help="with --hold: the history row's key, for a "
                                  "caller that finds the row again (the alert store)")
     s.add_argument("--label", help="with --hold: the toast's name for it")
+    s.add_argument("--private", action="store_true",
+                   help="play it but keep no history row: never in recent, history, "
+                        "catch-up or replay (an email read aloud)")
     s.add_argument("--digest", help="with --hold: the alert-store digest id it reads out")
     s.set_defaults(func=cmd_say)
 

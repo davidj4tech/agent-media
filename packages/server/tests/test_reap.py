@@ -648,7 +648,7 @@ def test_priority_toggles_and_shows_on_the_rows(server, shelf, signed_in, typed)
     res, obj = call(server, "POST", "/session/priority",
                     {"session": SID2, "priority": True}, AUTH)
     assert res.status == 200 and obj == {"ok": True, "session": SID2, "level": "auto",
-                                         "own": True, "priority": True}
+                                         "own": True, "from": "own", "priority": True}
     _, targets = call(server, "GET", "/targets", headers=AUTH)
     by = {r["session"]: r for r in targets["sessions"]}
     assert by[SID2]["priority"] is True and by[SID]["priority"] is False
@@ -657,7 +657,7 @@ def test_priority_toggles_and_shows_on_the_rows(server, shelf, signed_in, typed)
     res, obj = call(server, "POST", "/session/priority",
                     {"session": SID2, "priority": False}, AUTH)
     assert obj == {"ok": True, "session": SID2, "level": "normal", "own": False,
-                   "priority": False}
+                   "from": "default", "priority": False}
     assert not speak_priority.is_priority(SID2)
     res, obj = call(server, "POST", "/session/priority", {"session": "nope"}, AUTH)
     assert res.status == 400
@@ -695,7 +695,7 @@ def test_speech_level_is_set_and_shows_on_the_rows(server, shelf, signed_in, typ
     for level, prio in (("interrupt", True), ("quiet", False), ("pocket", False), ("auto", True)):
         res, obj = call(server, "POST", "/session/priority", {"session": SID2, "level": level}, AUTH)
         assert res.status == 200 and obj == {"ok": True, "session": SID2, "level": level,
-                                             "own": True, "priority": prio}
+                                             "own": True, "from": "own", "priority": prio}
         _, targets = call(server, "GET", "/targets", headers=AUTH)
         row = next(r for r in targets["sessions"] if r["session"] == SID2)
         assert row["speech"] == level and row["priority"] is prio
@@ -733,7 +733,8 @@ def test_speech_default_is_every_thread_without_its_own(server, shelf, signed_in
     assert own[SID] is False and own[SID2] is True
     # "default" clears its own: it follows the default, whatever that is.
     res, obj = call(server, "POST", "/session/priority", {"session": SID2, "level": "default"}, AUTH)
-    assert obj == {"ok": True, "session": SID2, "level": "quiet", "own": False, "priority": False}
+    assert obj == {"ok": True, "session": SID2, "level": "quiet", "own": False,
+                   "from": "default", "priority": False}
     call(server, "POST", "/session/priority", {"session": SID2, "level": "interrupt"}, AUTH)
     # Normal is now a level of its own; picking the default clears it.
     call(server, "POST", "/session/priority", {"session": SID, "level": "normal"}, AUTH)

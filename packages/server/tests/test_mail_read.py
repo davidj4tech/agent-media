@@ -278,7 +278,7 @@ def test_say_on_a_tap(server, signed_in, mail, monkeypatch):
         """`media say` recorded, never started; notmuch runs for real."""
 
         def __new__(cls, args, **kw):
-            if list(args)[-1] != "say":
+            if "say" not in list(args)[-2:]:
                 return real(args, **kw)
             return super().__new__(cls)
 
@@ -295,7 +295,8 @@ def test_say_on_a_tap(server, signed_in, mail, monkeypatch):
     monkeypatch.setattr(subprocess, "Popen", Child)
     res, obj = call(server, "POST", "/mail/say", {"id": mid}, headers=AUTH)
     assert res.status == 200 and obj["chars"] > 0
-    assert said[0][-1] == "say" and said[1].startswith("From Lionel Smith.")
+    # Played, never kept in speech history (David, 20 Oct 2026).
+    assert said[0][-2:] == ["say", "--private"] and said[1].startswith("From Lionel Smith.")
     res, _ = call(server, "POST", "/mail/say", {"id": ""}, headers=AUTH)
     assert res.status == 400
 

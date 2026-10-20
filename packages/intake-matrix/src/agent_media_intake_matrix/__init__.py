@@ -64,21 +64,19 @@ def _decide(thread: str) -> str:
     """What the room's speech level (speak_priority.py) says to do with a
     message now: "play", "hold" (archived unplayed with a Play: quiet), or
     "toast" (held, with the desk's toast: normal or pocket while nobody has
-    the room open). The same rule as an agent's reply (hook_claude_code)."""
-    from agent_media_core import contact_notify
+    the room open). The same rule as an agent's reply (hook_claude_code).
+    A room with no level of its own has its person's, else quiet (the
+    server's fallback, contacts_level.py), so a person's level set on their
+    card decides here too."""
     from agent_media_core.intake import toast
     from agent_media_core.speak_priority import HOLDS, level_of
 
     level = level_of(thread)
     if level == "quiet":
-        decision = "hold"
-    elif level in HOLDS and toast.should_hold(thread):
-        decision = "toast"
-    else:
-        decision = "play"
-    # The person's own setting (contact_notify.py): quiet holds it, priority
-    # makes a held one a notice.
-    return contact_notify.adjust(decision, contact_notify.mode(thread, "chats"))
+        return "hold"
+    if level in HOLDS and toast.should_hold(thread):
+        return "toast"
+    return "play"
 
 
 def _handle_voice_message(*, mxc: str, homeserver: str, token: str,

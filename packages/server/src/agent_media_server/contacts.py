@@ -410,9 +410,8 @@ CREATE TABLE IF NOT EXISTS aliases (
 CREATE TABLE IF NOT EXISTS found (
   sid TEXT PRIMARY KEY, contact TEXT NOT NULL, network TEXT NOT NULL,
   card TEXT NOT NULL, meta TEXT NOT NULL, at REAL);
-CREATE TABLE IF NOT EXISTS notify (
-  contact TEXT NOT NULL, channel TEXT NOT NULL, mode TEXT NOT NULL, at REAL,
-  PRIMARY KEY (contact, channel));
+CREATE TABLE IF NOT EXISTS person_level (
+  contact TEXT PRIMARY KEY, level TEXT NOT NULL, at REAL);
 CREATE TABLE IF NOT EXISTS photo_src (
   kind TEXT NOT NULL, sid TEXT NOT NULL, ref TEXT NOT NULL DEFAULT '',
   file TEXT NOT NULL DEFAULT '', ctype TEXT NOT NULL DEFAULT '',
@@ -423,8 +422,10 @@ CREATE TABLE IF NOT EXISTS photo_src (
 #: the old chat addresses (`aliases`), which outlive their sources, and the
 #: pictures fetched (`photo_src`, contacts_photos.py), costly to fetch again,
 #: and who David picked from a search on a network (`found`, contacts_find.py),
-#: and each person's notification setting (`notify`, contacts_notify.py).
-_KEPT = {"overrides", "drupal_links", "merges", "aliases", "photo_src", "found", "notify"}
+#: and each person's speech level (`person_level`, contacts_level.py; `notify`
+#: is its forerunner, kept until moved into it).
+_KEPT = {"overrides", "drupal_links", "merges", "aliases", "photo_src", "found",
+         "person_level", "notify"}
 #: Bump when the cards are made differently from the same records: the
 #: next sync rebuilds them (records kept, nothing read again).
 CARDS_VERSION = "gateways-1"
@@ -453,6 +454,10 @@ def _connect(create: bool = True) -> sqlite3.Connection | None:
         for t in have - _KEPT:
             conn.execute(f"DROP TABLE IF EXISTS {t}")
     conn.executescript(_SCHEMA)
+    if "notify" in have:      # the card's first setting, moved into person_level once
+        from . import contacts_level
+
+        contacts_level.migrate_notify(conn)
     conn.execute("INSERT OR REPLACE INTO meta (k, v) VALUES ('schema', ?)", (SCHEMA_VERSION,))
     try:
         os.chmod(path, 0o600)
@@ -2021,7 +2026,7 @@ def _card_mail(c: dict) -> dict | None:
 def card(cid: str) -> dict | None:
     """`GET /contacts/<id>`'s contact: the merged card, its sources, and the
     rooms that are this person's."""
-    from . import contacts_edit, contacts_find, contacts_notify, contacts_photos
+    from . import contacts_edit, contacts_find, contacts_level, contacts_photos
 
     conn = _connect(create=False)
     if conn is None:
@@ -2030,7 +2035,7 @@ def card(cid: str) -> dict | None:
         got = conn.execute("SELECT name, card, updated FROM contacts WHERE id=?", (cid,)).fetchone()
         pics = contacts_photos.index(conn) if got else {}
         said_none = contacts_find.dismissed_for(conn, cid) if got else set()
-        notify = contacts_notify.of(conn, cid) if got else {}
+        level = contacts_level.of(conn, cid) if got else None
     finally:
         conn.close()
     if not got:
@@ -2048,8 +2053,8 @@ def card(cid: str) -> dict | None:
             "mail": _card_mail(c),
             # Edit from the card (contacts_edit.py), and the person in Google.
             "edit": contacts_edit.editable(c), "google_url": contacts_edit.google_url(c) or None,
-            # Their own notification setting per channel (contacts_notify.py).
-            "notify": notify,
+            # Their speech level (contacts_level.py): None is "default".
+            "level": level,
             "updated": round(got[2], 3) if got[2] else None, "rooms": rooms_of(cid)}
 
 
@@ -2494,11 +2499,13 @@ def start() -> None:
     `MEDIA_CONTACTS_INTERVAL_S` (900), Google and the CRM too when set up,
     then the timeline's rollup (timeline.py; `MEDIA_TIMELINE=0` leaves it
     off); idle on a host with no source; off with `MEDIA_CONTACTS=0`. The
-    intake asks this book for a person's notification setting from here on
-    (contacts_notify.register)."""
-    from . import contacts_notify
+    speech levels read on this server ask this book for a room's person from
+    here on (contacts_level.register), and the rooms' quiet seed becomes the
+    rooms' fallback once (matrix.unseed_quiet)."""
+    from . import contacts_level, matrix
 
-    contacts_notify.register()
+    contacts_level.register()
+    matrix.unseed_quiet()
     if _STARTED.is_set() or (os.environ.get("MEDIA_CONTACTS") or "1").strip() == "0":
         return
     _STARTED.set()

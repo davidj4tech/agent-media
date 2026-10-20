@@ -37,6 +37,13 @@ Stored in `<state_dir>/speak-priority.json` as `{"<session>": {"level",
 written the way the server's `_jsonmap.JsonMap` writes (temp file + rename,
 under an flock on the sibling `.lock`), so the canvas and the CLI can both set
 it. Read once per reply, so there is no cache.
+
+**A level to fall back on** (20 Oct 2026, David: one scale for threads and
+people). A conversation with no level of its own takes, in order: what a
+registered fallback says for it (`set_fallback`), else the default. The
+server registers one for its Matrix rooms (contacts_level.py): the level of
+the person the room is with, set on their card, else quiet — a room starts
+quiet (David, 9 Oct 2026). `source_of` says where a level came from.
 """
 
 from __future__ import annotations
@@ -56,6 +63,46 @@ LEVELS = ("interrupt", "auto", "pocket", "normal", "quiet")
 SPEAKS = ("interrupt", "auto")
 #: The levels whose replies wait for a Play unless someone is looking.
 HOLDS = ("pocket", "normal")
+
+
+#: session → (level, source) or None, for a conversation with no level of
+#: its own; the server's (contacts_level.register). None: no fallback.
+_FALLBACK = None
+
+
+def set_fallback(fn) -> None:
+    """Register `fn(session) -> (level, source) | None`, asked for a
+    conversation with no level of its own before the default."""
+    global _FALLBACK
+    _FALLBACK = fn
+
+
+def _fallback(session: str) -> tuple[str, str] | None:
+    fn = _FALLBACK
+    if fn is None or not session:
+        return None
+    try:
+        got = fn(session)
+    except Exception:  # noqa: BLE001 — the default, as before, never a crash
+        return None
+    if got and got[0] in LEVELS:
+        return got[0], str(got[1] or "")
+    return None
+
+
+def fallback_level(session: str) -> str:
+    """The level `session` has with none of its own."""
+    got = _fallback(session)
+    return got[0] if got else default_level()
+
+
+def source_of(session: str) -> str:
+    """Where `session`'s level comes from: "own", the fallback's source
+    (e.g. "person" or "room"), or "default"."""
+    if session in levels():
+        return "own"
+    got = _fallback(session)
+    return got[1] if got else "default"
 
 
 def _path() -> Path:
@@ -90,7 +137,10 @@ def levels() -> dict[str, str]:
 
 
 def level_of(session: str) -> str:
-    return (levels().get(session) or default_level()) if session else "normal"
+    """Its own level, else the fallback's (set_fallback), else the default."""
+    if not session:
+        return "normal"
+    return levels().get(session) or fallback_level(session)
 
 
 def is_priority(session: str) -> bool:
@@ -109,9 +159,10 @@ def _write(path: Path, data: dict) -> None:
     tmp.replace(path)
 
 
-def set_level(session: str, level: str) -> bool:
-    """Set `session`'s level (the default level clears it, so it follows the
-    default). True when that changed anything."""
+def set_level(session: str, level: str, keep: bool = False) -> bool:
+    """Set `session`'s level (the level it would fall back to clears it, so
+    it follows that, unless `keep`: then it is its own whatever its fallback
+    says). True when that changed anything."""
     if not session:
         return False
     if level not in LEVELS:
@@ -123,7 +174,7 @@ def set_level(session: str, level: str) -> bool:
         try:
             rows = _read()
             own = _level(rows.get(session))
-            if level == default_level():
+            if not keep and level == fallback_level(session):
                 if own is None:
                     return False
                 rows.pop(session, None)
@@ -138,7 +189,8 @@ def set_level(session: str, level: str) -> bool:
 
 
 def clear_level(session: str) -> bool:
-    """Drop `session`'s own level, so it follows the default. True when it had one."""
+    """Drop `session`'s own level, so it follows its fallback or the
+    default. True when it had one."""
     if not session:
         return False
     path = _path()

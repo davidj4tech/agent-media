@@ -103,6 +103,7 @@ def session_priority(session: str, flag, bearer: str, level=None) -> tuple[bool,
     level = speak_priority.level_of(session)
     return True, {"session": session, "level": level,
                   "own": session in speak_priority.levels(),
+                  "from": speak_priority.source_of(session),
                   "priority": level in speak_priority.SPEAKS}
 
 

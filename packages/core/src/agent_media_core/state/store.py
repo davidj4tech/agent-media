@@ -995,6 +995,11 @@ class StateStore:
                     content_type: Optional[str] = None,
                     text: Optional[str] = None,
                     extras: Optional[dict] = None) -> int:
+        # A private reading (an email read aloud on a tap, `media say
+        # --private`) is played and never kept: no row, so recent, history,
+        # catch-up and replay never list it (David, 20 Oct 2026). 0: no row.
+        if extras and extras.get("private"):
+            return 0
         with self._cursor() as cur:
             cur.execute(
                 "INSERT INTO history "

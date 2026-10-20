@@ -178,15 +178,24 @@ def test_a_reply_is_sent_as_the_owner_and_kept_once(one_room, monkeypatch):
     assert not ok and err["status"] == 409
 
 
-def test_a_room_starts_quiet_once(monkeypatch):
+def test_a_room_starts_quiet(one_room):
+    """A room with no level of its own is quiet (David, 9 Oct 2026), as its
+    fallback now (contacts_level.py, 20 Oct 2026) rather than a level written
+    once; David picking the default for it makes it follow that again."""
     from agent_media_core import speak_priority
+    from agent_media_server import contacts_level
 
-    t = matrix.thread_of(ROOM)
-    matrix._seed_quiet([t])
-    assert speak_priority.level_of(t) == "quiet"
-    speak_priority.clear_level(t)                 # David picks the default
-    matrix._seed_quiet([t])
-    assert speak_priority.level_of(t) == speak_priority.default_level()
+    contacts_level.register()
+    try:
+        t = one_room.thread
+        assert speak_priority.level_of(t) == "quiet"
+        assert speak_priority.source_of(t) == "room"
+        speak_priority.set_level(t, "auto")
+        assert speak_priority.level_of(t) == "auto"
+        speak_priority.clear_level(t)                 # David picks the default
+        assert speak_priority.level_of(t) == "quiet"
+    finally:
+        speak_priority.set_fallback(None)
 
 
 def test_held_speech_is_a_play_on_its_message(one_room):
@@ -247,7 +256,13 @@ def test_a_bridges_invitation_is_accepted_and_the_room_taken_in(owner_loop):
     assert joined == [("/rooms/%21sms%3Aryer.org/join", "owner-tok")]
     r = matrix._ROOMS[matrix.thread_of("!sms:ryer.org")]
     assert r.config.token == "owner-tok" and "!sms:ryer.org" in o.config.rooms
-    assert speak_priority.level_of(r.thread) == "quiet"
+    from agent_media_server import contacts_level
+
+    contacts_level.register()
+    try:
+        assert speak_priority.level_of(r.thread) == "quiet"   # its fallback, as any room's
+    finally:
+        speak_priority.set_fallback(None)
 
 
 def test_anyone_elses_invitation_is_left_alone(owner_loop):

@@ -306,7 +306,15 @@ Everything a message can be pointed at.
   of its own has the default (`/speech/default`), and `speech_own` (25 Sep
   2026) says whether the level is its own. `priority` (same
   day) is true for interrupt and auto: its replies are never held by the
-  desk toast and never silenced by a pane mute.
+  desk toast and never silenced by a pane mute. **Where it comes from**
+  (20 Oct 2026, one scale for threads and people): a Matrix room with no
+  level of its own has the level of the person it is with, set on their
+  card (§6.25 "Speech level"), else quiet; any other thread the default.
+  `speech_from` says which: `"own"`, `"person"`, `"room"` (quiet, nobody's
+  level) or `"default"`. `speech_fallback: {"level", "from"}` is what "Use
+  the default" gives it: the app labels that choice "Default (follows …)",
+  naming the person's level or Quiet for a room, the server default
+  otherwise.
 - `harness` (every row, 23 Sep 2026): which agent holds the conversation —
   `"claude"`, `"codex"`, `"pi"` or `"hermes"`. Rows the app has never seen
   before carry `source: "store"` as well: conversations known only from
@@ -1458,7 +1466,10 @@ Pinned by `packages/server/tests/test_reap.py`.
 
 #### `POST /session/priority` — gated (24 Sep 2026)
 
-`{"session", "level"}` → `{"ok": true, "session", "level", "own", "priority"}`.
+`{"session", "level"}` → `{"ok": true, "session", "level", "own", "from", "priority"}`
+(`from`: where the level now comes from, as a row's `speech_from`; 20 Oct
+2026). `"level": "default"` clears the thread's own: a Matrix room then
+follows its person's level, else quiet (§6.25 "Speech level").
 
 What happens to the thread's replies (a Claude Code Stop read-out; its
 questions are never touched):
@@ -2416,8 +2427,8 @@ and the app shows no calendar. Dates are `YYYY-MM-DD`; `from` defaults to
 today and `to` to six days after `from`. `to` before `from`, or a range of
 more than 92 days, is a 400.
 
-`{"ok", "from", "to", "today", "items": [...]}`, sorted by date, then time.
-Each item is one heading on one day: `{path, at, level, state, priority,
+`{"ok", "from", "to", "today", "calendars", "items": [...]}`, sorted by
+date, then time. Each Org item is one heading on one day: `{path, at, level, state, priority,
 title, tags, type, date, overdue, time?, end_time?, end_date?, repeat?,
 due?}`.
 
@@ -2441,7 +2452,45 @@ due?}`.
   ones (paragtd's old astro alerts), as the agenda does.
 - At most 2000 items.
 
-Calendar services and the phone's calendar are to join the same list
+Every item has `source`: `org` for the headings above, `calendar` for an
+event from one of the install's calendars (20 Oct 2026). Those are merged in
+for the owner only (an account paired here sees Org alone), and
+`calendars` lists them: `[{id, name, color, kind: vdir|ics, ok, synced?,
+error?}]`, `synced` when the source last changed (epoch seconds), `error`
+why one cannot be read. A calendar event is `{source: "calendar", type:
+"event", calendar: {id, name, color}, uid, title, location?, date, time?,
+end_time?, end_date?, all_day, overdue: false, state: "", priority: "",
+tags: [], level: 1}`, with no `path` or `at` (it is not in the Org tree):
+
+- Times are this server's local time. An all-day event's `end_date` is its
+  last day (DTEND is the day after); a timed one that runs past midnight has
+  `end_date` and `end_time` on that day.
+- Repeats (RRULE, RDATE, EXDATE) are expanded in the range; one occurrence
+  moved or changed on its own (RECURRENCE-ID) stands in for the one it
+  replaces; a cancelled event is left out.
+
+The calendars come from config.toml (calendar_sources.py), never from code:
+
+```toml
+[[calendar.sources]]
+kind = "vdir"                 # a folder of .ics files, one item each
+path = "~/.calendars"         #   (vdirsyncer, khal); a folder of such
+                              #   folders is a calendar per folder
+[[calendar.sources]]
+kind = "ics"                  # a published calendar address
+url = "https://…/basic.ics"
+name = "Family"               # optional, as is color (#rrggbb)
+refresh_min = 15
+```
+
+A vdir calendar's name and colour are the source's `name`/`color`, else
+the folder's `displayname`/`color` files, else its name. An ICS link is
+fetched at most every `refresh_min` minutes into `<state_dir>/calendar/`
+(0600), the last good copy standing when it fails; the address is never
+logged or sent to the app. Keeping a vdir fresh is the host's (a timer
+running `vdirsyncer sync`). Reading needs the `icalendar` package, a
+dependency of the server; without it each calendar says so in `error`.
+Calendars are read only for now
 (docs/proposals/2026-10-20-organiser-calendar.md).
 
 #### `GET /org/read?path=<rel>[&at=<line>]`
@@ -4974,35 +5023,45 @@ can download it. `part` is from `attachments`; 404 for a part that is not
 an attachment of the message, or one over 25 MB.
 
 `POST /mail/say {"id"}` — `auth.may_control_speech`, as `/org/say` →
-`{"ok", "chars"}`. The email is read aloud through `media say` only on
-David's tap, never by itself: "From <name>. <subject>." then its words
-(the plain part, else the HTML's words), with quoted lines (`> …`) left
+`{"ok", "chars"}`. The email is read aloud through `media say --private`
+only on David's tap, never by itself, and **never kept** (20 Oct 2026): no
+speech-history row (so recent, history, catch-up and replay never list
+it), "(private)" in place of its words in the speech event log, and its
+rendered clips removed with the words kept beside them once played. What
+is read: "From <name>. <subject>." then its words (the plain part, else
+the HTML's words), with quoted lines (`> …`) left
 out and at most 6,000 characters. 422 when nothing readable is left.
 
-#### Notifications — `POST /contacts/<id>/notify` — gated (20 Oct 2026)
+#### Speech level — `POST /contacts/<id>/level` — gated (20 Oct 2026)
 
-A person's own notification setting (contacts_notify.py; David, 20 Oct
-2026: "a little more control over specific contact's notifications"). The
-card carries `notify: {"chats": <mode>, "email": <mode>}`, where each mode
-is `"default"`, `"priority"` or `"quiet"`:
-- `default`: the room's own speech level decides, as before.
-- `priority`: a message that would have been held quietly is a notice
-  (a toast) instead; one that plays still plays.
-- `quiet`: kept in the lists with a Play, never a notice and never read
-  out, whatever the room's level.
+A person's speech level, on the same scale as a thread's (§6.4
+`/session/priority`; David, 20 Oct 2026: "maybe we should … call it the
+same thing to keep it simple"). The card carries `level`: `null` for
+"Default (follows …)" or one of `interrupt`, `auto`, `pocket`, `normal`,
+`quiet` — in the app Interrupt, Auto speak, When open or locked, When open,
+Quiet, with the thread sheet's notes.
 
-`chats` covers their Matrix rooms (SMS, Messenger, Instagram, WhatsApp,
-Teams …), turned at the speech intake (agent_media_intake_matrix `_decide`
-through agent_media_core.contact_notify, whose resolver the server
-registers when its contacts start). A host without the server never asks,
-and everyone is `default` there. `email` is kept and answered now
-(`contact_notify.mode(<address>, "email")`), for the mail notices still to
-come. Calls raise no notice anywhere, so there is no calls channel. The
-setting is the caller's book's, kept through schema bumps.
+It is the level of every chat that is theirs — each Matrix room whose one
+person they are — unless the room has a level of its own, and the level
+their mail notices will follow. A room's level is its own, else its
+person's, else quiet (a room starts quiet, 9 Oct 2026): the server
+registers that fallback with agent_media_core.speak_priority
+(contacts_level.py), so the speech intake's decision and the rows' `speech`
+both see it (§6.1 `speech_from`, `speech_fallback`). Kept per book, through
+schema bumps; another account's book has only the rooms' quiet.
 
-`POST /contacts/<id>/notify {"channel": "chats" | "email", "mode"}` →
-`{"ok", "notify"}`. Setting `default` removes the row. 400 for an unknown
-channel or mode, 404 for no such contact.
+`POST /contacts/<id>/level {"level": "default" | <level>}` → `{"ok",
+"level"}` (null after "default"). 400 for an unknown level, 404 for no such
+contact.
+
+It replaced the card's first setting of the same day (`notify`: Default,
+Priority, Quiet per chats and email): priority became auto, quiet stayed
+quiet, a person's chats setting else their email one, moved once.
+`POST /contacts/<id>/notify {"channel", "mode"}` is still read, as a level,
+for an app of that day. The rooms' old quiet seed (a level of their own
+written once, `seeded-quiet.json`) was moved to the fallback once: a room
+still at the seeded quiet lost its own level; one David had set to the
+default kept the default of then as its own.
 
 ### 6.25a A contact's timeline — gated (18 Oct 2026)
 

@@ -1449,12 +1449,20 @@ def sessions_index(*, days: float = STORE_DAYS) -> list[dict]:
     out += matrix.rows(flags)
     # And `speech`, its level (interrupt | auto | normal | quiet), with
     # `priority` kept for older clients: its replies are never held or muted.
-    # A thread with no level of its own has the default (/speech/default).
-    from agent_media_core.speak_priority import SPEAKS, default_level, levels
+    # A thread with no level of its own has its fallback — a Matrix room the
+    # level of the person it is with, else quiet (contacts_level.py) — else
+    # the default (/speech/default); `speech_from` says which (20 Oct 2026).
+    from agent_media_core.speak_priority import SPEAKS, _fallback, default_level, levels
     lv, dflt = levels(), default_level()
     for row in out:
-        row["speech"] = lv.get(row["session"], dflt)
-        row["speech_own"] = row["session"] in lv
+        sid = row["session"]
+        fb = _fallback(sid)
+        row["speech"] = lv.get(sid) or (fb[0] if fb else dflt)
+        row["speech_own"] = sid in lv
+        row["speech_from"] = "own" if sid in lv else (fb[1] if fb else "default")
+        # What "Use the default" gives it: its fallback, or the default.
+        row["speech_fallback"] = {"level": fb[0] if fb else dflt,
+                                  "from": fb[1] if fb else "default"}
         row["priority"] = row["speech"] in SPEAKS
     # Where each thread is: its directory and the project it is filed under,
     # for the small line under the title and the list's By-project order.
@@ -1476,7 +1484,9 @@ def seal_row(session: str, rec: dict, archived: bool = False, pinned: bool = Fal
     from agent_media_core.speak_priority import SPEAKS, default_level
 
     level = default_level()
-    return {"speech": level, "speech_own": False, "priority": level in SPEAKS,
+    return {"speech": level, "speech_own": False, "speech_from": "default",
+            "speech_fallback": {"level": level, "from": "default"},
+            "priority": level in SPEAKS,
             "session": session, "title": "", "live": False, "pane": None,
             "at": rec.get("at"), "recap": None, "archived": archived, "rested": None,
             "pinned": pinned, "sealed": True, "harness": rec.get("harness") or "claude",

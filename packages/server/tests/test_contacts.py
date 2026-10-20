@@ -507,7 +507,7 @@ def test_routes_shape_and_auth(server, signed_in, rooms):
     assert set(obj["contact"]) == {"id", "name", "names", "phones", "emails", "addresses",
                                    "organizations", "notes", "sources", "updated", "rooms",
                                    "crm", "labels", "handles", "suggestions", "mail", "old_addresses",
-                                   "photo", "find", "edit", "google_url", "notify"}
+                                   "photo", "find", "edit", "google_url", "level"}
     assert obj["contact"]["crm"] is None             # no CRM connection here
     assert [x["room"] for x in obj["contact"]["rooms"]] == ["!b:ryer.org"]
     res, obj = call(server, "GET", "/contacts/00000000-0000-0000-0000-000000000000", headers=AUTH)
