@@ -815,18 +815,45 @@ ahead.
    `setServerNotify`). JUnit (`SiblingsTest`) covers the list, the keys, the
    plan of loops and the cursors; the APK builds (`assembleDebug`), and the
    rest wants a phone.
-   **Answers and a refused server named, built 20 Oct 2026** (sasonica-app
-   branch `multi-base-6`, not merged): a "Needs you" from another server
+   **Answers and a refused server named, done 20 Oct 2026** (sasonica-app
+   `68aac71`, merged): a "Needs you" from another server
    has its answer buttons, AnswerReceiver sending to that server with its
    own token (the notice carries the server's key, the token is looked up),
    the follow-up after a 409 and the Answered line posted the same way; the
    listening notification names a server only when its loop stopped on a
    refused token ("hpo needs pairing"), and drops the name once it gets
-   through again.
-   (5) A server picker in Settings for the per-server things (voice, speech
-   default, language, the Organiser, coding agents, presets, devices, the
-   account), the phone's own settings staying global; a new chat on a
-   chosen server; `relocate()` per pairing.
+   through again. **Built 20 Oct 2026** (sasonica-app branch `multi-base-7`,
+   not merged): while it names one, its tap opens `/pairing?server=<base>`
+   with that server filled in (David, 20 Oct 2026).
+   **What is left of the first step** (20 Oct 2026; everything above is the
+   app talking to each base itself, no base-to-base link):
+   - *A server picker in Settings* for the per-server things — voice, speech
+     default, language, the Organiser and its setup, coding agents (keys,
+     logins, setup), presets, project roots, personas, bridges, Google
+     Contacts, Devices and pairing codes, the account, Connect an assistant —
+     each asked of the chosen server, the phone's own settings staying
+     global (David, 20 Oct 2026). "Switch to it" goes when it lands; the
+     several-servers proposal's roles split (You on <server>, the admin
+     section) can follow on top of it.
+   - *A new chat on a chosen server*: `/new`'s places and projects from
+     every server, or a server choice beside them, and `POST /ask` sent
+     there (the routing already notes the thread); the same for the mic's
+     new chat, a project strip's +, and the share sheet's upload
+     (`uploadFile`, now the current server's).
+   - *Every pairing's lookup*: `relocate()` follows a moved address only for
+     the current server; another server on a quick tunnel that moves shows
+     offline until it is paired again. Each pairing needs its own lookup
+     ask (the stored `server.lookup`, `/me`'s for it) and its stored base
+     updated, in the app and in the notifier's loop.
+   - *The phone's other streams from other servers*: the notifier's loops
+     carry threads and alerts only; mic asks, an agent's asks of the phone,
+     notes, catch-ups, the busy card, speech played here and the widgets
+     are still the current server's alone. Which of them should follow
+     every server is David's to say (the proposal asks it of Speech here).
+   - *Smaller*: search's terms highlight from the current server only; a
+     thread shown once when two servers list it is an assumption, untested
+     (no fixture shares a session).
+   After those, the base-to-base steps above, (a) to (d), in their order.
    *Decided (David, 20 Oct 2026):* sign out signs out of the current server
    only (as built); Remove also revokes this device on that server while
    its token still works (built in slice 2–3); Settings gets a server
@@ -847,7 +874,8 @@ ahead.
    you" from another server gets its answer buttons, sent to that server
    with its token, and the listening notification names a server only when
    its loop stopped because it refused this phone (both built on
-   `multi-base-6`). *The
+   `multi-base-6`); while the listening notification names one, its tap
+   opens pairing for that server (built on `multi-base-7`). *The
    coordinator's call (20 Oct 2026):* "needs pairing" only on a 401, or on a
    403 from the list or its states. *Assumed, David not asked:* a thread listed by two servers (one
    day, siblings listing each other's) is shown once.
