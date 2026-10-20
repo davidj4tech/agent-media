@@ -797,8 +797,8 @@ ahead.
    (`/doc?path=…&server=…`, the reader's calls routed there), and a chat
    another server starts (a document's Ask) is that server's thread from
    then on. Still the current server's: a new chat, Settings, terms.
-   **Home's strip, Fix it, the 403 rule and the notifier, built 20 Oct
-   2026** (sasonica-app branch `multi-base-5`, not merged): Home has the same
+   **Home's strip, Fix it, the 403 rule and the notifier, done 20 Oct
+   2026** (sasonica-app `03ff708`, merged): Home has the same
    server chip strip, the choice shared with the list's filter; Fix it on
    another server's alert starts the chat on that server; a 403 flags a
    server only from `/targets` or `/sessions/state` (elsewhere it can be a
@@ -815,6 +815,14 @@ ahead.
    `setServerNotify`). JUnit (`SiblingsTest`) covers the list, the keys, the
    plan of loops and the cursors; the APK builds (`assembleDebug`), and the
    rest wants a phone.
+   **Answers and a refused server named, built 20 Oct 2026** (sasonica-app
+   branch `multi-base-6`, not merged): a "Needs you" from another server
+   has its answer buttons, AnswerReceiver sending to that server with its
+   own token (the notice carries the server's key, the token is looked up),
+   the follow-up after a 409 and the Answered line posted the same way; the
+   listening notification names a server only when its loop stopped on a
+   refused token ("hpo needs pairing"), and drops the name once it gets
+   through again.
    (5) A server picker in Settings for the per-server things (voice, speech
    default, language, the Organiser, coding agents, presets, devices, the
    account), the phone's own settings staying global; a new chat on a
@@ -835,7 +843,11 @@ ahead.
    selectable like threads, and a document opens on its own server (all
    three built on `multi-base-4`); Fix it on another server's alert starts
    the chat on that alert's server, Home gets the same server strip, and the
-   notifier listens to every server (built on `multi-base-5`). *The
+   notifier listens to every server (built on `multi-base-5`); a "Needs
+   you" from another server gets its answer buttons, sent to that server
+   with its token, and the listening notification names a server only when
+   its loop stopped because it refused this phone (both built on
+   `multi-base-6`). *The
    coordinator's call (20 Oct 2026):* "needs pairing" only on a 401, or on a
    403 from the list or its states. *Assumed, David not asked:* a thread listed by two servers (one
    day, siblings listing each other's) is shown once.
