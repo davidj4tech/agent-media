@@ -1318,6 +1318,17 @@ ahead.
     own: the bridges' space rooms are probably taken in as empty threads.
     Plan only; open questions first.
 
+34. **Messages: what the bridged apps do** (David, 20 Oct 2026: "The apps
+    that the bridges are replacing have lots of functionality that we're
+    missing in the messages tab"). The list and the order are in
+    docs/proposals/2026-10-20-messages-features.md: media shown and sent,
+    reactions and replies, read state on the network (with a peek that
+    leaves a chat unread), per-chat controls, voice notes transcribed,
+    catch me up and read aloud, draft a reply, send later and remind me;
+    then a second round (pinned and saved messages, mentions, a gallery,
+    message requests, quiet hours, translate, ask about a chat, chat lock
+    and more). Chosen 20 Oct 2026; not started.
+
 35. **Mail in Sasonica** (David, 20 Oct 2026: "I'd like to handle emails
     from Sasonica"). Both a Mail tab (accounts, folders, search, compose)
     and mail as a room on a person's Messages row; Gmail first (fifteen
