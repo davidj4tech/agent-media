@@ -26,7 +26,7 @@ from ..sinks.music_router import SinkMusicRouter
 from ..sinks import speech as _speech
 from ..state import StateStore
 from ..types import ContentType, Target
-from . import _android, _mpris
+from . import _android, _mpris, dj
 from .concurrency import FOCUS_BOOK, bed_level, resolve
 from .policy import (
     DEFAULT_POLICY,
@@ -148,6 +148,11 @@ class Coordinator:
         # set it belongs to, and keeps both off the speech path's thread.
         self._flag_writer = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="speaking-flag")
+        # What before_speech was told about the reply, for the DJ cue (see
+        # route/dj.py): its priority, whether it asks a question, and how long
+        # it is expected to take. Kept for duck_music_now, which applies the
+        # cue later on the lane that defers it.
+        self._speech_hint: dict = {}
 
     # ---- "this loss is ours" -------------------------------------------
 
@@ -306,7 +311,7 @@ class Coordinator:
 
     # ---- source-agnostic rooms (Snapcast) duck ------------------------
 
-    def _rooms_duck(self, level: int) -> None:
+    def _rooms_duck(self, level: int, fade_ms: int = 0) -> None:
         """Duck the rooms music stream by lowering each audible Snapcast
         client's volume to ``level`` for the clip. Source-agnostic: works no
         matter which player feeds ``MEDIA_DUCK_ROOMS_STREAM``. Best-effort —
@@ -340,13 +345,35 @@ class Coordinator:
                     f"level={level} vols={vols} — a previous restore never "
                     "landed; the baseline volumes need setting by hand")
             self.state.set_rooms_duck({"level": int(level), "vols": vols})
-            for cid, prior in vols.items():
-                if prior > level:
-                    snapcast.set_client_volume(cid, level)
+            above = {cid: prior for cid, prior in vols.items() if prior > level}
+            self._rooms_fade({cid: (prior, level) for cid, prior in above.items()},
+                             fade_ms)
         except Exception as e:  # noqa: BLE001
             self._log_err("rooms: snapcast duck failed", str(e))
 
-    def _rooms_unduck(self, clear: bool = True) -> None:
+    @staticmethod
+    def _rooms_fade(moves: "dict[str, tuple[int, int]]", fade_ms: int) -> None:
+        """Move each client from its first volume to its second, together,
+        over ``fade_ms`` (one step when 0). Raises the first failure, as the
+        single set it replaces did."""
+        if not moves:
+            return
+        if fade_ms <= 0:
+            for cid, (_, end) in moves.items():
+                snapcast.set_client_volume(cid, end)
+            return
+        sent: dict[str, int] = {}
+
+        def _at(permille: int) -> None:
+            for cid, (start, end) in moves.items():
+                v = int(round(start + (end - start) * permille / 1000))
+                if sent.get(cid) != v:
+                    snapcast.set_client_volume(cid, v)
+                    sent[cid] = v
+
+        dj.fade(_at, 0, 1000, fade_ms, step_ms=60)
+
+    def _rooms_unduck(self, clear: bool = True, fade_ms: int = 0) -> None:
         """Restore client volumes ducked by :meth:`_rooms_duck`. With
         ``clear=False`` the marker is kept so a later restore still runs (used
         by the mid-response mute release)."""
@@ -368,6 +395,18 @@ class Coordinator:
         # volumes as the baseline and dutifully "restored" them to that.
         owed: dict[str, int] = {}
         failed: list[str] = []
+        level = int(marker.get("level") or 0)
+        if fade_ms > 0:
+            # Faded up together first; the per-client restore below still runs
+            # and is what lands (or owes) the final volume.
+            try:
+                self._rooms_fade(
+                    {str(c): (min(level, int(p)), int(p))
+                     for c, p in (marker.get("vols") or {}).items()
+                     if int(p) > level},
+                    fade_ms)
+            except Exception as e:  # noqa: BLE001
+                self._log_err("rooms: snapcast fade up failed", str(e))
         for cid, prior in (marker.get("vols") or {}).items():
             try:
                 snapcast.set_client_volume(str(cid), int(prior))
@@ -443,7 +482,9 @@ class Coordinator:
         return self.music.now_playing_uri(self.music_target)
 
     def before_speech(self, title: str = "", priority: str = "",
-                      defer_music: bool = False, text: str = "") -> None:
+                      defer_music: bool = False, text: str = "",
+                      ask: bool = False,
+                      est_s: Optional[float] = None) -> None:
         """Apply interruption for whatever sink-music is currently
         playing. Records baseline volume + position so after_speech can
         restore.
@@ -471,7 +512,14 @@ class Coordinator:
         phone chooses between waiting for a gap, asking David with a card, and
         taking the room. Empty means normal, which is what an ordinary answer
         to a question is.
+
+        ``ask`` (the reply asks David something) and ``est_s`` (how long the
+        whole reply should take to say) choose the DJ cue when
+        ``MEDIA_DJ_DUCK`` is on: how deep, how fast, duck or stop. See
+        route/dj.py. Ignored otherwise.
         """
+        self._speech_hint = {"priority": priority or "", "ask": bool(ask),
+                             "est_s": est_s}
         # Every music call below re-resolves which backend is live — two
         # probes across the tailnet each time — so the probe, the position
         # and the pause are asked to agree on one answer (see
@@ -505,9 +553,18 @@ class Coordinator:
         music_uri = probes.submit(self._probe_music_uri)
 
         rooms_level = _env_duck_level()
+        rooms_fade_ms = 0
+        if dj.enabled():
+            # The rooms carry music whoever feeds them, so they get the cue
+            # music would — a duck at its depth; the stop, when the cue is one,
+            # is the player's to make below.
+            cue = self._cue(ContentType.MUSIC)
+            rooms_fade_ms = cue.fade_down_ms
+            if rooms_level is None and cue.strategy == InterruptionStrategy.DUCK:
+                rooms_level = cue.level
         if rooms_level is None:
             rooms_level = policy_for(ContentType.MUSIC).duck_level
-        self._rooms_duck(rooms_level)
+        self._rooms_duck(rooms_level, fade_ms=rooms_fade_ms)
         # Local players: pause browser/external players on this host (MPRIS
         # on Linux, the system media controls on Windows — audio_backend).
         if audio_backend.pause_enabled():
@@ -593,13 +650,22 @@ class Coordinator:
             return
         self._interrupt_music(uri, resolve(self.state))
 
+    def _cue(self, content_type: Optional[ContentType]) -> "dj.Cue":
+        h = self._speech_hint
+        return dj.plan_cue(content_type, priority=h.get("priority", ""),
+                           ask=bool(h.get("ask")), est_s=h.get("est_s"))
+
     def _interrupt_music(self, uri: str, concurrency) -> None:
         """Pause or duck the music that `uri` names, and record how to undo it."""
         content_type = self._content_type_for(uri)
         policy = policy_for(content_type)
         extras: dict = {}
+        cue = self._cue(content_type) if dj.enabled() else None
 
-        if policy.strategy == InterruptionStrategy.PAUSE:
+        if cue is not None and cue.reason != "longform":
+            if not self._dj_interrupt(cue, concurrency, extras):
+                return
+        elif policy.strategy == InterruptionStrategy.PAUSE:
             try:
                 pos_ms = self.music.position(self.music_target)
             except Exception:
@@ -669,6 +735,126 @@ class Coordinator:
             extras={"interruption": extras},
         )
 
+    # ---- the DJ cue (route/dj.py) --------------------------------------
+
+    def _baseline_for_duck(self, level: int, concurrency) -> tuple[int, Optional[int]]:
+        """Where the music goes back to after this duck, and where it is now.
+
+        The same three answers as the plain duck: the book's bed level when a
+        book is in front, the original volume when a duck of ours is already in
+        force, else what the listener had. The second value is the live volume
+        when it was read (the fade starts there), else None: no fade, since
+        a volume not known to be above the duck must never be raised to fade
+        it down (a duck already in force is at its own level, not the
+        baseline).
+        """
+        prior = self._music_duck_marker()
+        if concurrency.focus == FOCUS_BOOK:
+            return bed_level(), bed_level()
+        if prior and prior.get("baseline") is not None:
+            return int(prior["baseline"]), None
+        pre_duck = None
+        try:
+            vol_fn = getattr(self.music, "current_volume", None)
+            pre_duck = vol_fn(self.music_target) if vol_fn else None
+        except Exception:  # noqa: BLE001 — best-effort capture
+            pre_duck = None
+        if pre_duck is not None and pre_duck > level:
+            return int(pre_duck), int(pre_duck)
+        return self._fallback_baseline(policy_for(ContentType.MUSIC).baseline_volume), None
+
+    def _volume_owner(self, claim: bool = False):
+        """The backend a fade steps, and whether it can be faded at all.
+
+        Through the router, the backend that was ducked (or, with ``claim``,
+        the live one, recorded as ducked so the restore finds it). A backend
+        that ducks itself (Sasonica's app, by audio focus) says ``fades =
+        False`` and gets the one-step duck it always had.
+        """
+        fn = getattr(self.music, "volume_owner", None)
+        try:
+            owner = fn(claim=claim) if fn else self.music
+        except Exception:  # noqa: BLE001
+            owner = self.music
+        return owner, bool(getattr(owner, "fades", False))
+
+    def _dj_interrupt(self, cue: "dj.Cue", concurrency, extras: dict) -> bool:
+        """Apply ``cue`` to the music: fade under the voice, or fade out and
+        stop. Records the debt before the first step, as the plain duck does,
+        so a process killed mid-fade still leaves the restore owed. False when
+        nothing was done (the caller then records nothing)."""
+        level = _env_duck_level()
+        if level is None or cue.strategy == InterruptionStrategy.PAUSE:
+            level = cue.level
+        baseline, start = self._baseline_for_duck(level, concurrency)
+        extras.update(cue.as_extras())
+        extras["baseline_volume"] = baseline
+        try:
+            self.state.set_music_duck({"level": int(level),
+                                       "baseline": int(baseline),
+                                       "target": self.music_target.name})
+        except Exception:  # noqa: BLE001
+            pass
+        owner, fades = self._volume_owner(claim=True)
+        try:
+            if fades and cue.fade_down_ms > 0:
+                dj.fade(lambda v: owner.duck(self.music_target, v),
+                        start if start is not None else level, level,
+                        cue.fade_down_ms)
+            elif cue.strategy == InterruptionStrategy.DUCK:
+                self.music.duck(self.music_target, level)
+        except Exception as e:  # noqa: BLE001
+            self._log_err("music: dj duck failed", str(e))
+            return False
+        if cue.strategy == InterruptionStrategy.PAUSE:
+            extras["strategy"] = "pause"
+            extras["faded"] = bool(fades)
+            try:
+                extras["pause_pos_ms"] = self.music.position(self.music_target)
+            except Exception:  # noqa: BLE001
+                extras["pause_pos_ms"] = None
+            extras["lead_in_ms"] = 0
+            try:
+                self.music.pause(self.music_target)
+            except Exception as e:  # noqa: BLE001
+                self._log_err("music: pause failed", str(e))
+                return False
+        else:
+            extras["strategy"] = "duck"
+            extras["duck_level"] = level
+        return True
+
+    def _dj_restore(self, interruption: dict, ducked: Optional[dict]) -> None:
+        """Undo a DJ cue: resume what was stopped, then bring the music back
+        up over the cue's fade. The debt is cleared only once the volume is
+        back, so a restore cut short is finished by the next clip."""
+        baseline = int(interruption.get("baseline_volume")
+                       or (ducked or {}).get("baseline")
+                       or self._fallback_baseline())
+        fade_ms = int(interruption.get("fade_up_ms") or 0)
+        try:
+            if interruption.get("strategy") == "pause":
+                self.music.resume(self.music_target)
+                start = 0
+            else:
+                start = int(interruption.get("duck_level")
+                            or (ducked or {}).get("level") or 0)
+            owner, fades = self._volume_owner()
+            if fades and fade_ms > 0:
+                # Up to one step short, then the router's own unduck for the
+                # last, so it forgets the backend it ducked.
+                dj.fade(lambda v: owner.unduck(self.music_target, restore=v),
+                        start, baseline, fade_ms)
+            self.music.unduck(self.music_target, restore=baseline)
+        except Exception as e:  # noqa: BLE001
+            self._log_err("music: dj restore failed", str(e))
+        finally:
+            try:
+                self.state.set_music_duck(None)
+            except Exception:  # noqa: BLE001
+                pass
+            self.state.clear_now_playing("music")
+
     def after_speech(self) -> None:
         """Restore from whatever before_speech did."""
         # Lower the flag first: from here on, a focus loss really is somebody
@@ -681,10 +867,27 @@ class Coordinator:
         with self._defer_lock:
             self._deferred_music = None
         self._last_line = ""
-        # Restore the source-agnostic rooms (Snapcast) duck first — it's
-        # independent of the Mopidy interruption marker handled below (which is
-        # absent whenever this coordinator's Mopidy wasn't the one playing).
-        self._rooms_unduck()
+        # A DJ lets the last word land before the music comes back: a beat of
+        # quiet, then the rooms and the player fade up together.
+        np_now = self.state.get_now_playing("music") if dj.enabled() else None
+        interruption_now = ((np_now or {}).get("extras") or {}).get("interruption") or {}
+        rooms_thread: Optional[threading.Thread] = None
+        if dj.enabled():
+            beat_ms = int(interruption_now.get("beat_ms")
+                          or dj.plan_cue(ContentType.MUSIC).beat_ms)
+            if beat_ms > 0:
+                time.sleep(beat_ms / 1000.0)
+            rooms_thread = threading.Thread(
+                target=self._rooms_unduck,
+                kwargs={"fade_ms": dj.plan_cue(ContentType.MUSIC).fade_up_ms},
+                name="rooms-fade-up", daemon=True)
+            rooms_thread.start()
+        else:
+            # Restore the source-agnostic rooms (Snapcast) duck first — it's
+            # independent of the Mopidy interruption marker handled below
+            # (which is absent whenever this coordinator's Mopidy wasn't the
+            # one playing).
+            self._rooms_unduck()
         if self._mpris_paused:
             audio_backend.backend().resume_players(self._mpris_paused)
             self._mpris_paused = []
@@ -723,8 +926,15 @@ class Coordinator:
         # hours. The debt is now its own record and is paid whatever happened to
         # the row.
         ducked = self._music_duck_marker()
+        if interruption_now.get("cue"):
+            self._dj_restore(interruption_now, ducked)
+            if rooms_thread is not None:
+                rooms_thread.join(timeout=10)
+            return
         if ducked is not None:
             self._music_unduck(ducked)
+        if rooms_thread is not None:
+            rooms_thread.join(timeout=10)
 
         np = self.state.get_now_playing("music")
         if not np or not np.get("extras"):

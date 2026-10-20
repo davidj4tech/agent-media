@@ -41,7 +41,7 @@ class _RecordingCoord:
         self.pre_pause += 1
 
     def before_speech(self, title="", priority="", defer_music=False,
-                          text=""):
+                          text="", **_):
         self.before += 1
 
     def speaking_line(self, text=""): pass
@@ -158,7 +158,7 @@ def test_unmuted_stream_plays_and_the_card_follows(state_env, monkeypatch):
     lines = []
 
     class _Coord(_RecordingCoord):
-        def before_speech(self, title="", priority="", defer_music=False, text=""):
+        def before_speech(self, title="", priority="", defer_music=False, text="", **_):
             super().before_speech()
             lines.append(text)
 

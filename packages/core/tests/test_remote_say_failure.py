@@ -40,7 +40,7 @@ def _run(store, monkeypatch, cmd):
 
         def pre_pause_remote(self): pass
         def before_speech(self, title="", priority="", defer_music=False,
-                      text=""): pass
+                      text="", **_): pass
         # Deferred and applied when the far side says it is about to play.
         def duck_music_now(self): pass
         def speaking_line(self, text=""): pass

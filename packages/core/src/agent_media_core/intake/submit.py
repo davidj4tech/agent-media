@@ -31,6 +31,7 @@ from .._notify import notify
 from ..render import render_text
 from ..render import device as device_voice
 from ..route import Coordinator
+from ..route import dj as _dj
 from ..sinks.speech import SinkSpeech, _env_key
 from ..state import StateStore
 from ..types import Event, Priority, Target
@@ -3803,7 +3804,9 @@ def _submit_remote_say(text: str, cmd: str, coordinator: Coordinator,
             # The first sentence, not the reply: the follower will move this on
             # as the far side speaks, and until it does the card should show
             # what is about to be said rather than all of it at once.
-            text=follower.sentences[0] if follower.sentences else text)
+            text=follower.sentences[0] if follower.sentences else text,
+            ask=bool((event.metadata or {}).get("ask")),
+            est_s=_dj.estimate_seconds(text))
         # ...and a renderer that announces nothing (Android TTS, a bare `say`)
         # would then never duck at all. So the wait is bounded: whichever comes
         # first, the announcement or this, applies it exactly once.
@@ -4856,7 +4859,11 @@ def _submit_event(event: Event,
                 coordinator.before_speech(
                     title=reply_title, priority=event.priority.value,
                     # The first sentence; the clip loop moves it on from there.
-                    text=_before_text)
+                    text=_before_text,
+                    # The whole reply, for the DJ cue (route/dj.py); a stream
+                    # has no text yet and so no length.
+                    ask=bool((event.metadata or {}).get("ask")),
+                    est_s=_dj.estimate_seconds(text))
             except Exception:  # noqa: BLE001
                 log.exception("intake: before_speech failed")
 

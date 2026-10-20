@@ -268,6 +268,9 @@ def _localise_youtube(uri: str) -> str:
 class SinkMusic:
     """Sink protocol implementation for Mopidy / MPD."""
 
+    # Mopidy's setvol steps cleanly, so the DJ duck can fade it (route/dj.py).
+    fades = True
+
     def play(self, uri: str, target: Target = DEFAULT_TARGET,
              replace: bool = True, **_: object) -> None:
         playlist = _expand_youtube_playlist(uri)

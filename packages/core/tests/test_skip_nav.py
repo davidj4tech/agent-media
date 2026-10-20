@@ -115,7 +115,7 @@ def test_reader_loop_honors_midresponse_sentence_jump(tmp_path, monkeypatch):
 
         def pre_pause_remote(self): pass
         def before_speech(self, title="", priority="", defer_music=False,
-                          text=""): pass
+                          text="", **_): pass
         def speaking_line(self, text=""): pass
         def after_speech(self): pass
 

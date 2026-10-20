@@ -38,7 +38,7 @@ class _Coord:
         pass
 
     def before_speech(self, title="", priority="", defer_music=False,
-                          text=""):
+                          text="", **_):
         pass
 
     def speaking_line(self, text=""): pass

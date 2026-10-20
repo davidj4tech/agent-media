@@ -164,6 +164,9 @@ def resolve(uri: str) -> tuple[Optional[str], str]:
 class SinkMusicSasonica(SinkMusicLocal):
     """The music channel's Sasonica backend (the app's media player)."""
 
+    # The app ducks itself by audio focus (see duck), so there is no fade to step here.
+    fades = False
+
     def _endpoint(self) -> str:
         ep = self._ep_override or endpoint()
         if not ep:
