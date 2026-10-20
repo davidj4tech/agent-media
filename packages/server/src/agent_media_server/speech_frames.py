@@ -282,9 +282,11 @@ class _Hub:
 
     def device(self) -> str | None:
         with self.lock:
-            if not self.listeners:
+            selected = output_device(self.channel)
+            eligible = {k: v for k, v in self.listeners.items() if not selected or v[0] == selected}
+            if not eligible:
                 return None
-            return self.listeners[_newest(self.listeners)][0]
+            return eligible[_newest(eligible)][0]
 
 
 _TRACE_LOCK = threading.Lock()
@@ -344,13 +346,72 @@ def listening(device: str, on: bool, token: int | None = None,
         return None
 
 
-def playing_stream(token: int | None, channel: str = "speech") -> bool:
+def playing_stream(token: int | None, channel: str = "speech", frame: dict | None = None) -> bool:
     """Whether the stream holding `token` is the one frames go to."""
     hub = _HUBS[channel]
     with hub.lock:
         if token not in hub.listeners:
             return False
-        return _newest(hub.listeners) == token
+        wanted = (frame or {}).get("device") or hub.device()
+        eligible = {k: v for k, v in hub.listeners.items() if v[0] == wanted}
+        return bool(eligible) and _newest(eligible) == token
+
+
+def output_device(channel: str) -> str | None:
+    """Explicit destination, persisted separately for speech and music."""
+    from agent_media_core._paths import state_dir
+
+    try:
+        return (state_dir() / f"frames-output-{channel}").read_text().strip() or None
+    except OSError:
+        return None
+
+
+def select_output(channel: str, device: str | None) -> None:
+    """Move the frame player to a named connected device at its playhead.
+
+    A targeted stop goes to the old device even after it loses selection;
+    a targeted snapshot hydrates the new one. Neither changes the shared
+    model or sends a replay to any other device.
+    """
+    from agent_media_core._paths import state_dir
+
+    hub = _HUBS[channel]
+    path = state_dir() / f"frames-output-{channel}"
+    with hub.lock:
+        if device and not any(v[0] == device for v in hub.listeners.values()):
+            raise ValueError("that device is not connected to this player")
+        old = hub.device()
+        if device:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(f".{path.name}.{threading.get_ident()}.tmp")
+            tmp.write_text(device + "\n")
+            os.replace(tmp, path)
+        else:
+            path.unlink(missing_ok=True)
+        new = hub.device()
+        if old == new:
+            return
+        m = hub.model
+        if not m.idle and m.path():
+            if old:
+                hub.seq += 1
+                hub.frames.append({"seq": hub.seq, "at": round(time.time(), 3),
+                                   "device": old, "ops": [{"op": "stop"}]})
+            if new:
+                ops = [{"op": "load", "uri": uri, "mode": "replace" if i == 0 else "append"}
+                       for i, uri in enumerate(m.entries)]
+                ops += [{"op": "meta", "name": k, "value": v} for k, v in m.stored.items()]
+                ops += [{"op": "pos", "i": m.pos}, {"op": "seek", "t": max(0, m.playhead())},
+                        {"op": "speed", "v": m.speed}, {"op": "volume", "v": m.volume},
+                        {"op": "mute", "on": m.muted}, {"op": "pause", "on": m.paused}]
+                hub.seq += 1
+                hub.seq_moved = hub.seq
+                hub.frames.append({"seq": hub.seq, "at": round(time.time(), 3),
+                                   "device": new, "ops": ops})
+        hub.reported_at = 0
+    from . import session_events
+    session_events.poke()
 
 
 def seq(channel: str = "speech") -> int:
@@ -467,7 +528,11 @@ def _send(ops: list[dict], hub: "_Hub") -> None:
         hub.seq += 1
         if not all(inert(op) for op in ops):
             hub.seq_moved = hub.seq
-        hub.frames.append({"seq": hub.seq, "at": round(time.time(), 3), "ops": ops})
+        frame = {"seq": hub.seq, "at": round(time.time(), 3), "ops": ops}
+        destination = output_device(hub.channel)
+        if destination:
+            frame["device"] = destination
+        hub.frames.append(frame)
         if any(o.get("op") in ("load", "pos") for o in ops):
             hub.traced = {"seq": hub.seq, "at": time.time()}
             newest = (hub.listeners[_newest(hub.listeners)]
@@ -917,7 +982,7 @@ def start(listen: str | None = None, upstream: str | None = None,
                 _publish_rtt(port, far, frames)
             if frames:
                 threading.Thread(target=_Client(c, hub).serve, daemon=True).start()
-            elif far is not None:
+            elif far is not None and not output_device(channel):
                 threading.Thread(target=_passthrough, args=(c, far), daemon=True).start()
             else:
                 threading.Thread(target=_refuse, args=(c, channel), daemon=True).start()

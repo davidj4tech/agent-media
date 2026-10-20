@@ -38,16 +38,17 @@ _LOCK = threading.Lock()
 
 def _block(channel: str) -> dict:
     from agent_media_core import audio_targets
+    from . import audio_devices
 
     if channel == "speech":
-        return audio_targets.speech_block()
+        return audio_devices.block(channel, audio_targets.speech_block())
     from agent_media_core.state import StateStore
 
     try:
         intent = StateStore().get_music_intent()
     except Exception:  # noqa: BLE001 — no store is "not known", not an error
         intent = None
-    return audio_targets.music_block(intent)
+    return audio_devices.block(channel, audio_targets.music_block(intent))
 
 
 def channel_block(channel: str) -> dict:
@@ -92,6 +93,15 @@ def set_target(body: dict, bearer: str) -> tuple[bool, dict]:
     setter = (audio_targets.set_speech_override if channel == "speech"
               else audio_targets.set_music_pref)
     try:
+        from . import audio_devices
+
+        # Validate the underlying sink before moving any device's player.
+        if target and target.startswith(audio_devices.PREFIX):
+            valid, why = (audio_targets.speech_configured("sasonica") if channel == "speech"
+                          else audio_targets.music_available("sasonica"))
+            if not valid:
+                raise ValueError(why or "the app player is not configured")
+        target = audio_devices.select(channel, target)
         setter(target or None)
     except ValueError as e:
         return False, {"error": str(e), "status": 400}

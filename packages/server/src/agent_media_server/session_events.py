@@ -378,7 +378,7 @@ def serve(h, bearer: str, *, ping_s: float = PING_DEFAULT_S,
                 for ch, pl in players.items():
                     for f in speech_frames.frames_after(pl[1], ch):
                         pl[1] = f["seq"]
-                        if speech_frames.playing_stream(pl[0], ch):
+                        if speech_frames.playing_stream(pl[0], ch, f):
                             send(ch, f)
                             last_sent = time.monotonic()
                             if any(o.get("op") in ("load", "pos")
