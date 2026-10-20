@@ -59,7 +59,7 @@ def test_sidecar_and_now_playing_lifecycle(state_env, monkeypatch):
             pass
 
         def before_speech(self, title="", priority="", defer_music=False,
-                          text=""):
+                          text="", **_):
             pass
 
         def speaking_line(self, text=""): pass

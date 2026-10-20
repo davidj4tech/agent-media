@@ -49,7 +49,7 @@ class _Coord:
     def pre_pause_remote(self):
         pass
 
-    def before_speech(self, title="", priority="", defer_music=False, text=""):
+    def before_speech(self, title="", priority="", defer_music=False, text="", **_):
         self._started.set()
         if self._fail:
             raise RuntimeError("the music player went away")
@@ -253,7 +253,7 @@ class _SlowCoord(_Coord):
         self._sink = sink
         self.loaded_during = None
 
-    def before_speech(self, title="", priority="", defer_music=False, text=""):
+    def before_speech(self, title="", priority="", defer_music=False, text="", **_):
         self._started.set()
         self.loaded_during = self._sink.loaded.wait(timeout=5)
 

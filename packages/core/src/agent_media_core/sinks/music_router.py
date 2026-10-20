@@ -252,6 +252,18 @@ class SinkMusicRouter:
         self._ducked_backend = backend
         backend.duck(target, level)
 
+    def volume_owner(self, claim: bool = False):
+        """The backend a volume fade should step (route/dj.py): whoever was
+        ducked, else whoever is live. With ``claim`` the live one is recorded
+        as ducked, exactly as :meth:`duck` would, so the restore goes back to
+        it whatever is audible by then (see unduck)."""
+        if self._ducked_backend is not None:
+            return self._ducked_backend
+        backend = self._observe_backend()
+        if claim:
+            self._ducked_backend = backend
+        return backend
+
     def unduck(self, target: Target = Target(name="local"), restore: int = 100) -> None:
         """Restore the volume of whoever was ducked — not of whoever is live now.
 

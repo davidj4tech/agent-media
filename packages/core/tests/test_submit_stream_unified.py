@@ -46,7 +46,7 @@ class _Coord:
     def release_music_duck(self): pass
     def reapply_music_duck(self): pass
 
-    def before_speech(self, title="", priority="", defer_music=False, text=""):
+    def before_speech(self, title="", priority="", defer_music=False, text="", **_):
         self.before.append((title, text))
 
     def speaking_line(self, text=""):

@@ -126,7 +126,7 @@ class _RecordingCoord:
         pass
 
     def before_speech(self, title="", priority="", defer_music=False,
-                          text=""):
+                          text="", **_):
         self.before += 1
 
     def speaking_line(self, text=""): pass

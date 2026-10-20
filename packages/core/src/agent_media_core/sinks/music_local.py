@@ -318,6 +318,9 @@ def seed_from_rooms_cache(uri: str) -> Optional[str]:
 class SinkMusicLocal:
     """The music channel's phone-local backend (download-on-phone + local mpv)."""
 
+    # mpv's volume steps cleanly, so the DJ duck can fade it (route/dj.py).
+    fades = True
+
     def __init__(self, ep: Optional[str] = None) -> None:
         # Resolve lazily on each call so env changes (settings reload) take
         # effect, but allow an explicit override for tests.
