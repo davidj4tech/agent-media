@@ -94,3 +94,35 @@ def test_an_agents_aside_is_spoken_in_the_conversations_voice(monkeypatch):
     cli.cmd_say(argparse.Namespace(text="from a shell", urgent=False,
                                    supersede=False, alert=False))
     assert said["voice"] is None
+
+
+def test_reply_display_prefers_thread_name_to_generic_terminal(monkeypatch):
+    monkeypatch.setattr(S, "_conversation_display_title", lambda session: "Car audio controls" if session == "thread-1" else "")
+    assert S._reply_title({"session": "thread-1"}, "codex") == "Car audio controls"
+    assert S._reply_title({"session": "thread-1", "title": "Captured thread title"}, "codex") == "Captured thread title"
+    # No change to the source window used to group history.
+    _tmux_would_say(monkeypatch, "work", "codex")
+    assert S._source_place({}, "%1") == ("work", "codex")
+
+
+def test_reply_display_falls_back_when_thread_has_no_title(monkeypatch):
+    monkeypatch.setattr(S, "_conversation_display_title", lambda session: "")
+    assert S._reply_title({"session": "unknown"}, "codex") == "codex"
+    assert S._reply_title({}, "Kitchen reminder") == "Kitchen reminder"
+    assert S._reply_title({}, "") == ""
+
+
+def test_conversation_display_title_uses_shelf_then_harness(monkeypatch):
+    import sys
+    from types import ModuleType
+    from agent_media_core import harnesses
+
+    sessions = ModuleType("agent_media_server.sessions")
+    sessions._manifest_of = lambda session: {"title": "Renamed from the phone"}
+    sessions._shelf_title = lambda data: data.get("title", "")
+    monkeypatch.setitem(sys.modules, "agent_media_server.sessions", sessions)
+    monkeypatch.setattr(harnesses, "title_of", lambda session: "Native Codex thread name")
+    assert S._conversation_display_title("thread-1") == "Renamed from the phone"
+    sessions._manifest_of = lambda session: {}
+    assert S._conversation_display_title("thread-1") == "Native Codex thread name"
+    assert S._conversation_display_title("") == ""

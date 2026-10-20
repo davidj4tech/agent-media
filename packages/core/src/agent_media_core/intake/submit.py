@@ -3016,15 +3016,39 @@ def _source_place(metadata, pane: str) -> tuple[str, str]:
             window or _tmux_window_for_pane(pane))
 
 
-def _reply_title(metadata, window: str) -> str:
-    """What a display should call this reply: its window, else the thread's name.
+def _conversation_display_title(session: str) -> str:
+    """The shelf's name, then the harness's name; best effort without a server."""
+    if not session:
+        return ""
+    try:
+        from agent_media_server.sessions import _manifest_of, _shelf_title
+        title = _shelf_title(_manifest_of(session))
+        if title:
+            return title
+    except Exception:  # noqa: BLE001 — metadata must never prevent speech
+        pass
+    try:
+        from .. import harnesses
+        title = harnesses.title_of(session)
+        if title:
+            return title
+    except Exception:  # noqa: BLE001
+        pass
+    from .hook_claude_code import _thread_title
+    return _thread_title(session)
 
-    A headless session has no window, so its hook sends the thread's name
-    (`hook_claude_code._thread_title`) beside the workspace. It names the reply
-    on the car and the speech card only; `source_window` stays what tmux says,
-    for everything that groups or matches by it.
+
+def _reply_title(metadata, window: str) -> str:
+    """Name the reply after its conversation, with the terminal as fallback.
+
+    A terminal window can just be called "codex". Keep that name for source
+    grouping, but use the thread's name on Bluetooth displays and speech cards.
     """
-    return window or str((metadata or {}).get("title") or "").strip()
+    md = metadata or {}
+    title = str(md.get("title") or "").strip()
+    if not title:
+        title = _conversation_display_title(_source_session(md))
+    return " ".join(str(title or window or "").split())
 
 
 def _nav_flag_path(target: Target) -> Path:
