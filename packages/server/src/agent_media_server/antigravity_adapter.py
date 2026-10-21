@@ -188,7 +188,7 @@ def transcript(s, obj: dict) -> None:
 def speak(s, text: str) -> None:
     import hashlib
     from agent_media_core.intake._hook_stdin import run
-    from agent_media_core.intake._markdown import strip_markdown
+    from agent_media_core.intake._text import strip_markdown
     from agent_media_core.types import Source
     cleaned = strip_markdown(text).strip()
     if not cleaned:
@@ -268,10 +268,11 @@ def event(supervisor, s, obj: dict) -> None:
         s.agy_had_result = True
         result = obj.get('result') or {}
         status = str(result.get('status') or '')
-        ok = status in ('SUCCESS', 'DONE')
-        text = str(result.get('response') or '')
-        if not text and getattr(s, 'agy_reply', None):
-            text = '\n\n'.join(s.agy_reply)
+        resp_text = str(result.get('response') or '')
+        if not resp_text and getattr(s, 'agy_reply', None):
+            resp_text = '\n\n'.join(s.agy_reply)
+        ok = status in ('SUCCESS', 'DONE') or bool(s.agy_replied or resp_text.strip())
+        text = resp_text
         if not text and result.get('error'):
             text = str(result['error'])
         # A result is authoritative, including CLIs that don't stream text.

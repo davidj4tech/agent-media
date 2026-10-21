@@ -363,8 +363,10 @@ def test_antigravity_and_rate_limit_warning_notifications(host, monkeypatch):
     assert len(open_alerts) == 1 and open_alerts[0]["step"] == 80
 
     # Antigravity streamed reply is preserved for speech even when result.response is empty
+    # or when agy reports status='ERROR' from an earlier failed step in the trajectory.
+    from agent_media_core.intake import _hook_stdin
     spoken = []
-    monkeypatch.setattr(antigravity_adapter, "speak", lambda sess, txt: spoken.append((sess.id, txt)))
+    monkeypatch.setattr(_hook_stdin, "submit_event", lambda ev, **kw: spoken.append((ev.metadata.get("session"), ev.text, ev.metadata.get("dedup_key"))))
     s.agy_queue.append("u1")
     antigravity_adapter.event(host.sup, s, {
         "event": "step_update",
@@ -372,9 +374,9 @@ def test_antigravity_and_rate_limit_warning_notifications(host, monkeypatch):
     })
     antigravity_adapter.event(host.sup, s, {
         "event": "result",
-        "result": {"status": "DONE", "response": "", "duration_seconds": 0.5},
+        "result": {"status": "ERROR", "response": "", "error": "prior step failed", "duration_seconds": 0.5},
     })
-    wait_for(lambda: spoken == [("6a1e0000-0000-4000-8000-0000000000cc", "Hello from streamed step!")])
+    wait_for(lambda: len(spoken) == 1 and spoken[0][:2] == ("6a1e0000-0000-4000-8000-0000000000cc", "Hello from streamed step!") and bool(spoken[0][2]))
 
     # Antigravity hitting quota limit records cut_off and emits limit notification
     s.last_text = "keep coding"
