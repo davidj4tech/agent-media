@@ -368,6 +368,7 @@ class Session:
         #: What the process last said it runs (`system/init`).
         self.native_session = ""
         self.agy_text: dict[str, str] = {}
+        self.agy_reply: list[str] = []
         self.agy_replied = False
         self.agy_had_result = False
         self.agy_ready = False
@@ -580,7 +581,7 @@ def _judge_cut_off(s: "Session", stopped_at: float | None) -> dict | None:
     (`crash`) cut off; one that ended by itself (`exit`) only when that
     was the host's stop killing it — within `STOP_RACE_S` of it."""
     cut = s.cut_off
-    if not cut or s.agent not in ("claude", "antigravity"):
+    if not cut or s.agent not in ("claude", "antigravity", "opencode"):
         return None
     if cut.get("why") == "quota":
         # The usage limit's: resumed at its reset (`quota_tick`), not at start.
@@ -665,12 +666,79 @@ def _quota():
     return quota
 
 
-def _quota_lifted() -> None:
+def _quota_lifted(agent: str = "claude") -> None:
     q = _quota()
     try:
         if q.path().exists() and q.lifted():
             log.info("sessiond: the usage limit is off before its reset; resuming")
+            _clear_quota_alert(agent)
     except OSError:
+        pass
+
+
+def _emit_quota_warning(w: dict) -> None:
+    try:
+        from . import alerts, notes
+        agent = str(w.get("agent") or "claude")
+        pct = w.get("utilization")
+        step = int(w.get("step") or 80)
+        r_at = w.get("resets_at")
+        reset_str = f" (resets at {_clock(float(r_at))})" if r_at else ""
+        pct_str = f"{float(pct):.0f}%" if isinstance(pct, (int, float)) else f"{step}%"
+        title = f"{agent.capitalize()} quota at {pct_str}{reset_str}"
+        detail = str(w.get("text") or title)
+        alerts.report({
+            "id": f"quota.{agent}",
+            "level": "warn",
+            "step": step,
+            "title": title,
+            "detail": detail,
+        })
+        notes.post(
+            title,
+            detail,
+            tag=f"quota-warn-{agent}",
+            session=str(w.get("session") or ""),
+            folder=str(w.get("cwd") or ""),
+        )
+    except Exception:
+        pass
+
+
+def _emit_quota_limit(agent: str, reset: float | None, text: str, *, session: str = "", cwd: str = "") -> None:
+    try:
+        from . import alerts, notes
+        agent = str(agent or "claude")
+        reset_str = _clock(reset) if reset else "unknown"
+        title = f"{agent.capitalize()} usage limit reached (resets {reset_str})"
+        detail = (str(text or "").strip()[:240] or title) + " Sessions will resume automatically at the reset."
+        alerts.report({
+            "id": f"quota.{agent}",
+            "level": "warn",
+            "step": 100,
+            "title": title,
+            "detail": detail,
+        })
+        notes.post(
+            title,
+            detail,
+            tag=f"quota-limit-{agent}",
+            session=session,
+            folder=cwd,
+        )
+    except Exception:
+        pass
+
+
+def _clear_quota_alert(agent: str = "claude") -> None:
+    try:
+        from . import alerts
+        alerts.report({
+            "id": f"quota.{agent or 'claude'}",
+            "level": "ok",
+            "title": f"{(agent or 'claude').capitalize()} usage limit reset",
+        })
+    except Exception:
         pass
 
 
@@ -745,6 +813,47 @@ def add_quota_status(row: dict, session: str, rec: dict | None) -> None:
 
 
 # --- the supervisor -----------------------------------------------------------------
+
+
+
+def _oc_ask_pre(s: Session, rid: str, tool_input: dict) -> None:
+    try:
+        from agent_media_core.intake.hook_claude_code import _handle_pretooluse
+        _handle_pretooluse({
+            "session_id": s.id,
+            "cwd": s.cwd,
+            "tool_name": "AskUserQuestion",
+            "tool_input": tool_input,
+            "tool_use_id": rid,
+            "harness": "opencode",
+        })
+    except Exception:
+        pass
+
+
+def _oc_ask_post(s: Session, rid: str, tool_input: dict, raw_answers: object) -> None:
+    try:
+        from agent_media_core.intake.hook_claude_code import _handle_posttooluse
+        answers: dict[str, str] = {}
+        if isinstance(raw_answers, dict):
+            answers = {str(k): ", ".join(v) if isinstance(v, list) else str(v) for k, v in raw_answers.items()}
+        elif isinstance(raw_answers, list):
+            qs = tool_input.get("questions") or []
+            for i, a in enumerate(raw_answers):
+                q_text = str((qs[i] if i < len(qs) and isinstance(qs[i], dict) else {}).get("question") or f"q{i}")
+                answers[q_text] = ", ".join(str(x) for x in a) if isinstance(a, list) else str(a)
+        _handle_posttooluse({
+            "session_id": s.id,
+            "cwd": s.cwd,
+            "tool_name": "AskUserQuestion",
+            "tool_input": tool_input,
+            "tool_use_id": rid,
+            "tool_response": {"answers": answers} if answers else {},
+            "harness": "opencode",
+        })
+    except Exception:
+        pass
+
 
 class Supervisor:
     """Every headless session this host holds, and the processes behind them."""
@@ -868,7 +977,7 @@ class Supervisor:
             first = not self.stopping
             self.stopping = True
             for s in self.sessions.values():
-                if s.agent in ("claude", "antigravity") and s.live and s.cut_off is None:
+                if s.agent in ("claude", "antigravity", "opencode") and s.live and s.cut_off is None:
                     w = s.work()
                     if w:
                         s.cut_off = {**w, "at": round(now, 3), "why": "restart"}
@@ -926,14 +1035,17 @@ class Supervisor:
         if self.draining():
             return []
         q = _quota()
+        if q.warnings_path().exists():
+            for w in q.pop_unnotified_warnings():
+                _emit_quota_warning(w)
         rec = q.read() if q.path().exists() else None
-        limited = q.limited(rec=rec) is not None if rec else False
         with self.lock:
             todo = []
             for s in self.sessions.values():
                 cut = s.cut_off or {}
-                if s.agent == "claude" and rec and (
-                        limited or q.waiting_entry(s.id, rec) is not None):
+                if rec and (
+                        q.limited(rec=rec, agent=s.agent) is not None
+                        or q.waiting_entry(s.id, rec) is not None):
                     continue
                 if cut.get("why") == "quota" and not cut.get("due"):
                     continue
@@ -965,7 +1077,7 @@ class Supervisor:
                 return True
             cut = s.cut_off if (s.cut_off or {}).get("due") else None
             text = ""
-            if cut and s.agent in ("claude", "antigravity"):
+            if cut and s.agent in ("claude", "antigravity", "opencode"):
                 if cut.get("why") == "quota":
                     d = None
                     if any(t.get("type") == "local_agent" for t in cut.get("tasks") or []
@@ -1110,11 +1222,13 @@ class Supervisor:
         cut = s.cut_off or {}
         try:
             _quota().note_limit({"kind": "headless", "session": s.id, "cwd": s.cwd,
-                                 "at": cut.get("at")}, reset,
+                                 "agent": s.agent, "at": cut.get("at")}, reset,
                                 kind=str((s.limit_info or {}).get("rateLimitType") or ""),
                                 text=str(text or "")[:200],
                                 source="event" if (s.limit_info or {}).get("resetsAt")
-                                else "text")
+                                else "text",
+                                agent=s.agent)
+            _emit_quota_limit(s.agent, reset, str(text or ""), session=s.id, cwd=s.cwd)
         except OSError as e:
             log.warning("sessiond: could not write the usage limit's record (%s)", e)
 
@@ -1124,9 +1238,11 @@ class Supervisor:
         since, is cut off by it now — its reset from the last rejected
         `rate_limit_event`, its stopped agents from their `task_*` events."""
         lr = s.last_result or {}
-        if s.agent != "claude" or s.cut_off is not None or not lr.get("is_error") \
-                or (lr.get("terminal_reason") != "api_error"
-                    and lr.get("api_error") != _quota().LIMIT_ERROR):
+        if s.cut_off is not None or not lr.get("is_error"):
+            return
+        if s.agent == "claude" and (
+                lr.get("terminal_reason") != "api_error"
+                and lr.get("api_error") != _quota().LIMIT_ERROR):
             return
         if time.time() - s.last_event_at > 3 * 86400:
             return
@@ -1208,6 +1324,8 @@ class Supervisor:
             else:
                 log.warning("sessiond: %s not resumed after the usage limit: gave up", sid[:8])
             return ""
+        if how == "done":
+            _clear_quota_alert(str(entry.get("agent") or "claude"))
         return sid if how == "done" else ""
 
     def _resume_quota(self, sid: str) -> str:
@@ -1395,6 +1513,7 @@ class Supervisor:
             s.agy_queue.clear()
             s.agy_inputs.clear()
             s.agy_text.clear()
+            s.agy_reply.clear()
             s.agy_had_result = False
             s.agy_ready = False
             s.agy_replied = False
@@ -1570,14 +1689,19 @@ class Supervisor:
                 info = obj.get("rate_limit_info") or {}
                 if info.get("status") == "rejected":
                     s.limit_info = info
-                elif info.get("status") in ("allowed", "allowed_warning") \
-                        and s.agent == "claude" and _quota().path().exists():
-                    # A request went through: a limit on record is off.
-                    threading.Thread(target=_quota_lifted, daemon=True,
-                                     name="quota-lifted").start()
+                else:
+                    if info.get("status") in ("allowed", "allowed_warning") and _quota().path().exists():
+                        # A request went through: a limit on record is off.
+                        threading.Thread(target=_quota_lifted, args=(s.agent,), daemon=True,
+                                         name="quota-lifted").start()
+                    w = _quota().check_rate_limit_info(info, agent=s.agent, session=s.id, cwd=s.cwd, now=now)
+                    if w:
+                        for uw in _quota().pop_unnotified_warnings(now=now):
+                            threading.Thread(target=_emit_quota_warning, args=(uw,), daemon=True,
+                                             name="quota-warn").start()
             elif t == "result":
                 s.foreground.clear()
-                if s.agent == "claude" and _quota().is_limit_result(obj):
+                if _quota().is_limit_result(obj):
                     self._quota_cut(s, obj, now)
                 s.last_result = _result_summary(obj)
                 s.set_state("approval" if s.pending else "waiting")
@@ -1785,13 +1909,18 @@ class Supervisor:
         if agent == "opencode":
             if self.draining():
                 raise Refused(RESTART_REFUSED, "restart_pending")
+            q = _quota()
+            lim = q.limited(agent="opencode") if q.path().exists() else None
+            if lim:
+                raise Refused(QUOTA_REFUSED.format(at=_clock(float(lim["resets_at"]))),
+                              "quota_limited", quota=q.view(rec=lim))
             return self._oc_start(cwd, text, workspace=workspace,
                                   permissions=perms.mode(permissions), model=model)
         if self.draining():
             raise Refused(RESTART_REFUSED, "restart_pending")
         q = _quota()
-        lim = q.limited() if q.path().exists() else None
-        if lim and agent == "claude":
+        lim = q.limited(agent=agent) if q.path().exists() else None
+        if lim:
             raise Refused(QUOTA_REFUSED.format(at=_clock(float(lim["resets_at"]))),
                           "quota_limited", quota=q.view(rec=lim))
         session = session or str(uuid.uuid4())
@@ -1830,7 +1959,7 @@ class Supervisor:
         if not (text or "").strip():
             raise Refused("empty message", "empty_text")
         uid = uid or str(uuid.uuid4())
-        if not _fresh and not _internal and self._agent(session) == "claude":
+        if not _fresh and not _internal:
             held = self._quota_hold(session, text, uid, keep_pending)
             if held is not None:
                 return held
@@ -1882,6 +2011,11 @@ class Supervisor:
                 s.set_state("working")
             busy = s.state == "working"
             if s.agent == "antigravity":
+                try:
+                    from agent_media_core.sinks.speech import end_session_speech_cut
+                    end_session_speech_cut(s.id)
+                except Exception:
+                    pass
                 s.agy_had_result = False
                 s.agy_inputs.append((uid, text))
                 s.agy_queue.append(uid)
@@ -1918,7 +2052,8 @@ class Supervisor:
         rec = q.read()
         if not rec:
             return None
-        if q.limited(rec=rec):
+        agent = self._agent(session) or "claude"
+        if q.limited(rec=rec, agent=agent):
             with self.lock:
                 s = self._get(session)
                 if keep_pending and (s.pending or s.state == "approval"):
@@ -1927,7 +2062,7 @@ class Supervisor:
                                "keep_pending": keep_pending})
                 self._save(s)
                 cwd, n = s.cwd, len(s.held)
-            q.add_waiting({"kind": "headless", "session": session, "cwd": cwd})
+            q.add_waiting({"kind": "headless", "session": session, "cwd": cwd, "agent": agent})
             log.info("sessiond: %s: message held for the usage limit's reset (%d held)",
                      session[:8], n)
             with self.lock:
@@ -2468,19 +2603,40 @@ class Supervisor:
                                      name="auto-title").start()
             elif t == "session.error":
                 err = props.get("error") if isinstance(props.get("error"), dict) else {}
+                err_msg = str((err.get("data") or {}).get("message") or err.get("message") or err.get("name") or "error")
                 s.last_result = {"subtype": "error", "is_error": True,
-                                 "error": str(err.get("name") or "error")}
+                                 "error": str(err.get("name") or "error"), "result": err_msg}
+                if _quota().is_limit_text(err_msg):
+                    self._quota_cut(s, {"result": err_msg, "is_error": True}, now)
             elif t in ("permission.asked", "question.asked"):
                 rid = str(props.get("id") or "")
                 kind = t.split(".")[0]
                 if rid:
+                    req_obj = oc.request_of(kind, props)
                     s.pending[rid] = {"request_id": rid, "oc": kind, "at": round(now, 3),
-                                      "request": oc.request_of(kind, props)}
+                                      "request": req_obj}
                     s.set_state("approval")
+                    if kind == "question":
+                        threading.Thread(
+                            target=_oc_ask_pre,
+                            args=(s, rid, req_obj.get("input") or {}),
+                            daemon=True,
+                            name="oc-ask-pre",
+                        ).start()
             elif t in ("permission.replied", "question.replied", "question.rejected"):
-                s.pending.pop(str(props.get("requestID") or ""), None)
+                rid = str(props.get("requestID") or "")
+                old_entry = s.pending.pop(rid, None)
                 if not s.pending and s.state == "approval":
                     s.set_state("working")
+                if t in ("question.replied", "question.rejected") and old_entry:
+                    req_inp = (old_entry.get("request") or {}).get("input") or {}
+                    ans = props.get("answers") or {}
+                    threading.Thread(
+                        target=_oc_ask_post,
+                        args=(s, rid, req_inp, ans if t == "question.replied" else {}),
+                        daemon=True,
+                        name="oc-ask-post",
+                    ).start()
             if (s.state, len(s.pending)) != before or t in ("session.idle", "session.error"):
                 self._save(s)
             self.cond.notify_all()

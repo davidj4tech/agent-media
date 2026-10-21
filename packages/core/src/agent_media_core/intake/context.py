@@ -245,6 +245,22 @@ def last_usage(transcript: str) -> tuple[str, int, int | None] | None:
                 return m.get("model", ""), used, None
         elif kind == "event_msg":
             p = d.get("payload") or {}
+            if p.get("type") == "token_count":
+                rl = p.get("rate_limits")
+                if isinstance(rl, dict):
+                    try:
+                        from .. import quota
+                        for win_key in ("primary", "secondary"):
+                            win = rl.get(win_key)
+                            if isinstance(win, dict) and win.get("used_percent") is not None:
+                                quota.check_rate_limit_info(
+                                    {"used_percent": win.get("used_percent"),
+                                     "resetsAt": win.get("resets_at"),
+                                     "window": win_key},
+                                    agent="codex",
+                                )
+                    except Exception:
+                        pass
             info = p.get("info") or {}
             last = info.get("last_token_usage")
             if p.get("type") == "token_count" and last:
@@ -461,6 +477,13 @@ def _hook() -> None:
 
 def _statusline() -> None:
     d = json.load(sys.stdin)
+    rl = d.get("rate_limits") or d.get("rate_limit_info")
+    if isinstance(rl, dict):
+        try:
+            from .. import quota
+            quota.check_rate_limit_info(rl, agent="claude", session=str(d.get("session_id") or ""))
+        except Exception:
+            pass
     cw = d.get("context_window") or {}
     size = cw.get("context_window_size")
     pct = cw.get("used_percentage")

@@ -338,3 +338,54 @@ def test_a_desk_session_picked_up_already_is_left_alone(host, pane):
     quota.note_limit({"kind": "desk", "session": "desk-1", "turn": True}, time.time() - 1)
     assert host.sup.quota_tick() == ""
     assert pane.typed == [] and quota.waiting_entry("desk-1") is None
+
+
+def test_antigravity_and_rate_limit_warning_notifications(host, monkeypatch):
+    from agent_media_server import alerts, antigravity_adapter, notes
+
+    posted = []
+    monkeypatch.setattr(notes, "post", lambda title, body="", **kw: posted.append((title, body, kw)) or True)
+    s = sessiond.Session("6a1e0000-0000-4000-8000-0000000000cc", str(host.work), agent="antigravity", workspace="amux")
+    host.sup.sessions[s.id] = s
+    # Rate limit warning event triggers alert + phone notification
+    reset = time.time() + 1800
+    host.sup._on_event(s, {
+        "type": "rate_limit_event",
+        "rate_limit_info": {
+            "status": "allowed_warning",
+            "utilization": 0.85,
+            "rateLimitType": "five_hour",
+            "resetsAt": reset,
+        },
+    })
+    wait_for(lambda: any("quota at 85%" in t for t, _, _ in posted))
+    open_alerts = [a for a in alerts.listing(open_only=True)["alerts"] if a["id"] == "quota.antigravity"]
+    assert len(open_alerts) == 1 and open_alerts[0]["step"] == 80
+
+    # Antigravity streamed reply is preserved for speech even when result.response is empty
+    spoken = []
+    monkeypatch.setattr(antigravity_adapter, "speak", lambda sess, txt: spoken.append((sess.id, txt)))
+    s.agy_queue.append("u1")
+    antigravity_adapter.event(host.sup, s, {
+        "event": "step_update",
+        "step_update": {"step_type": "agent_response", "step_index": 1, "text_delta": "Hello from streamed step!", "state": "DONE"},
+    })
+    antigravity_adapter.event(host.sup, s, {
+        "event": "result",
+        "result": {"status": "DONE", "response": "", "duration_seconds": 0.5},
+    })
+    wait_for(lambda: spoken == [("6a1e0000-0000-4000-8000-0000000000cc", "Hello from streamed step!")])
+
+    # Antigravity hitting quota limit records cut_off and emits limit notification
+    s.last_text = "keep coding"
+    antigravity_adapter.event(host.sup, s, {
+        "event": "result",
+        "result": {
+            "status": "ERROR",
+            "error": "RESOURCE_EXHAUSTED: You have exhausted your capacity. Try again in 30 minutes.",
+        },
+    })
+    assert s.cut_off is not None and s.cut_off["why"] == "quota"
+    assert quota.limited(agent="antigravity") is not None
+    # Claude is NOT blocked by Antigravity's limit
+    assert quota.limited(agent="claude") is None

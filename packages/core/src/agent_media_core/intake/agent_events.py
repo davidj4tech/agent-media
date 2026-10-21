@@ -52,27 +52,40 @@ def handle(payload: dict, harness: str) -> int:
             from .. import activity
 
             activity.record(payload)
-        if (harness == "codex" and event in ("PreToolUse", "PostToolUse", "PostToolUseFailure")
-                and str(payload.get("tool_name") or "").split(".")[-1] == "request_user_input"):
+        if event == "StopFailure" or (
+            event == "Stop"
+            and (payload.get("error") or payload.get("error_details"))
+        ):
+            from .hook_claude_code import _handle_stop_failure
+
+            _handle_stop_failure({**payload, "harness": harness})
+            if event == "StopFailure":
+                return 0
+        tname = str(payload.get("tool_name") or "").split(".")[-1]
+        if event in ("PreToolUse", "PostToolUse", "PostToolUseFailure") and tname in (
+            "request_user_input", "AskUserQuestion", "ask_question", "question",
+            "ask_user", "ask_user_question"
+        ):
             from .hook_claude_code import _handle_pretooluse, _handle_posttooluse
 
-            # Share question storage, speech, holding and part-by-part
-            # read-out. Only the terminal's answer keys differ.
-            question = {**payload, "tool_name": "AskUserQuestion", "harness": "codex"}
+            raw_inp = payload.get("tool_input") or {}
+            if isinstance(raw_inp, dict) and "questions" not in raw_inp and raw_inp.get("question"):
+                raw_inp = {"questions": [raw_inp]}
+            question = {**payload, "tool_name": "AskUserQuestion", "tool_input": raw_inp, "harness": harness}
             if event == "PreToolUse":
-                return _handle_pretooluse(question)
+                return _handle_pretooluse(question, harness=harness)
             response = payload.get("tool_response") or {}
             if isinstance(response, str):
                 try:
                     response = json.loads(response)
                 except ValueError:
                     response = {}
-            if isinstance(response, dict):
+            if harness == "codex" and isinstance(response, dict):
                 answers = response.get("answers") or {}
                 question["tool_response"] = {"answers": {
                     q["question"]: ", ".join((answers.get(q.get("id")) or {}).get("answers") or [])
-                    for q in (payload.get("tool_input") or {}).get("questions") or []}}
-            return _handle_posttooluse(question)
+                    for q in (raw_inp.get("questions") if isinstance(raw_inp, dict) else None) or []}}
+            return _handle_posttooluse(question, harness=harness)
         if event == "UserPromptSubmit":
             from .hook_claude_code import _handle_user_prompt
 

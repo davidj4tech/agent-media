@@ -182,3 +182,54 @@ def test_setup_registers_the_stop_failure_hook():
     from agent_media_core import setup
 
     assert ("StopFailure", 30, True, "rate_limit") in setup.CLAUDE_HOOK_SPEC
+
+
+def test_multi_harness_limit_text_and_relative_reset():
+    now = 1_700_000_000.0
+    assert quota.is_limit_text("RESOURCE_EXHAUSTED: You have exhausted your capacity on this model. Try again in 2h 15m.")
+    assert quota.is_limit_text("Error: usage_limit_reached (rate_limit_exceeded)")
+    assert quota.is_limit_text("Your model's limit is used up; free usage exceeded.")
+    assert quota.parse_reset("Try again in 2h 15m.", now) == now + 2 * 3600 + 15 * 60
+    assert quota.parse_reset("resets in 45 minutes", now) == now + 45 * 60
+    assert quota.is_limit_result({
+        "type": "result",
+        "is_error": True,
+        "subtype": "error",
+        "result": "RESOURCE_EXHAUSTED: quota exceeded, resets in 30m",
+    })
+
+
+def test_per_agent_limit_isolation():
+    now = 1_700_000_000.0
+    quota.note_limit({"kind": "headless", "session": "s-claude"}, now + 3600, agent="claude", now=now)
+    assert quota.limited(now, agent="claude") is not None
+    assert quota.limited(now, agent="antigravity") is None
+    assert quota.limited(now, agent="opencode") is None
+
+
+def test_quota_approaching_warning_steps_and_dedup():
+    now = 1_700_000_000.0
+    reset = now + 3600
+    # Below threshold (80%): no warning
+    assert quota.check_rate_limit_info({"status": "allowed", "utilization": 0.65, "resetsAt": reset},
+                                       agent="claude", now=now) is None
+    # Crosses 80%: warning recorded
+    w1 = quota.check_rate_limit_info({"status": "allowed_warning", "utilization": 0.82,
+                                      "rateLimitType": "five_hour", "resetsAt": reset},
+                                     agent="claude", session="s1", now=now)
+    assert w1 is not None and w1["step"] == 80 and w1["utilization"] == 82.0
+    # Same band (85%): deduplicated
+    assert quota.check_rate_limit_info({"status": "allowed_warning", "utilization": 0.85,
+                                        "rateLimitType": "five_hour", "resetsAt": reset},
+                                       agent="claude", session="s1", now=now + 10) is None
+    popped = quota.pop_unnotified_warnings(now=now + 15)
+    assert len(popped) == 1 and popped[0]["step"] == 80
+    assert quota.pop_unnotified_warnings(now=now + 16) == []
+    # Escalates to 90%+: new warning emitted
+    w2 = quota.check_rate_limit_info({"status": "allowed_warning", "utilization": 0.92,
+                                      "rateLimitType": "five_hour", "resetsAt": reset},
+                                     agent="claude", session="s1", now=now + 20)
+    assert w2 is not None and w2["step"] == 90
+    # Hitting the limit clears the warning
+    quota.note_limit({"kind": "headless", "session": "s1"}, reset, agent="claude", now=now + 30)
+    assert quota.warnings(now=now + 31, agent="claude") == []

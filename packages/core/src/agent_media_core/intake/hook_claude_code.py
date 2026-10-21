@@ -735,7 +735,7 @@ def _emit_ask(ask: str, payload: dict, lead: str = "", structure: list | None = 
             pending_asks.update(session, str(payload["tool_use_id"]), held=True)
         except Exception:  # noqa: BLE001
             pass
-    event = Event(text=msg, source=Source.CODEX if payload.get("harness") == "codex" else Source.CLAUDE_CODE,
+    event = Event(text=msg, source=_source_for_harness(str(payload.get("harness") or "")),
                   priority=Priority.NORMAL if held else priority,
                   voice=voice_for_session(sess),
                   metadata={"kind": "notif", "voice_from": "session", "ask": structure or True,
@@ -864,7 +864,7 @@ def speak_ask_part(session: str, part: int, tool_use_id: str = "") -> str:
     except Exception as e:  # noqa: BLE001 — the cut still ends it between clips
         log.info("hook: could not stop the part before (%s)", e)
     place = cur.get("place") if isinstance(cur.get("place"), dict) else {}
-    event = Event(text=text, source=Source.CODEX if cur.get("harness") == "codex" else Source.CLAUDE_CODE,
+    event = Event(text=text, source=_source_for_harness(str(cur.get("harness") or "")),
                   priority=Priority.NORMAL,
                   voice=cur.get("voice") or None,
                   metadata={"kind": "notif", "voice_from": "session", "ask": True, "ask_part": part,
@@ -875,7 +875,21 @@ def speak_ask_part(session: str, part: int, tool_use_id: str = "") -> str:
     return "held" if held else ""
 
 
-def _handle_pretooluse(payload: dict) -> int:
+def _source_for_harness(harness: str) -> Source:
+    return {
+        "codex": Source.CODEX,
+        "antigravity": Source.ANTIGRAVITY,
+        "opencode": Source.OPENCODE,
+        "pi": Source.PI,
+        "gemini": Source.GEMINI,
+        "grok": Source.GROK,
+        "hermes": Source.HERMES,
+    }.get(harness.lower(), Source.CLAUDE_CODE)
+
+
+def _handle_pretooluse(payload: dict, harness: str = "") -> int:
+    if harness and not payload.get("harness"):
+        payload = {**payload, "harness": harness}
     """PreToolUse path — the *real* AskUserQuestion trigger.
 
     Claude Code does NOT fire a Notification when an AskUserQuestion modal is
@@ -1219,11 +1233,14 @@ def _handle_stop_failure(payload: dict) -> int:
     reset = (hit or {}).get("resets_at") or quota.parse_reset(text, now)
     sub = str(Path(tp).with_suffix("") / "subagents") if tp else ""
     agents = quota.limited_agents(sub, since=now - 6 * 3600) if sub else []
+    harness = str(payload.get("harness") or "claude")
     entry = {"kind": "desk", "session": sid, "cwd": str(payload.get("cwd") or ""),
              "pane": os.environ.get("TMUX_PANE") or "", "at": round(now, 3), "turn": True,
+             "agent": harness,
              "last_text": quota.last_user_text(tp) if tp else "", "tasks": agents}
     quota.note_limit(entry, reset, kind=str((hit or {}).get("kind") or ""), text=text[:200],
-                     source="event" if hit and hit.get("resets_at") else "text", now=now)
+                     source="event" if hit and hit.get("resets_at") else "text",
+                     agent=harness, now=now)
     log.info("hook: %s stopped by the usage limit; resumes at the reset", sid[:8])
     return 0
 
@@ -1392,7 +1409,9 @@ def _stop_playing_ask(session: str) -> None:
     SinkSpeech().stop(_active_speech_target())
 
 
-def _handle_posttooluse(payload: dict) -> int:
+def _handle_posttooluse(payload: dict, harness: str = "") -> int:
+    if harness and not payload.get("harness"):
+        payload = {**payload, "harness": harness}
     """PostToolUse(AskUserQuestion) — record the option the listener chose.
 
     An answer is a turn: it is what the person said, and without it the

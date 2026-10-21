@@ -43,7 +43,14 @@ from typing import Callable, Optional
 
 #: Claude Code's sentence for it ("You've hit your session limit · resets
 #: 2am (Australia/Melbourne)"; weekly and Opus limits say so in its place).
-LIMIT_RE = re.compile(r"(?:hit|reached) your (?:[\w-]+ )*limit|usage limit", re.I)
+LIMIT_RE = re.compile(
+    r"(?:hit|reached) your (?:[\w-]+ )*limit|usage limit"
+    r"|out of extra usage|rate_limit_error|would exceed your (?:account's |organization's )?rate limit"
+    r"|resource_exhausted|quota exceeded|exhausted your (?:capacity|quota|daily quota)"
+    r"|ratelimitexceeded|rate_limit_exceeded|insufficient_quota|usage_limit_reached"
+    r"|model's limit is used up|free usage exceeded|too many requests.*(?:quota|limit)",
+    re.I,
+)
 #: The CLI's error code for it, on the result and on the transcript line.
 LIMIT_ERROR = "usage_limit_reached"
 
@@ -91,8 +98,10 @@ def is_limit_result(obj: dict) -> bool:
         return True
     if not obj.get("is_error"):
         return False
-    return (obj.get("api_error_status") == 429 or obj.get("terminal_reason") == "api_error") \
-        and is_limit_text(obj.get("result"))
+    tr = obj.get("terminal_reason")
+    if tr and tr != "api_error" and obj.get("api_error_status") != 429:
+        return False
+    return is_limit_text(obj.get("result"))
 
 
 def is_limit_line(obj: dict) -> bool:
@@ -123,17 +132,32 @@ def reset_from_info(info: object) -> Optional[float]:
 
 
 _RESET_RE = re.compile(
-    r"resets?\s+(?:at\s+)?(?:(?P<mon>[A-Z][a-z]{2})[a-z]*\s+(?P<day>\d{1,2}),?\s+(?:at\s+)?)?"
+    r"(?:resets?|try again|available)\s+(?:on\s+|at\s+)?(?:(?P<mon>[A-Z][a-z]{2})[a-z]*\s+(?P<day>\d{1,2}),?\s+(?:at\s+)?)?"
     r"(?P<h>\d{1,2})(?::(?P<m>\d{2}))?\s*(?P<ap>am|pm)?\s*(?:\((?P<tz>[^)]+)\))?", re.I)
+_RESET_IN = re.compile(
+    r'(?:resets?\s+in|try\s+again\s+in|retry\s+after|reset_seconds["\']?\s*[:=]\s*)'
+    r"\s*(?:(?P<h>\d+)\s*(?:h|hr|hrs|hour|hours)\s*)?"
+    r"(?:(?P<m>\d+)\s*(?:m|min|mins|minute|minutes)\s*)?"
+    r"(?:(?P<s>\d+)\s*(?:s|sec|secs|second|seconds)?)?",
+    re.I,
+)
 _MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
 
 
 def parse_reset(text: object, now: Optional[float] = None) -> Optional[float]:
     """When the sentence says it resets ("resets 2am (Australia/Melbourne)",
-    "resets 3:30pm", "resets Oct 22, 9am (UTC)"): the next such moment after
-    `now`, in its zone (else local time). None when it says no time."""
+    "resets 3:30pm", "resets Oct 22, 9am (UTC)", "resets in 2h 15m"): the next
+    such moment after `now`, in its zone (else local time). None when it says no time."""
     if not isinstance(text, str):
         return None
+    now = time.time() if now is None else now
+    ri = _RESET_IN.search(text)
+    if ri and (ri.group("h") or ri.group("m") or ri.group("s")):
+        delta = (int(ri.group("h") or 0) * 3600
+                 + int(ri.group("m") or 0) * 60
+                 + int(ri.group("s") or 0))
+        if delta > 0:
+            return float(int(now + delta))
     m = _RESET_RE.search(text)
     if not m or (not m.group("ap") and not m.group("m")):
         return None
@@ -307,14 +331,17 @@ def _merge_tasks(old: list, new: list) -> list:
 
 
 def note_limit(entry: dict, resets_at: Optional[float] = None, *, kind: str = "",
-               text: str = "", source: str = "event", now: Optional[float] = None) -> dict:
+               text: str = "", source: str = "event", agent: str = "",
+               now: Optional[float] = None) -> dict:
     """The limit stopped `entry` (`{"kind", "session", "cwd", "at", …}`).
     The account is limited until `resets_at` (the later of what is known;
     a backoff when nothing is), and `entry` waits for it — once: a session
     already waiting keeps its place and its earliest `at`, and gains any new
     background agents. The record as written."""
     now = time.time() if now is None else now
-    entry = {**entry, "at": float(entry.get("at") or now)}
+    eff_agent = str(agent or entry.get("agent") or "").strip().lower()
+    entry = {**entry, "at": float(entry.get("at") or now),
+             **({"agent": eff_agent} if eff_agent else {})}
 
     def fn(rec):
         rec = dict(rec or {})
@@ -338,6 +365,8 @@ def note_limit(entry: dict, resets_at: Optional[float] = None, *, kind: str = ""
             rec["kind"] = kind
         if text:
             rec["text"] = text
+        if eff_agent:
+            rec["agent"] = eff_agent
         rec["state"] = "limited"
         rec.pop("next_at", None)
         waiting = [w for w in rec.get("waiting") or [] if isinstance(w, dict)]
@@ -354,16 +383,25 @@ def note_limit(entry: dict, resets_at: Optional[float] = None, *, kind: str = ""
         rec["waiting"] = sorted(waiting, key=lambda w: float(w.get("at") or 0))
         return rec
 
+    clear_warnings(eff_agent or "claude")
     return _update(fn) or {}
 
 
-def limited(now: Optional[float] = None, rec: Optional[dict] = None) -> Optional[dict]:
+def limited(now: Optional[float] = None, rec: Optional[dict] = None,
+            *, agent: Optional[str] = None) -> Optional[dict]:
     """The record while the account is still limited (before the reset and
-    its margin), else None."""
+    its margin), else None. When `agent` is given, only matches if that
+    harness is limited (untagged limits default to `claude`)."""
     now = time.time() if now is None else now
     rec = read() if rec is None else rec
     if rec and rec.get("state") == "limited" \
             and now < float(rec.get("resets_at") or 0) + margin_s():
+        if agent:
+            rec_agent = str(rec.get("agent") or "claude")
+            waiting_agents = {str(w.get("agent") or rec_agent)
+                              for w in rec.get("waiting") or [] if isinstance(w, dict)}
+            if agent != rec_agent and agent not in waiting_agents:
+                return None
         return rec
     return None
 
@@ -518,3 +556,237 @@ def lifted(now: Optional[float] = None, *, min_age_s: float = 60.0) -> bool:
 
 def clear() -> None:
     _update(lambda rec: None)
+
+
+# --- approaching-limit warnings ----------------------------------------------------
+
+WARN_PCT_DEFAULT = 80.0
+
+
+def warn_pct_threshold() -> float:
+    return max(1.0, min(99.0, _env_f("MEDIA_QUOTA_WARN_PCT", WARN_PCT_DEFAULT)))
+
+
+def warnings_path() -> Path:
+    from ._paths import state_dir
+
+    return state_dir() / "quota-warnings.json"
+
+
+def _warn_step(pct: float) -> int:
+    if pct >= 95.0:
+        return 95
+    if pct >= 90.0:
+        return 90
+    thresh = warn_pct_threshold()
+    if pct >= thresh:
+        return int(thresh)
+    return 0
+
+
+def _normalize_pct(val: object) -> Optional[float]:
+    try:
+        f = float(val)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if f <= 0:
+        return 0.0
+    return round(f * 100.0 if f <= 1.0 else f, 1)
+
+
+def _update_warnings(fn: "Callable[[dict], Optional[dict]]") -> Optional[dict]:
+    from . import _lock
+
+    p = warnings_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with open(p.with_suffix(".lock"), "a+") as lk:
+        _lock.flock(lk, _lock.LOCK_EX)
+        try:
+            try:
+                cur = json.loads(p.read_text()) if p.exists() else {}
+            except (OSError, ValueError):
+                cur = {}
+            new = fn(cur if isinstance(cur, dict) else {})
+            if not new or not new.get("warnings"):
+                p.unlink(missing_ok=True)
+                return None
+            tmp = p.with_name(f".{p.name}.{os.getpid()}")
+            tmp.write_text(json.dumps(new, indent=1))
+            os.replace(tmp, p)
+            return new
+        finally:
+            _lock.flock(lk, _lock.LOCK_UN)
+
+
+def note_warning(
+    *,
+    agent: str = "claude",
+    utilization: Optional[float] = None,
+    resets_at: Optional[float] = None,
+    kind: str = "",
+    text: str = "",
+    session: str = "",
+    cwd: str = "",
+    now: Optional[float] = None,
+) -> Optional[dict]:
+    """Record a quota-approaching warning when utilization >= threshold or
+    the harness explicitly signalled `allowed_warning`. Deduplicated per
+    `(agent, kind)` and step band (80%, 90%, 95%) until `resets_at` passes."""
+    now = time.time() if now is None else now
+    agent = str(agent or "claude").strip().lower() or "claude"
+    pct = _normalize_pct(utilization)
+    thresh = warn_pct_threshold()
+    if pct is not None and pct < thresh and not text:
+        return None
+    step = _warn_step(pct if pct is not None else thresh)
+    if step == 0 and text:
+        step = int(thresh)
+    if step == 0:
+        return None
+    created: list[dict] = []
+
+    def fn(data: dict) -> Optional[dict]:
+        by_agent = dict(data.get("warnings") or {}) if isinstance(data.get("warnings"), dict) else {}
+        prev = by_agent.get(agent) if isinstance(by_agent.get(agent), dict) else {}
+        prev_reset = float(prev.get("resets_at") or 0)
+        prev_step = int(prev.get("step") or 0)
+        if prev and (prev_reset > now or (not resets_at and now - float(prev.get("at") or 0) < 3600)):
+            if step <= prev_step and str(prev.get("kind") or "") == str(kind or prev.get("kind") or ""):
+                return {"warnings": by_agent}
+        target = float(resets_at) if resets_at and resets_at > now else (
+            prev_reset if prev_reset > now else 0.0
+        )
+        row = {
+            "agent": agent,
+            "at": round(now, 3),
+            "step": step,
+            "utilization": pct if pct is not None else float(step),
+            "resets_at": round(target, 3) if target else None,
+            "kind": str(kind or prev.get("kind") or ""),
+            "text": str(text or "")[:200],
+            "session": str(session or ""),
+            "cwd": str(cwd or ""),
+            "notified": False,
+        }
+        by_agent[agent] = row
+        created.append(row)
+        return {"warnings": by_agent}
+
+    _update_warnings(fn)
+    return created[0] if created else None
+
+
+def check_rate_limit_info(
+    info: Optional[dict],
+    *,
+    agent: str = "claude",
+    session: str = "",
+    cwd: str = "",
+    now: Optional[float] = None,
+) -> Optional[dict]:
+    """Inspect a rate_limit_info / rate_limits dict from Claude, Codex,
+    Antigravity, or OpenCode and record a warning if approaching the limit."""
+    if not isinstance(info, dict):
+        return None
+    status = str(info.get("status") or "").lower()
+    if status == "rejected":
+        return None
+    raw_pct = (
+        info.get("utilization")
+        if info.get("utilization") is not None
+        else info.get("used_percent")
+        if info.get("used_percent") is not None
+        else info.get("used_percentage")
+    )
+    pct = _normalize_pct(raw_pct)
+    resets_at = reset_from_info(info)
+    kind = str(info.get("rateLimitType") or info.get("limit_name") or info.get("window") or "")
+    thresh = warn_pct_threshold()
+    if status == "allowed_warning" or (pct is not None and pct >= thresh):
+        msg = str(info.get("message") or info.get("warning") or "")
+        if not msg:
+            pct_str = f"{pct:.0f}%" if pct is not None else f"{thresh:.0f}%+"
+            msg = f"{agent.capitalize()} usage is at {pct_str}" + (f" ({kind})" if kind else "")
+        return note_warning(
+            agent=agent,
+            utilization=pct if pct is not None else thresh,
+            resets_at=resets_at,
+            kind=kind,
+            text=msg,
+            session=session,
+            cwd=cwd,
+            now=now,
+        )
+    return None
+
+
+def warnings(now: Optional[float] = None, *, agent: Optional[str] = None) -> list[dict]:
+    """Active quota-approaching warnings across harnesses."""
+    now = time.time() if now is None else now
+    p = warnings_path()
+    if not p.exists():
+        return []
+    try:
+        data = json.loads(p.read_text())
+    except (OSError, ValueError):
+        return []
+    by_agent = (data or {}).get("warnings") if isinstance(data, dict) else {}
+    if not isinstance(by_agent, dict):
+        return []
+    out: list[dict] = []
+    for k, row in by_agent.items():
+        if not isinstance(row, dict):
+            continue
+        if agent and k != agent:
+            continue
+        r_at = float(row.get("resets_at") or 0)
+        at = float(row.get("at") or 0)
+        if r_at > 0 and r_at <= now:
+            continue
+        if r_at == 0 and now - at > 6 * 3600:
+            continue
+        out.append(row)
+    return out
+
+
+def pop_unnotified_warnings(now: Optional[float] = None) -> list[dict]:
+    """Return and mark `notified=True` any active warnings not yet notified."""
+    now = time.time() if now is None else now
+    if not warnings_path().exists():
+        return []
+    fresh: list[dict] = []
+
+    def fn(data: dict) -> Optional[dict]:
+        by_agent = dict(data.get("warnings") or {}) if isinstance(data.get("warnings"), dict) else {}
+        for k, row in list(by_agent.items()):
+            if not isinstance(row, dict):
+                del by_agent[k]
+                continue
+            r_at = float(row.get("resets_at") or 0)
+            at = float(row.get("at") or 0)
+            if (r_at > 0 and r_at <= now) or (r_at == 0 and now - at > 6 * 3600):
+                del by_agent[k]
+                continue
+            if not row.get("notified"):
+                updated = {**row, "notified": True}
+                by_agent[k] = updated
+                fresh.append(updated)
+        return {"warnings": by_agent} if by_agent else None
+
+    _update_warnings(fn)
+    return fresh
+
+
+def clear_warnings(agent: Optional[str] = None) -> None:
+    if not warnings_path().exists():
+        return
+    if agent is None:
+        warnings_path().unlink(missing_ok=True)
+        return
+
+    def fn(data: dict) -> Optional[dict]:
+        by_agent = dict(data.get("warnings") or {}) if isinstance(data.get("warnings"), dict) else {}
+        by_agent.pop(agent, None)
+        return {"warnings": by_agent} if by_agent else None
+
+    _update_warnings(fn)

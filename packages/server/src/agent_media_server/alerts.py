@@ -589,7 +589,7 @@ def _entry_span(lines: list[str], aid: str) -> tuple[int, int] | None:
 
 
 #: Alerts that are requests, not problems: notified, never filed in the inbox.
-NO_RECORD = ("shell.signin.",)
+NO_RECORD = ("shell.signin.", "quota.")
 
 
 def _org(r: dict, change: str) -> None:
