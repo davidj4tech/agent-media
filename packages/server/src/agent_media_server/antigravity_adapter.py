@@ -69,12 +69,33 @@ def install_hook() -> None:
         if os.path.exists(tmp): os.unlink(tmp)
 
 
+def _is_auto(permissions_val: str = '', mode_val: str = '', sid: str = '') -> bool:
+    from . import permissions as perms, sessiond
+    if sid and (sessiond.state_root() / f'{sid}.auto').exists():
+        return True
+    return mode_val == 'auto' or perms.mode(permissions_val) == perms.NORMAL
+
+
 def hook(payload: dict) -> dict:
     sid = os.environ.get('MEDIA_SESSIOND_SESSION', '')
     if not sid:
         return {'decision': 'allow'}
+    stage = sys.argv[1] if len(sys.argv) > 1 else 'pre'
+    if stage == 'pre':
+        call_obj = payload.get('toolCall') or {}
+        name = str(call_obj.get('name') or '')
+        tool, args = tool_input(call_obj)
+        if tool != 'AskUserQuestion':
+            from . import sessiond
+            rec = sessiond.read_record(sid) or {}
+            if _is_auto(str(rec.get('permissions') or ''), str(rec.get('mode') or ''), sid):
+                tid = f'agy-{payload.get("stepIdx", "")}'
+                store.append(sid, {'cwd': str(rec.get('cwd') or ''), 'type': 'assistant',
+                                   'message': {'role': 'assistant',
+                                               'content': [{'type': 'tool_use', 'id': tid, 'name': tool, 'input': args}]}})
+                return {'decision': 'auto_approve'}
     from .driver.headless import call
-    r = call('antigravity_hook', session=sid, payload=payload, stage=sys.argv[1] if len(sys.argv) > 1 else 'pre', timeout=620)
+    r = call('antigravity_hook', session=sid, payload=payload, stage=stage, timeout=620)
     return r.get('hook') if r.get('ok') else {'decision': 'deny', 'reason': 'The session host could not confirm approval. Ask the user before retrying.'}
 
 
@@ -94,6 +115,8 @@ def approval(supervisor, session: str, payload: dict, stage: str = 'pre') -> dic
         transcript(s, {'type': 'assistant', 'message': {'role': 'assistant', 'content': [{'type': 'tool_use', 'id': tid, 'name': tool, 'input': args}]}})
         if name in SAFE:
             return {'decision': 'allow'}
+        if tool != 'AskUserQuestion' and _is_auto(s.permissions, s.mode, s.id):
+            return {'decision': 'auto_approve'}
         if tool == 'AskUserQuestion':
             threading.Thread(target=_ask_pre, args=(s, tid, args), daemon=True, name='agy-ask-pre').start()
         rid = 'agy_' + uuid.uuid4().hex
