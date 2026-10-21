@@ -80,7 +80,7 @@ time-only Netbookings reader independently syncs today and tomorrow hourly.
 
 David also asked for a fortnightly Tuesday **09:45–13:45** Marlo's Spa
 shift in the calendar, and for Rye Remedial treatments to become available
-**one hour after the designated shift ends**. Use Australia/Melbourne.
+**75 minutes after the designated shift ends**. Use Australia/Melbourne.
 David confirmed the first Tuesday as **27 October 2026**. The recurring
 event was created and verified through the existing CalDAV connection,
 independently of OpenAI's connector. Existing `marlo-session` / `marlo-bookings` tools
@@ -92,10 +92,10 @@ without OpenAI's connector; see [shared calendar access](../reference/shared-cal
 Writes are available through `media calendar put` / `calendar_write`, with
 stable UIDs, ownership checks and conditional ETag updates/deletes.
 
-Preserve a shift's real end time in Google Calendar. Apply the one-hour
+Preserve a shift's real end time in Google Calendar. Apply the 75-minute
 offset in Rye Remedial's availability calculation: a Marlo's shift ending
-13:45 permits Rye Remedial starts from **14:45**. Across several shifts
-on one day, use the latest designated shift's end, then add one hour. A
+13:45 permits Rye Remedial starts from **15:00**. Across several shifts
+on one day, use the latest designated shift's end, then add 75 minutes. A
 booking is still subject to its normal notice, latest-start, travel and
 existing-appointment constraints. Never move an existing customer booking
 automatically when a shift changes; surface the conflict for the owner.
@@ -133,3 +133,6 @@ cancelled shifts, overnight/DST boundaries, per-day treatment refinement,
 idempotency, credential expiry and source failures using fixtures. Check
 that the original week marker remains free and that no client identity or
 health information enters a calendar event or log.
+
+David revised the post-shift delay to 75 minutes on 22 October. The publisher
+now applies that delay to both Marlo and PHS designated shifts.

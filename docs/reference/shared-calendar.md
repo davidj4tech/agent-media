@@ -41,13 +41,13 @@ No app update or OpenAI connector is required.
 over authenticated public HTTPS. Its owner-only configuration is
 `~/.config/agent-media/calendar-publish.json`; the matching scoped token lives
 in Drupal State and is never exported to Git. The payload contains only busy
-intervals and designated shift end plus one hour, not event titles, locations,
+intervals and designated shift end plus 75 minutes, not event titles, locations,
 client identities or source URLs. Every publication requires a successful
 vdirsyncer run. New bookings close if the last verified snapshot exceeds two
 hours; existing bookings stay in place, and conflicts raise an alert.
 
 Marlo's fortnightly Tuesday shift is anchored on 27 October 2026, 09:45–13:45
-Melbourne. Its first permissible Rye start is 14:45, subject to normal booking
+Melbourne. Its first permissible Rye start is 15:00, subject to normal booking
 notice, location, travel and other busy events. Confirmed shift openings
 replace that day's static evening opening; unknown days retain the fallback.
 
@@ -105,4 +105,4 @@ roster-sync, which includes treatment refinement; if the roster login fails it
 still attempts the independent treatment sync and reports failure. Subsequent
 login expiry can still require David to provide a new session. No MFA codes
 or authenticator setup secrets are retained. Rye uses the real designated end
-plus one hour, including when the shift context is marked free.
+plus 75 minutes, including when the shift context is marked free.

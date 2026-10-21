@@ -31,7 +31,7 @@ def snapshot(result: dict, now: int | None = None) -> dict:
             busy.append([max(lo, int(start.timestamp())), min(hi, int(end.timestamp()))])
         if event.get("managed") and event.get("shift_source") in ("marlo", "phs-shift"):
             # Keep the designated finish even when treatments refine busy time.
-            opens = int(end.timestamp()) + 3600
+            opens = int(end.timestamp()) + 75 * 60
             day = max(start.date(), first)
             while day <= min(end.date(), last):
                 key = day.isoformat()

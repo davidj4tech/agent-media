@@ -35,7 +35,7 @@ def shift_events(data: dict, first: dt.date, last: dt.date, refined: bool) -> li
         event = {"uid": f"phs-shift-{identity}@sasonica", "title": "PHS — designated shift",
                  "start": start.isoformat(), "end": end.isoformat(), "source": "phs-shift",
                  "busy": not (refined and start.date() <= first + dt.timedelta(days=1)),
-                 "description": "Published designated working hours from Employment Hero. Rye Remedial opens one hour after this shift ends. Near-term treatment appointments carry their own busy time."}
+                 "description": "Published designated working hours from Employment Hero. Rye Remedial opens 75 minutes after this shift ends. Near-term treatment appointments carry their own busy time."}
         if event["uid"] in result and result[event["uid"]] != event:
             raise ValueError("Conflicting published shift identities")
         result[event["uid"]] = event
