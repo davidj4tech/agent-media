@@ -355,10 +355,15 @@ def classify(pane: str, agent: str = "claude") -> "str | None":
     if agent == "pi":
         # The editor is a box of two full-width rules near the bottom; the
         # footer under it is cut short on a narrow pane, so it is no marker.
+        # While a turn runs the top rule carries the spinner ("── ⠼ Working
+        # ──"); older pi put " ⠸ Working..." on its own line above the box.
+        work_rule = re.compile(r"\s*─+[⠀-⣿ ]*Working\s*─+\s*")
         tail = pane.rstrip("\n").splitlines()[-14:]
-        if sum(1 for ln in tail if re.fullmatch(r"\s*─{8,}\s*", ln)) < 2:
+        if sum(1 for ln in tail
+               if re.fullmatch(r"\s*─{8,}\s*", ln) or work_rule.fullmatch(ln)) < 2:
             return None
-        return "working" if re.search(r"Working\.\.\.", pane) else "input"
+        return ("working" if work_rule.search(pane)
+                or re.search(r"Working\.\.\.", pane) else "input")
     if agent == "opencode":
         # Its footer: "esc interrupt" beside a progress bar while a turn
         # runs, "ctrl+p commands" at the right of it always. Its permission

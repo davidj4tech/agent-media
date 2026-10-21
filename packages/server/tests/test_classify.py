@@ -28,6 +28,18 @@ PI_WORKING = """ $ sleep 5; echo done
 ──────────────────────────────────
 ~/scratch
 """
+# Current pi: the spinner rides the editor box's top rule, which is then no
+# longer a pure rule — the box check has to count it too.
+PI_WORKING_RULE = """ $ sleep 5; echo done
+
+ Elapsed 5.0s
+
+── ⠼ Working ────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────
+~/scratch • can we add a way of adding a thread to a to-d...
+↑495k ↓73k R22M CH99.3% $0.480 67.1%/256k (auto)         kimi-k2.7-code • medium
+"""
 
 
 def test_codex_states():
@@ -40,6 +52,7 @@ def test_codex_states():
 def test_pi_states():
     assert panes.classify(PI_IDLE, "pi") == "input"
     assert panes.classify(PI_WORKING, "pi") == "working"
+    assert panes.classify(PI_WORKING_RULE, "pi") == "working"
     assert panes.classify("npm warn deprecated …", "pi") is None
 
 
