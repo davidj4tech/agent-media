@@ -56,3 +56,12 @@ def test_unmanaged_event_not_modified(monkeypatch):
     monkeypatch.setattr(writer, "_request", lambda *a, **kw: (200, data, '"1"'))
     with pytest.raises(writer.CalendarWriteError, match="not managed"):
         writer.write(event(), etag='"1"')
+
+
+def test_inspecting_missing_cancelled_event_never_recreates_it(monkeypatch):
+    monkeypatch.setattr(writer, "_connection", lambda *_: ("work", "https://test/", "private"))
+    def request(url, auth, method="GET", **kwargs):
+        assert method == "GET"
+        return 404, b"", ""
+    monkeypatch.setattr(writer, "_request", request)
+    assert writer.inspect_event("test@sasonica", "work") == {"uid": "test@sasonica", "exists": False}

@@ -127,6 +127,21 @@ def _body(event: dict) -> tuple[str, bytes]:
     return uid, cal.to_ical()
 
 
+def inspect_event(uid: str, calendar: str = "") -> dict:
+    """Read an owned resource without ever recreating a missing event."""
+    from icalendar import Calendar
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9@._-]{0,199}", uid):
+        raise ValueError("Invalid event UID")
+    _, base, auth = _connection(calendar)
+    status, body, etag = _request(base + urllib.parse.quote(uid, safe="") + ".ics", auth)
+    if status == 404:
+        return {"uid": uid, "exists": False}
+    events = Calendar.from_ical(body).walk("VEVENT")
+    if len(events) != 1 or str(events[0].get("UID")) != uid or str(events[0].get("X-SASONICA-MANAGED")) != "1":
+        raise CalendarWriteError("Refusing to inspect an event not managed by Sasonica")
+    return {"uid": uid, "exists": True, "etag": etag}
+
+
 def write(event: dict, calendar: str = "", etag: str = "", delete: bool = False, *, sync: bool = True) -> dict:
     """Create/update/delete an owned event. Updates/deletes require its ETag."""
     from icalendar import Calendar

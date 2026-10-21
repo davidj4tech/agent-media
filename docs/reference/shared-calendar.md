@@ -53,7 +53,10 @@ replace that day's static evening opening; unknown days retain the fallback.
 
 `calendar-treatment-sync.timer` reads today and tomorrow's PHS staff timetable
 hourly, using the existing encrypted staff login in a temporary private
-session directory. It writes only David's treatment times. It never fetches
+session directory. `calendar.phs.write_pair` selects the dedicated PHS calendar,
+separately from the primary `calendar.write_pair`. Five previously created
+treatment entries were moved to `davidj4phs@gmail.com`, each destination verified
+before its personal-calendar copy was removed. It writes only David's treatment times. It never fetches
 consultation forms, and only cancels its own future events after complete
 source reads. These intervals do not establish the designated shift finish.
 
@@ -61,3 +64,21 @@ Employment Hero roster access is still awaiting an interactive login or a
 verified roster subscription. No published PHS shift hours are inferred from
 treatment times. Automatic conversion of a PHS shift into a free work-hours
 context plus busy treatment intervals also remains pending that roster source.
+
+David also named `davidj4marlospa@gmail.com` for Marlo's work. That calendar is
+not yet accessible through the stored Google credentials (CalDAV returned 404),
+so it has not been added as a failing source. The confirmed recurring Marlo's
+shift remains in the primary calendar until destination access is verified.
+Sharing the Marlo calendar with the primary account with event editing access
+would allow the existing login to manage it without a new password.
+
+For interactive Employment Hero login, `agent-config/bin/employmenthero-browser-login`
+opens a dedicated visible Chrome window and saves its session only after
+the protected employee page loads. Only SOPS-encrypted dotenv reaches disk;
+private errors and session values are never printed. `--desktop` waits up to
+twenty minutes and saves automatically. On hpo (WSL), it explicitly uses WSLg's
+Wayland socket. Launch it from Windows PowerShell if SSH-launched windows are
+not visible. A one-off `employmenthero-login-watch` service copies only the
+encrypted file back to red5, checks it can be decrypted privately, and reports
+either completion or timeout via the alert store. Stored browser state is not
+yet proof that the server can retrieve published rosters.

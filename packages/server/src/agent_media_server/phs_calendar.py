@@ -48,7 +48,8 @@ def sync() -> dict:
     settings = config.load().get("calendar", {}).get("phs", {})
     script = Path(str(settings.get("session_command") or "")).expanduser()
     staff = str(settings.get("staff_id") or "")
-    if not staff or not script.is_file():
+    pair = str(settings.get("write_pair") or "")
+    if not staff or not script.is_file() or not pair:
         raise ValueError("PHS calendar source is not configured")
     today = dt.datetime.now(ZoneInfo("Australia/Melbourne")).date()
     days = [today, today + dt.timedelta(days=1)]
@@ -78,9 +79,9 @@ def sync() -> dict:
     for event in expected.values():
         if dt.datetime.fromisoformat(event["end"]) < dt.datetime.now(ZoneInfo("Australia/Melbourne")):
             continue
-        result = calendar_write.write(event, sync=False)
+        result = calendar_write.write(event, calendar=pair, sync=False)
         if result.get("exists") and not result.get("matches"):
-            calendar_write.write(event, etag=result["etag"], sync=False)
+            calendar_write.write(event, calendar=pair, etag=result["etag"], sync=False)
             changed += 1
         elif result.get("created"):
             changed += 1
@@ -94,12 +95,10 @@ def sync() -> dict:
         if not any(uid.startswith(f"phs-treatment-{day.isoformat()}-") for day in days):
             continue
         # Obtain the current ETag without changing an existing event.
-        probe = {"uid": uid, "title": old["title"], "start": old["start_at"], "end": old["end_at"]}
-        result = calendar_write.write(probe, sync=False)
+        result = calendar_write.inspect_event(uid, calendar=pair)
         if result.get("exists"):
-            calendar_write.write({"uid": uid}, etag=result["etag"], delete=True, sync=False)
+            calendar_write.write({"uid": uid}, calendar=pair, etag=result["etag"], delete=True, sync=False)
             changed += 1
-    pair = config.load().get("calendar", {}).get("write_pair")
     done = subprocess.run(["vdirsyncer", "sync", pair], stdout=subprocess.DEVNULL,
                           stderr=subprocess.DEVNULL, timeout=120)
     if done.returncode:
