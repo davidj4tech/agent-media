@@ -65,12 +65,12 @@ verified roster subscription. No published PHS shift hours are inferred from
 treatment times. Automatic conversion of a PHS shift into a free work-hours
 context plus busy treatment intervals also remains pending that roster source.
 
-David also named `davidj4marlospa@gmail.com` for Marlo's work. That calendar is
-not yet accessible through the stored Google credentials (CalDAV returned 404),
-so it has not been added as a failing source. The confirmed recurring Marlo's
-shift remains in the primary calendar until destination access is verified.
-Sharing the Marlo calendar with the primary account with event editing access
-would allow the existing login to manage it without a new password.
+David shared `davidj4marlospa@gmail.com` with the primary account. CalDAV read
+and write privileges are verified. It is now synced as `cal_davidj4marlospa`,
+and `calendar.marlo.write_pair` records that destination. The confirmed
+fortnightly shift was copied there and verified before removing its managed
+primary-calendar copy. Both 27 October and 10 November occurrences read back
+from the Marlo calendar, and Rye's availability refresh succeeded.
 
 For interactive Employment Hero login, `agent-config/bin/employmenthero-browser-login`
 opens a dedicated visible Chrome window and saves its session only after
@@ -81,4 +81,12 @@ Wayland socket. Launch it from Windows PowerShell if SSH-launched windows are
 not visible. A one-off `employmenthero-login-watch` service copies only the
 encrypted file back to red5, checks it can be decrypted privately, and reports
 either completion or timeout via the alert store. Stored browser state is not
-yet proof that the server can retrieve published rosters.
+yet proof that the server can retrieve published rosters. The WSL runtime was
+attached to Windows Session 0, so visible Linux Chrome did not appear on the
+user's desktop. Those dedicated helpers were stopped after David chose phone
+Firefox instead. `employmenthero-cookie-import` reads a site-only JSON or
+cookies.txt export from phone Downloads, filters to Employment Hero's payroll
+domains and writes a SOPS-encrypted `browser-pending.env` directly from memory.
+It preserves any verified `browser.env` and the phone export until server
+verification succeeds. Never paste cookie values into chat. Six synthetic
+tests cover formats, scope, redaction, paths and ciphertext-only storage.
