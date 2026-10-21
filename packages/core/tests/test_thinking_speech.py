@@ -5,8 +5,11 @@ import pytest
 
 from agent_media_core import book_tracks
 from agent_media_core.intake import submit as S
+
 from agent_media_core.state import StateStore
 from agent_media_core.types import Event, Priority, Source, Target
+
+_REAL_BUSY_HOLD = S._busy_hold
 
 
 @pytest.fixture(autouse=True)
@@ -137,3 +140,21 @@ def test_live_thinking_is_not_synthesized_as_an_assistant_reply():
                           extras={"source_session": "thinking-test", "thinking": True,
                                   "text": "A thought"})
     assert book_tracks._live_turn("thinking-test") is None
+
+
+@pytest.mark.parametrize("other", [None, "call", "manual", "quiet"])
+def test_calendar_hold_does_not_suppress_explicit_thinking(monkeypatch, other):
+    from agent_media_core import free
+    why = ["meeting"] + ([other] if other else [])
+    report = {"free": False, "why": why, "quiet_replies": True}
+    monkeypatch.setattr(free, "answer", lambda: report)
+    monkeypatch.setattr(S, "_ringer_targets", lambda: {"phone"})
+    monkeypatch.setattr(S, "_jev_breaks_through", lambda item: False)
+    event = Event("Thinking", Source.WATCHER, Priority.LOW,
+                  metadata={"session": "thinking-test", "thinking": True})
+    held = _REAL_BUSY_HOLD(Target("phone"), event)
+    assert (held is not None) == (other is not None)
+    assert report["why"] == why  # never mutate the shared device report
+    reply = Event("Reply", Source.WATCHER, Priority.NORMAL,
+                  metadata={"session": "thinking-test"})
+    assert _REAL_BUSY_HOLD(Target("phone"), reply) is not None

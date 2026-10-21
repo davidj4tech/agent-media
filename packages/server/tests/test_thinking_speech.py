@@ -30,7 +30,6 @@ def env(monkeypatch, tmp_path):
     monkeypatch.setattr(sessions, "activity_of", lambda *a: {"state": "working" if working[0] else "waiting"})
     messages = [{"id": "m", "role": "assistant", "parts": [], "turn": {"running": True}}]
     monkeypatch.setattr(transcript, "messages", lambda *a, **kw: (messages, False))
-    monkeypatch.setattr(T.toast, "should_hold", lambda s: False)
     clock = [10.0]
     monkeypatch.setattr(T.time, "monotonic", lambda: clock[0])
     calls = []
@@ -125,12 +124,11 @@ def test_updates_settle_once_without_repeating_a_replaced_block(env):
     assert len(env.calls) == 1
 
 
-@pytest.mark.parametrize("cause", ["busy", "quiet", "unwatched", "ended", "sealed"])
+@pytest.mark.parametrize("cause", ["busy", "quiet", "ended", "sealed"])
 def test_unheard_thinking_is_consumed_not_queued(env, monkeypatch, cause):
     enable()
     env.watcher.busy = cause == "busy"
     speak_priority.set_level(SID, "quiet" if cause == "quiet" else "normal")
-    monkeypatch.setattr(T.toast, "should_hold", lambda s: cause == "unwatched")
     monkeypatch.setattr(sealed, "is_sealed", lambda s: cause == "sealed")
     env.working[0] = cause != "ended"
     thought(env)
@@ -229,3 +227,15 @@ def test_real_transcript_readers_supply_new_thinking(env, monkeypatch, harness):
     assert T._parts(parsed), parsed
     settle(env)
     assert [c[-1] for c in env.calls] == ["Readable thinking"]
+
+
+@pytest.mark.parametrize("level", ["normal", "pocket"])
+def test_enabled_thinking_plays_without_an_open_thread(env, monkeypatch, level):
+    from agent_media_core.intake import toast
+    speak_priority.set_level(SID, level)
+    monkeypatch.setattr(toast, "should_hold", lambda s: True)
+    enable()
+    thought(env, "Thinking while browsing another screen")
+    settle(env)
+    assert [c[-1] for c in env.calls] == ["Thinking while browsing another screen"]
+    assert env.watcher.allowed(SID, T._PREFS.get(SID), "m")
