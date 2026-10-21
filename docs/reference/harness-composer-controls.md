@@ -13,7 +13,7 @@ As of 20 October 2026:
 | opencode | Existing model controls | Not exposed |
 | pi | Existing model controls | Not exposed |
 | Grok | Native `/model` command | Not exposed |
-| Antigravity | Native `agy models` list (`--model` on start and resume) | Not exposed |
+| Antigravity | Native `agy models` list (`--model` on start and resume) | Native `--mode plan` (`--mode plan` on start and resume) |
 | Hermes, Gemini | Not exposed | Not exposed |
 
 Codex and Grok list the account's visible models from `models_cache.json`.

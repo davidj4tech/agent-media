@@ -157,7 +157,7 @@ def state(session: str) -> dict:
             return {"agent": "antigravity", "live": bool(v.get("live")),
                     "model": mid, "model_id": mid, "plan": v.get("mode") == "plan",
                     "driver": driver.HEADLESS,
-                    "can": {"model": bool(offered or mid), "plan": False}}
+                    "can": {"model": bool(offered or mid), "plan": True}}
         if v.get("agent") == "opencode":
             # Its model rides on each prompt (sessiond_opencode.py): the one
             # chosen, else what its last reply ran on. No plan mode.
@@ -497,7 +497,7 @@ def new_sheet(agent: str = "claude", profile: str = "") -> dict:
 
         offered, default = antigravity.models()
         return {"models": offered, "default": antigravity.default_note(offered, default),
-                "can": {"model": bool(offered), "plan": False}}
+                "can": {"model": bool(offered), "plan": True}}
     if agent != "claude":
         return {"models": []}
     return {"models": models(), "default": default_note()}

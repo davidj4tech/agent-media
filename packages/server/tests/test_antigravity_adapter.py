@@ -165,7 +165,7 @@ def test_antigravity_settings_never_offer_claude_models(host, monkeypatch):
     st = session_settings._answer(SID)
     assert st["agent"] == "antigravity"
     assert st["models"] == []
-    assert st["can"] == {"model": False, "plan": False}
+    assert st["can"] == {"model": False, "plan": True}
     assert driver.for_new("antigravity").kind == "headless"
     assert driver.for_session(SID).kind == "headless"
     listing = (
@@ -180,16 +180,17 @@ def test_antigravity_settings_never_offer_claude_models(host, monkeypatch):
         "gemini-4-argon-medium", "gemini-4-argon-high", "claude-sonnet-5-5-medium"]
     assert sheet["models"][0]["label"] == "Gemini 4 Argon (Medium)"
     assert sheet["default"] == "Gemini 4 Argon (Medium)"
-    assert sheet["can"] == {"model": True, "plan": False}
-    assert session_settings.clean_new("antigravity", "gemini-4-argon-high", "") == ("gemini-4-argon-high", "")
+    assert sheet["can"] == {"model": True, "plan": True}
+    assert session_settings.clean_new("antigravity", "gemini-4-argon-high", "plan") == ("gemini-4-argon-high", "plan")
     assert session_settings.clean_new("antigravity", "--help", "") == ("", "")
     st = session_settings._answer(SID)
     assert st["model"] == "gemini-4-argon-medium"
-    assert st["can"] == {"model": True, "plan": False}
+    assert st["can"] == {"model": True, "plan": True}
     assert [m["id"] for m in st["models"]] == [
         "gemini-4-argon-medium", "gemini-4-argon-high", "claude-sonnet-5-5-medium"]
-    ok, updated = session_settings.post(SID, {"model": "gemini-4-argon-high"}, "t")
-    assert ok and updated["model"] == "gemini-4-argon-high" and s.model == "gemini-4-argon-high"
+    ok, updated = session_settings.post(SID, {"model": "gemini-4-argon-high", "plan": True}, "t")
+    assert ok and updated["model"] == "gemini-4-argon-high" and updated["plan"] is True
+    assert s.model == "gemini-4-argon-high" and s.mode == "plan"
     assert not session_settings.post(SID, {"model": "not-offered"}, "t")[0]
 
 
