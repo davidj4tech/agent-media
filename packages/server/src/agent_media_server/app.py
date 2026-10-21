@@ -3109,10 +3109,20 @@ def _org(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
                                     agent=str(body.get("agent") or ""))
     elif method == "POST" and path == "/org/capture":
         body = _read_json(h) or {}
-        ok, detail = org.capture(str(body.get("text") or ""),
-                                   str(body.get("kind") or "todo"), bearer,
-                                   remember=body.get("memory", True) is not False,
-                                   fields=body.get("fields") if isinstance(body.get("fields"), dict) else None)
+        # `session`: the new to-do is born linked to that thread — its
+        # :SESSION: property in the same drawer (the link sheet's New to-do).
+        session = str(body.get("session") or "").strip()
+        link = ""
+        if session:
+            link = org_edit.session_uid(session)
+            if not link:
+                ok, detail = False, {"error": "no session by that id", "status": 404}
+        if not session or link:
+            ok, detail = org.capture(str(body.get("text") or ""),
+                                       str(body.get("kind") or "todo"), bearer,
+                                       remember=body.get("memory", True) is not False,
+                                       fields=body.get("fields") if isinstance(body.get("fields"), dict) else None,
+                                       link=link)
     else:
         return False
     if ok and method == "GET":

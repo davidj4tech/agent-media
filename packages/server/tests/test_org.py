@@ -112,6 +112,25 @@ def test_everything_is_gated(tree, server):
         tree / "inbox.org").read_text()
 
 
+def test_capture_with_a_session_is_born_linked(tree, server, monkeypatch):
+    from agent_media_server import org_edit
+    monkeypatch.setattr(org_edit, "session_uid",
+                        lambda s: f"claude:testhost:{s}" if s == "abc" else "")
+    status, got = _call(server, "POST", "/org/capture",
+                        {"text": "Ring the plumber", "kind": "todo", "session": "abc"})
+    assert status == 200 and got["session"] == "claude:testhost:abc" and got["kind"] == "todo"
+    text = (tree / "inbox.org").read_text()
+    assert "* TODO Ring the plumber\n:PROPERTIES:\n:CREATED: [" in text
+    assert ":SESSION: [[id:claude:testhost:abc]]\n:END:\n" in text
+    for _ in range(50):
+        if REMEMBERED:
+            break
+        threading.Event().wait(0.02)
+    assert REMEMBERED and REMEMBERED[-1]["text"].endswith("Ring the plumber")
+    status, got = _call(server, "POST", "/org/capture", {"text": "x", "session": "nosuch"})
+    assert status == 404 and "* TODO x" not in (tree / "inbox.org").read_text()
+
+
 def test_todos_lists_open_items_matching_the_query(tree, server):
     status, got = _call(server, "GET", "/org/todos")
     assert status == 200

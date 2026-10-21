@@ -15,7 +15,9 @@ capture only has to land in the capture file.
                                  (&all=1 takes in session notes; &memory=0 skips memory)
   GET  /org/todos?q=         → {"items": [{path, at, title, state}]}
                                  the open to-dos, for the link-a-thread sheet
-  POST /org/capture {"text", "kind": "todo"|"note", "memory": bool}
+  POST /org/capture {"text", "kind": "todo"|"note", "memory": bool,
+                     "session"?: stamp the new entry's :SESSION: property
+                     with that thread's roam id, born linked}
   POST /org/say {"path", "at"?}  → read a note (or one heading) aloud
   POST /org/ask {"path", "at"?, "text"} → a chat about it (org_chat.py)
 
@@ -550,22 +552,28 @@ def _org_now(now: dt.datetime | None = None) -> str:
     return now.strftime("[%Y-%m-%d %a %H:%M]")
 
 
-def entry(text: str, kind: str, now: dt.datetime | None = None) -> str:
+def entry(text: str, kind: str, now: dt.datetime | None = None,
+          props: tuple[tuple[str, str], ...] = ()) -> str:
     """paragtd's "t" template (and a plain heading for a note): the first
     line is the heading, the rest its body. A body line that would read as
-    a heading of its own is indented one space, so a capture is one entry."""
+    a heading of its own is indented one space, so a capture is one entry.
+    `props` are extra property lines after :CREATED: (a linked thread's
+    :SESSION:)."""
     first, _, rest = text.strip().partition("\n")
     head = f"* TODO {first.strip()}" if kind == "todo" else f"* {first.strip()}"
     body = "".join(f" {ln}\n" if ln.startswith("*") else f"{ln}\n"
                    for ln in rest.strip("\n").splitlines())
-    return f"{head}\n:PROPERTIES:\n:CREATED: {_org_now(now)}\n:END:\n{body}"
+    extra = "".join(f":{k}: {v}\n" for k, v in props)
+    return f"{head}\n:PROPERTIES:\n:CREATED: {_org_now(now)}\n{extra}:END:\n{body}"
 
 
 def capture(text: str, kind: str, bearer: str, *, remember: bool = True,
-            fields: dict | None = None) -> tuple[bool, dict]:
+            fields: dict | None = None, link: str = "") -> tuple[bool, dict]:
     """Append a to-do or a note to the profile's capture file, or file one
     of its capture templates (`kind` = the template's key, org_capture.py);
-    and (unless told not to) remember it."""
+    and (unless told not to) remember it. `link` (a session's roam id,
+    `<harness>:<host>:<sid>`) stamps the new entry's :SESSION: property:
+    a to-do born linked to the thread, from the app's link sheet."""
     user, err = auth.gate(bearer)
     if not user:
         return False, err
@@ -579,7 +587,7 @@ def capture(text: str, kind: str, bearer: str, *, remember: bool = True,
     kind = kind or "todo"
     fname = profile().capture_file
     inbox = root() / fname
-    block = entry(text, kind)
+    block = entry(text, kind, props=(("SESSION", f"[[id:{link}]]"),) if link else ())
     try:
         with inbox.open("a+") as f:
             fcntl.flock(f, fcntl.LOCK_EX)
@@ -597,7 +605,8 @@ def capture(text: str, kind: str, bearer: str, *, remember: bool = True,
         threading.Thread(target=_remember, args=(text, kind, fname), daemon=True).start()
     print(f"notes: captured a {kind} ({len(text)} chars) for "
           f"{user.get('username')}", file=sys.stderr)
-    return True, {"path": fname, "at": at, "kind": kind, "remembered": remember}
+    return True, {"path": fname, "at": at, "kind": kind, "remembered": remember,
+                  **({"session": link} if link else {})}
 
 
 def _capture_template(text: str, kind: str, values: dict, user: dict,

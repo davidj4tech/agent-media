@@ -2599,6 +2599,11 @@ text}]}`.
   always one entry.
 - Unless `memory` is false, the text is also written to the memory store in
   the background, as best effort.
+- With `"session"` (21 Oct 2026) the new entry is born linked to that
+  thread: its `:SESSION:` property, `[[id:<harness>:<host>:<sid>]]`, sits in
+  the same drawer, and the answer adds `"session"` — the link sheet's New
+  to-do, one call instead of capture-then-link. 404 when no harness knows
+  the session.
 - 400 when the text is empty, 413 when it is over 8 KB.
 
 **Capture templates** (`org_capture.py`). With `"kind": "<template key>"`
