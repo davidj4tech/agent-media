@@ -14,6 +14,7 @@ import time
 import uuid
 
 from agent_media_core import private, sealed, speak_priority
+from agent_media_core.intake import toast
 from agent_media_core.types import Event, Priority, Source
 
 from . import auth, sessions, transcript
@@ -48,9 +49,9 @@ def _parts(messages: list[dict]) -> dict[tuple[str, int], str]:
 def _eligible(session: str) -> bool:
     if sealed.is_sealed(session):
         return False
-    # Enabling thinking is an explicit request to hear it, including while
-    # browsing another screen. Normal/Pocket attention gates apply to replies.
-    return speak_priority.level_of(session) != "quiet"
+    level = speak_priority.level_of(session)
+    return level != "quiet" and (level in speak_priority.SPEAKS
+                                 or not toast.should_hold(session))
 
 
 def _working(session: str) -> bool:

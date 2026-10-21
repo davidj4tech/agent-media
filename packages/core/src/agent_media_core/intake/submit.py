@@ -3637,13 +3637,6 @@ def _busy_hold(target: Target, event: Event, text: str = "") -> "dict | None":
         return None
     if a["free"] or a.get("speaking"):
         return None
-    # Read thinking aloud is explicitly enabled by the listener. A calendar
-    # event alone must not suppress it; calls, manual holds and quiet still do.
-    if md.get("thinking"):
-        remaining = [reason for reason in a["why"] if reason != "meeting"]
-        if not remaining:
-            return None
-        a = {**a, "why": remaining}
     # Settings' "Hold replies while on silent" off: silent alone holds alerts only.
     if a["why"] == ["quiet"] and not a.get("quiet_replies", True) and not md.get("alert"):
         return None

@@ -1556,10 +1556,7 @@ watches independently of app connections. Enabling, restarting the server,
 replacing or truncating a transcript establishes a baseline: old thinking
 is never replayed. New readable reasoning parts are spoken after their
 writes settle, through the configured voice/player. They follow the thread's
-explicit Quiet level, mute and external speech gate. Normal/Pocket attention
-rules do not require the thread to remain open, and calendar meeting holds do
-not suppress this explicitly enabled read-out. Calls, manual holds, device
-quiet and microphone holds still apply. Busy thinking is discarded;
+speech level, mute, gate and holds. Busy/unheard thinking is discarded;
 questions and replies take precedence at a sentence boundary. Disabling
 finishes the current sentence and drops the rest. The legacy remote-say
 command bridge has no cancellable playback and skips thinking speech.
