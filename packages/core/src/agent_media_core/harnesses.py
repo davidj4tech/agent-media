@@ -1726,13 +1726,13 @@ def resume_argv(harness: str, session: str) -> list[str]:
 
 
 def fresh_argv(harness: str, session: str = "") -> list[str]:
-    """The arguments for a new session; pi can be told its id up front.
+    """The arguments for a new session; pi and Grok take an id up front.
 
     Hermes cannot: `--pass-session-id` only puts the id in its own prompt, so
     a Hermes started here is asked for its id afterwards, like codex. Nor can
     opencode, whose ids it makes itself.
     """
-    if harness == PI and _safe(session):
+    if harness in (PI, GROK) and _safe(session):
         return ["--session-id", session]
     if harness == HERMES:
         return ["--tui"]

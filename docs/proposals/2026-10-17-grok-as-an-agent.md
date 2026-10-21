@@ -91,3 +91,14 @@ Claude's `permissions`; no cell turns that off.
 Start from the phone (`-s <uuid>`, resume `-r`), headless over `grok agent
 stdio` (ACP, like Gemini's `--acp`), model sheet, `XAI_API_KEY` (from the
 davidj4tech account), profiles via `GROK_HOME`.
+
+## Phone-started chats — 22 Oct 2026
+
+New chat now offers Grok through the existing pane driver. The server assigns
+a UUID before launch (`--session-id`), recognises the measured boxed `❯`
+composer, and uses native `--resume` for ended conversations. Existing Grok
+hooks provide speech, and its native updates log supplies the thread. A private
+Grok 1.0.62 smoke test confirmed a new prompt, follow-up and resume under one
+ID, with hooks disabled and no playback. Model selection uses the existing
+native model cache and model command. ACP headless hosting remains separate
+future work; app-created Grok conversations currently use a terminal pane.

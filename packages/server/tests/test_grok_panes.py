@@ -66,10 +66,9 @@ def test_its_pane_is_found_by_argv(monkeypatch):
     assert "grok" in panes.AGENT_COMMANDS
 
 
-def test_a_new_chat_is_not_started_in_it_yet():
-    """Its proposal's later phase: /ask refuses it until its fresh session
-    and composer are measured."""
-    assert "grok" in send.NOT_STARTED_HERE
+def test_a_new_chat_can_be_started():
+    """The measured composer and up-front ID enable phone-started chats."""
+    assert "grok" not in send.NOT_STARTED_HERE
 
 
 def test_the_reaper_reads_the_fold(chat):
@@ -83,3 +82,30 @@ def test_the_reaper_reads_the_fold(chat):
                                  "Assistant: I'll run them. Done: **12 passed**.",
                                  "Person: Now read the README",
                                  "Assistant: It says hi."]
+
+
+def test_grok_fresh_identity_and_composer():
+    from agent_media_core import harnesses
+    assert harnesses.fresh_argv("grok", SID) == ["--session-id", SID]
+    assert harnesses.resume_argv("grok", SID) == ["--resume", SID]
+    assert panes.classify("╭────────╮\n│ ❯      │\n╰────────╯", "grok") == "input"
+    assert panes.classify("Run command?\nAllow once\n│ ❯      │", "grok") == "approval"
+
+
+def test_new_grok_chat_has_identity_before_first_reply(monkeypatch):
+    seen = {}
+    def open_window(session, cwd, **kw):
+        seen.update(session=session, cwd=cwd, **kw)
+        return "%8", ""
+    monkeypatch.setattr(send, "open_window", open_window)
+    monkeypatch.setattr(send, "_settle", lambda *a: None)
+    monkeypatch.setattr(send, "for_pane", lambda body, *a: body)
+    monkeypatch.setattr(send, "_send_to_pane", lambda *a: "")
+    monkeypatch.setattr(send, "_ensure_submitted", lambda *a, **kw: True)
+    monkeypatch.setattr(send, "_record_turn", lambda *a: None)
+    monkeypatch.setattr(sessions, "session_of_pane", lambda *a, **kw: pytest.fail("id must be assigned before launch"))
+    ok, detail = send._ask_pane("hello", agent="grok", cwd="/project", host="p", flags=[])
+    assert ok and detail["session"] == seen["session"]
+    assert seen["agent"] == "grok" and not seen["resume"]
+    import uuid
+    assert str(uuid.UUID(detail["session"])) == detail["session"]

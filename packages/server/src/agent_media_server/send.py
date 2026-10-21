@@ -669,10 +669,7 @@ def _agent_unready(agent: str, profile: str = "") -> str:
 #: started in yet. Gemini CLI (17 Oct 2026): its fresh-session id, its
 #: composer and its trust prompt are not measured on a signed-in pane — the
 #: proposal's second phase (docs/proposals/2026-10-17-gemini-as-an-agent.md).
-#: Grok (17 Oct 2026) likewise: its `--session-id` start, its composer and
-#: its folder-trust prompt are its proposal's later phase
-#: (docs/proposals/2026-10-17-grok-as-an-agent.md).
-NOT_STARTED_HERE = frozenset({"gemini", "grok"})
+NOT_STARTED_HERE = frozenset({"gemini"})
 
 
 def ask(text: str, bearer: str, *, quote: str = "", project: str = "",
@@ -863,9 +860,9 @@ def _ask_pane(text: str, *, agent: str, cwd: str, host: str, flags: list[str],
               quote: str = "", profile: str = "", plan: bool = False) -> tuple[bool, dict]:
     """The pane driver's fresh session: a background tmux window in `host`,
     the words typed in, the listener's turn shelved against its uuid."""
-    # pi takes its id up front; the others are asked for theirs.
+    # pi and Grok take their id up front; the others are asked for theirs.
     started = int(time.time())
-    fixed = str(uuid.uuid4()) if agent == "pi" else ""
+    fixed = str(uuid.uuid4()) if agent in ("pi", "grok") else ""
     pane, err = open_window(fixed, cwd, resume=False, host=host, flags=flags, agent=agent,
                             **({"profile": profile} if profile else {}))
     if err:

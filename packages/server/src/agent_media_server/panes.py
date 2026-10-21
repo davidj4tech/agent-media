@@ -390,15 +390,13 @@ def classify(pane: str, agent: str = "claude") -> "str | None":
             return "input"
         return None
     if agent == "grok":
-        # From Grok 1.0.62's docs and binary, not yet off a signed-in pane:
-        # its permission prompt's rows are "Allow once", "Always allow …" and
-        # "Reject once"; Esc during a turn shows "Press Ctrl+c to cancel the
-        # turn". What its composer and a running turn show otherwise is not
-        # known, so nothing yet says "input".
+        # Grok 1.0.62's measured box composer; dialogs take precedence.
         if re.search(r"Allow once|Reject once", pane):
             return "approval"
-        if re.search(r"Ctrl\+c to cancel the turn", pane):
+        if re.search(r"Ctrl\+c to cancel the turn|Enter:queue", pane, re.I):
             return "working"
+        if re.search(r"^\s*│?\s*❯", pane, re.M):
+            return "input"
         return None
     return classify_cc(pane)
 
