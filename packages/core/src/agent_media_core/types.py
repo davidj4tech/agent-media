@@ -20,6 +20,7 @@ class Source(str, Enum):
     HERMES = "hermes"
     PI = "pi"
     OPENCODE = "opencode"
+    ANTIGRAVITY = "antigravity"
     GEMINI = "gemini"
     GROK = "grok"
     HA_SSE = "ha-sse"

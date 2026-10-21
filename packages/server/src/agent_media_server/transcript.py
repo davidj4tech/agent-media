@@ -1269,6 +1269,8 @@ def _pi_boundary(rec: dict, sidechain: bool = False) -> bool:
 
 
 READERS: dict[str, Reader] = {
+    "antigravity": Reader(lambda sidechain=False: Builder(sidechain), _WANT,
+                          _claude_hint, is_boundary),
     "claude": Reader(lambda sidechain=False: Builder(sidechain), _WANT,
                      _claude_hint, is_boundary),
     "codex": Reader(lambda sidechain=False: CodexBuilder(),

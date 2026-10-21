@@ -340,7 +340,7 @@ def test_pi_sheet_is_the_profiles_listing_its_own_provider_first(pi_home):
         "venice/kimi-k3", "venice/z-ai-glm-5-3", "gateway/claude-opus-4-8",
         "openrouter/qwen/qwen3.8-27b"]
     assert venice["models"][0] == {"id": "venice/kimi-k3", "label": "kimi-k3",
-                                   "note": "venice · 256K context"}
+                                   "provider": "venice", "note": "venice · 256K context"}
     assert venice["default"] == "kimi-k3 · venice"
     default = ss.new_sheet("pi")
     assert default["models"][0]["id"] == "gateway/claude-opus-4-8"

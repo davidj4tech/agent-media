@@ -2437,6 +2437,9 @@ class _SpeechPlaybackLock:
                         or (not self._is_urgent()
                             and (self._urgent_sibling_waiting()
                                  or self._earlier_sibling_waiting()))):
+                    if skip_if_busy:
+                        os.close(fd)
+                        return
                     # Bound the deferral on the same progress-aware deadline as
                     # the wait above, and for the same reason: whoever we're
                     # standing aside for normally takes the token straight away

@@ -321,7 +321,7 @@ def classify_cc(pane: str) -> "str | None":
 #: Gemini's pane says `node`, which is no answer: it is found by argv
 #: (`agent_by_argv`), as Hermes is. Grok's says `grok`, unless it was
 #: started by the download's own name (`grok-linux-x86_64`): argv again.
-AGENT_COMMANDS = ("claude", "codex", "pi", "hermes", "opencode", "gemini", "grok")
+AGENT_COMMANDS = ("claude", "codex", "pi", "hermes", "opencode", "gemini", "grok", "antigravity")
 
 
 def classify(pane: str, agent: str = "claude") -> "str | None":

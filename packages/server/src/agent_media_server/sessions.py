@@ -264,7 +264,7 @@ def transcript_cwd(session: str) -> str:
         pane = live_sessions().get(session, "")
         return panes.cwd(pane) if pane else ""
     if harnesses.harness_of(session) in (harnesses.CODEX, harnesses.PI, harnesses.OPENCODE,
-                                         harnesses.GEMINI, harnesses.GROK):
+                                         harnesses.GEMINI, harnesses.GROK, harnesses.ANTIGRAVITY):
         return harnesses.cwd_of(session)
     for f in _claude_files(session):
         try:
@@ -1018,11 +1018,14 @@ def _live_states() -> list[dict]:
     # tree the same way. Marked `driver: "headless"`; pane rows are unchanged.
     from . import driver
 
-    if driver.headless_enabled():
+    from . import sessiond
+
+    if driver.headless_enabled() or any(r.get("agent") == "antigravity" for r in sessiond.records()):
         from .driver.headless import contract_state
 
         hl = [v for v in driver.headless_driver().rows()
-              if v.get("live") and v.get("session") and v["session"] not in live]
+              if v.get("live") and v.get("session") and v["session"] not in live
+              and (driver.headless_enabled() or v.get("agent") == "antigravity")]
         hmem = procmem.tree_mem_mb({v["session"]: v.get("pid") for v in hl})
         for v in hl:
             sid = str(v["session"])
@@ -1253,10 +1256,13 @@ def _headless_rows(seen: set[str], flags, pinned, marks) -> list[dict]:
     """
     from . import driver, rest
 
-    if not driver.headless_enabled():
+    from . import sessiond
+
+    if not driver.headless_enabled() and not any(r.get("agent") == "antigravity" for r in sessiond.records()):
         return []
     views = [v for v in driver.headless_driver().rows()
-             if v.get("session") and v["session"] not in seen]
+             if v.get("session") and v["session"] not in seen
+             and (driver.headless_enabled() or v.get("agent") == "antigravity")]
     live = [v for v in views if v.get("live")]
     ended = sorted((v for v in views if not v.get("live")),
                    key=lambda v: -float(v.get("last_event_at") or 0))

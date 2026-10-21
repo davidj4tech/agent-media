@@ -85,7 +85,11 @@ from typing import Optional
 
 CLAUDE, CODEX, PI, HERMES, OPENCODE, GEMINI, GROK = (
     "claude", "codex", "pi", "hermes", "opencode", "gemini", "grok")
-HARNESSES = (CLAUDE, CODEX, PI, HERMES, OPENCODE, GEMINI, GROK)
+ANTIGRAVITY = "antigravity"
+HARNESSES = (CLAUDE, CODEX, PI, HERMES, OPENCODE, GEMINI, GROK, ANTIGRAVITY)
+# Settings offer Google's replacement CLI; legacy Gemini transcripts retain
+# their original harness and reader. Antigravity is not a Gemini transcript.
+SETTINGS_HARNESSES = (CLAUDE, CODEX, PI, HERMES, OPENCODE, ANTIGRAVITY, GROK)
 
 _UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 #: Hermes numbers its sessions by the clock instead: `20260921_102508_f74b02`.
@@ -699,6 +703,10 @@ def _transcript(session: str) -> Optional[tuple[str, Path, str]]:
     directory holds it ("" for the default one)."""
     if not _safe(session):
         return None
+    from . import antigravity
+    managed = antigravity.path(session) if re.fullmatch(_UUID, session) else None
+    if managed is not None and managed.exists():
+        return ANTIGRAVITY, managed, ""
     for harness, default, pattern in (
             (CLAUDE, _claude_dir(), f"projects/*/{session}.jsonl"),
             (CODEX, _codex_dir(), f"sessions/*/*/*/rollout-*-{session}.jsonl"),
@@ -832,6 +840,12 @@ def first_prompt(session: str) -> str:
     if not found or found[0] == CLAUDE:
         return ""
     harness, path = found
+    if harness == ANTIGRAVITY:
+        for rec in _records(path):
+            if rec.get("type") == "user":
+                text = _text_of((rec.get("message") or {}).get("content"))
+                if text.strip(): return " ".join(text.split())
+        return ""
     if harness == GEMINI:
         # A tool's answer goes back as a `user` message too, with no words;
         # a slash command is an instruction to Gemini, as Gemini itself
@@ -1538,6 +1552,8 @@ def stored(*, since: float = 0.0, limit: int = 0,
     found += _opencode_stored()
     found += _gemini_stored()
     found += _grok_stored()
+    from . import antigravity
+    found += _scan(antigravity.root(), 0, re.compile(f"({_UUID})\\.jsonl"), ANTIGRAVITY)
     from .deleted import deleted
     from .sealed import sealed
 
@@ -1747,7 +1763,7 @@ def bin_path() -> str:
 
 def program(name: str) -> str:
     """Absolute path of `name` (an agent, or `npm`), or "" when it is not here."""
-    return shutil.which(name, path=bin_path()) or ""
+    return shutil.which("agy" if name == ANTIGRAVITY else name, path=bin_path()) or ""
 
 
 def run_env(env: dict | None = None) -> dict:
@@ -1799,6 +1815,13 @@ class Recipe:
 #: actually on here: claude and pi are npm globals, codex ships its own
 #: updater, hermes is a checkout under `~/.hermes` that updates itself.
 RECIPES: dict[str, Recipe] = {
+    ANTIGRAVITY: Recipe(
+        install=("sh", "-c", "curl -fsSL https://antigravity.google/cli/install.sh | bash"),
+        update=("agy", "update"),
+        # Startup performs sign-in itself; /login is not a CLI subcommand.
+        # SSH mode prints a URL and accepts the browser's code remotely.
+        env=(("SSH_CONNECTION", "sasonica"),),
+    ),
     CLAUDE: Recipe(
         install=("npm", "install", "-g", "@anthropic-ai/claude-code"),
         update=("npm", "install", "-g", "@anthropic-ai/claude-code@latest"),
@@ -1899,7 +1922,7 @@ def login_argv(harness: str) -> list[str]:
     """The command that signs into `harness` interactively. [] when it has none."""
     r = RECIPES.get(harness)
     exe = program(harness)
-    if not r or not (r.login or r.login_keys) or not exe:
+    if not r or not (r.login or r.login_keys or harness == ANTIGRAVITY) or not exe:
         return []
     env = ["env", *(f"{k}={v}" for k, v in r.env)] if r.env else []
     return [*env, exe, *r.login]
@@ -2042,6 +2065,9 @@ def auth_state(harness: str, timeout: float = 15.0, env: dict | None = None) -> 
     """
     import subprocess
 
+    if harness == ANTIGRAVITY:
+        # Credentials are in the OS keyring, not Gemini CLI's oauth_creds.json.
+        return "unknown", "Sign-in is managed by Antigravity's secure keyring"
     if harness == GEMINI:
         return _gemini_auth(env)
     if harness == GROK:
@@ -2324,6 +2350,9 @@ def version_of(harness: str, timeout: float = 10.0) -> str:
     """What `harness --version` says, trimmed to one line. "" when it cannot say."""
     import subprocess
 
+    if harness == ANTIGRAVITY:
+        # The installed CLI has no --version; do not launch its TUI to probe.
+        return ""
     exe = program(harness)
     if not exe:
         return ""

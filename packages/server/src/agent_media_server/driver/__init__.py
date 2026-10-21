@@ -119,12 +119,14 @@ def headless_driver():
 
 def owned_headless(session: str) -> bool:
     """Whether sessiond owns `session` (live, parked or closed). Always False
-    with the flag off. Read from sessiond's records on disk, so it answers the
+    with the flag off except for Antigravity, which always uses its stream
+    adapter. Read from sessiond's records on disk, so it answers the
     same whether or not sessiond is up — a headless thread must never be
     revived in a pane just because its host is down."""
-    if not headless_enabled() or not session:
+    if not session:
         return False
-    return headless_driver().owns(session)
+    rec = headless_driver().record(session)
+    return bool(rec) and (headless_enabled() or rec.get("agent") == "antigravity")
 
 
 def for_session(session: str) -> Driver:
@@ -135,8 +137,9 @@ def for_session(session: str) -> Driver:
 
 def for_new(agent: str = "claude") -> Driver:
     """The driver a fresh chat from the app starts in: headless when the flag
-    is on and the agent has a headless adapter (Claude, opencode), else pane."""
-    if headless_enabled() and agent in headless_driver().agents:
+    is on and the agent has a headless adapter, else pane. Antigravity always
+    uses its native stream adapter."""
+    if agent == "antigravity" or (headless_enabled() and agent in headless_driver().agents):
         return headless_driver()
     return pane_driver()
 

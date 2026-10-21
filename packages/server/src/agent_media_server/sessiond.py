@@ -366,6 +366,13 @@ class Session:
         #: not replay a recorded system prompt still has it.
         self.system_prompt_file = ""
         #: What the process last said it runs (`system/init`).
+        self.native_session = ""
+        self.agy_text: dict[str, str] = {}
+        self.agy_replied = False
+        self.agy_had_result = False
+        self.agy_ready = False
+        self.agy_queue: list[str] = []
+        self.agy_inputs: list[tuple[str, str]] = []
         self.init_model = ""
         self.init_mode = ""
         self.proc: subprocess.Popen | None = None
@@ -470,7 +477,7 @@ class Session:
     def record(self) -> dict:
         return {"session": self.id, "agent": self.agent, "cwd": self.cwd,
                 "workspace": self.workspace, "permissions": self.permissions,
-                "model": self.model, "mode": self.mode,
+                "model": self.model, "mode": self.mode, "native_session": self.native_session,
                 "system_prompt_file": self.system_prompt_file,
                 "init_model": self.init_model, "init_mode": self.init_mode,
                 "driver": "headless", "state": self.state, "since": round(self.since, 3),
@@ -494,6 +501,7 @@ class Session:
                 workspace=str(rec.get("workspace") or ""),
                 permissions=str(rec.get("permissions") or "strict"),
                 model=str(rec.get("model") or ""), mode=str(rec.get("mode") or ""))
+        s.native_session = str(rec.get("native_session") or "")
         s.system_prompt_file = str(rec.get("system_prompt_file") or "")
         s.init_model = str(rec.get("init_model") or "")
         s.init_mode = str(rec.get("init_mode") or "")
@@ -572,7 +580,7 @@ def _judge_cut_off(s: "Session", stopped_at: float | None) -> dict | None:
     (`crash`) cut off; one that ended by itself (`exit`) only when that
     was the host's stop killing it — within `STOP_RACE_S` of it."""
     cut = s.cut_off
-    if not cut or s.agent != "claude":
+    if not cut or s.agent not in ("claude", "antigravity"):
         return None
     if cut.get("why") == "quota":
         # The usage limit's: resumed at its reset (`quota_tick`), not at start.
@@ -819,7 +827,7 @@ class Supervisor:
                 pid = rec.get("pid")
                 if rec.get("session") in ours and isinstance(pid, int) and pid != me:
                     name = procinfo.image(pid)
-                    if any(a in name for a in ("claude", "opencode", "node")):
+                    if any(a in name for a in ("claude", "opencode", "node", "agy")):
                         log.warning("sessiond: ending orphan %s (%s) for %s", pid, name,
                                     str(rec["session"])[:8])
                         try:
@@ -860,7 +868,7 @@ class Supervisor:
             first = not self.stopping
             self.stopping = True
             for s in self.sessions.values():
-                if s.agent == "claude" and s.live and s.cut_off is None:
+                if s.agent in ("claude", "antigravity") and s.live and s.cut_off is None:
                     w = s.work()
                     if w:
                         s.cut_off = {**w, "at": round(now, 3), "why": "restart"}
@@ -957,7 +965,7 @@ class Supervisor:
                 return True
             cut = s.cut_off if (s.cut_off or {}).get("due") else None
             text = ""
-            if cut and s.agent == "claude":
+            if cut and s.agent in ("claude", "antigravity"):
                 if cut.get("why") == "quota":
                     d = None
                     if any(t.get("type") == "local_agent" for t in cut.get("tasks") or []
@@ -1329,6 +1337,13 @@ class Supervisor:
     def _argv(self, s: Session, exe: str, resume: bool) -> list[str]:
         from . import permissions
 
+        if s.agent == "antigravity":
+            argv = [exe, "--input-format", "stream-json", "--output-format", "stream-json", "--print-timeout", "0"]
+            if resume and s.native_session:
+                argv += ["--conversation", s.native_session]
+            if s.model: argv += ["--model", s.model]
+            if s.mode == "plan": argv += ["--mode", "plan"]
+            return argv
         argv = [exe, "-p", "--input-format", "stream-json", "--output-format", "stream-json",
                 "--verbose", "--permission-prompt-tool", "stdio"]
         argv += permissions.cli_args(s.permissions, s.cwd, s.id, self.root)
@@ -1357,7 +1372,13 @@ class Supervisor:
     def _spawn(self, s: Session, *, resume: bool) -> None:
         if not os.path.isdir(s.cwd):
             raise Refused(f"no such directory {s.cwd!r}", "bad_cwd")
-        exe = self._program()
+        if s.agent == "antigravity":
+            from . import antigravity_adapter
+            from agent_media_core import harnesses
+            antigravity_adapter.install_hook()
+            exe = os.environ.get("MEDIA_SESSIOND_ANTIGRAVITY") or harnesses.program("antigravity") or "agy"
+        else:
+            exe = self._program()
         argv = self._argv(s, exe, resume)
         try:
             proc = subprocess.Popen(argv, cwd=s.cwd, env=self._env(s, exe),
@@ -1370,6 +1391,13 @@ class Supervisor:
         s.closing = s.parking = False
         s.exit_code = None
         s.queued.clear()
+        if s.agent == "antigravity":
+            s.agy_queue.clear()
+            s.agy_inputs.clear()
+            s.agy_text.clear()
+            s.agy_had_result = False
+            s.agy_ready = False
+            s.agy_replied = False
         s.acked.clear()
         s.tasks.clear()
         s.task_info.clear()
@@ -1387,6 +1415,11 @@ class Supervisor:
                          name=f"sessiond-err-{s.id[:8]}").start()
         log.info("sessiond: %s %s pid %d in %s", "resumed" if resume else "started",
                  s.id[:8], proc.pid, s.cwd)
+        if s.agent == "antigravity":
+            ready = self.cond.wait_for(lambda: s.agy_ready or not s.live, 20.0)
+            if not ready or not s.agy_ready:
+                self._terminate(proc)
+                raise Refused("Antigravity did not become ready: " + "\n".join(s.stderr_tail)[-500:], "spawn_failed")
 
     def _read_err(self, s: Session, proc: subprocess.Popen) -> None:
         for line in proc.stderr:
@@ -1400,7 +1433,12 @@ class Supervisor:
                 continue
             if isinstance(obj, dict):
                 try:
-                    self._on_event(s, obj)
+                    if s.agent == "antigravity":
+                        from . import antigravity_adapter
+                        with self.cond:
+                            antigravity_adapter.event(self, s, obj)
+                    else:
+                        self._on_event(s, obj)
                 except Exception:  # noqa: BLE001 — one odd event must not end the reader
                     log.exception("sessiond: event for %s", s.id[:8])
         rc = proc.wait()
@@ -1410,6 +1448,10 @@ class Supervisor:
         proc = s.proc
         if proc is None or proc.poll() is not None or proc.stdin is None:
             raise Refused(f"session {s.id[:8]} is not running", "not_live")
+        if s.agent == "antigravity":
+            if obj.get("type") != "user":
+                raise Refused("Antigravity does not accept control messages", "unsupported")
+            obj = {"event": "user", "message": {"content": obj["message"]["content"]}}
         with s.write_lock:
             try:
                 proc.stdin.write(json.dumps(obj) + "\n")
@@ -1633,6 +1675,12 @@ class Supervisor:
         with self.cond:
             if s.proc is not proc:
                 return            # a newer process has already replaced it
+            if s.agent == "antigravity" and not s.agy_had_result and not s.closing and not s.parking:
+                from .antigravity_adapter import event, transcript
+                for uid, text in s.agy_inputs:
+                    transcript(s, {"type": "user", "uuid": uid, "message": {"role": "user", "content": [{"type": "text", "text": text}]}})
+                s.agy_inputs.clear()
+                event(self, s, {"event": "result", "result": {"status": "ERROR", "error": "\n".join(s.stderr_tail)[-2000:] or "Antigravity ended before completing its reply."}})
             s.proc = None
             s.exit_code = rc
             if s.cut_off is None and not s.closing and not s.parking:
@@ -1730,7 +1778,7 @@ class Supervisor:
               mode: str = "", system_prompt_file: str = "") -> dict:
         from . import permissions as perms
 
-        if agent not in ("claude", "opencode"):
+        if agent not in ("claude", "opencode", "antigravity"):
             raise Refused(f"no headless adapter for {agent}", "unsupported")
         if not (text or "").strip():
             raise Refused("empty message", "empty_text")
@@ -1743,7 +1791,7 @@ class Supervisor:
             raise Refused(RESTART_REFUSED, "restart_pending")
         q = _quota()
         lim = q.limited() if q.path().exists() else None
-        if lim:
+        if lim and agent == "claude":
             raise Refused(QUOTA_REFUSED.format(at=_clock(float(lim["resets_at"]))),
                           "quota_limited", quota=q.view(rec=lim))
         session = session or str(uuid.uuid4())
@@ -1820,6 +1868,11 @@ class Supervisor:
             # the message behind it, so the card sticks with nothing to press.
             # Decline each, saying the reply follows, and let the message run.
             for rid in list(s.pending):
+                if s.agent == "antigravity":
+                    s.responses[rid] = {"behavior": "deny", "message": TYPED_INSTEAD}
+                    del s.pending[rid]
+                    self.cond.notify_all()
+                    continue
                 self._write(s, {"type": "control_response",
                                 "response": {"subtype": "success", "request_id": rid,
                                              "response": {"behavior": "deny",
@@ -1828,6 +1881,13 @@ class Supervisor:
             if s.state == "approval":
                 s.set_state("working")
             busy = s.state == "working"
+            if s.agent == "antigravity":
+                s.agy_had_result = False
+                s.agy_inputs.append((uid, text))
+                s.agy_queue.append(uid)
+                s.queued = set(s.agy_queue[1:])
+                s.acked.add(uid)
+                s.set_state("working")
             self._write(s, {"type": "user", "session_id": "", "uuid": uid,
                             "message": {"role": "user",
                                         "content": [{"type": "text", "text": text}]},
@@ -1897,6 +1957,8 @@ class Supervisor:
             return self._oc_rename(session, title)
         with self.lock:
             s = self._get(session)
+            if s.agent == "antigravity":
+                return {"session": session, "renamed": False, "why": "name kept by the app"}
             if not s.live:
                 return {"session": session, "renamed": False,
                         "why": "headless sessions pick up the name on their next resume"}
@@ -1926,6 +1988,16 @@ class Supervisor:
                 self._save(s)
                 return {"session": session, "model": s.model, "mode": "",
                         "told": model is not None, **self._brief(s)}
+            if s.agent == "antigravity":
+                if s.state in ("starting", "working", "approval"):
+                    raise Refused("wait for this turn before changing Antigravity settings", "busy")
+                if s.live:
+                    self._park(s)
+                    self._await_exit(s)
+                if model is not None: s.model = model
+                if mode is not None: s.mode = "plan" if mode == "plan" else ""
+                self._save(s)
+                return {"session": session, "model": s.model, "mode": s.mode, "told": False, **self._brief(s)}
             reqs: list[dict] = []
             if model is not None:
                 s.model = model
@@ -2022,6 +2094,21 @@ class Supervisor:
             if s.state not in ("working", "starting"):
                 return {"session": session, "interrupted": False, "why": "not working",
                         **self._brief(s)}
+            if s.agent == "antigravity":
+                # Native stream mode has no control_request protocol. Stop the
+                # process group and preserve its native ID for the next send.
+                if cancel_queued:
+                    s.agy_queue.clear()
+                    s.queued.clear()
+                try:
+                    if os.name == "nt":
+                        s.proc.terminate()
+                    else:
+                        os.killpg(s.proc.pid, signal.SIGINT)
+                except ProcessLookupError:
+                    pass
+                self.cond.wait_for(lambda: not s.live or s.state == "waiting", SETTLE_S)
+                return {"session": session, "interrupted": True, "why": None, **self._brief(s)}
             rid = "req_" + uuid.uuid4().hex[:12]
             req: dict = {"subtype": "interrupt"}
             if cancel_queued:
@@ -2069,6 +2156,13 @@ class Supervisor:
                                   "send a message to carry on", "lost", request=lost)
                 raise Refused("that request is not pending", "not_pending",
                               pending=list(s.pending.values()))
+            if s.agent == "antigravity":
+                s.responses[request_id] = response
+                del s.pending[request_id]
+                if not s.pending: s.set_state("working")
+                self._save(s)
+                self.cond.notify_all()
+                return {"session": session, "answered": request_id, "pending": list(s.pending.values()), **self._brief(s)}
             if s.agent == "opencode":
                 entry = s.pending[request_id]
             else:
@@ -2420,6 +2514,9 @@ class Supervisor:
                     permissions=str(req.get("permissions") or ""),
                     model=str(req.get("model") or ""), mode=str(req.get("mode") or ""),
                     system_prompt_file=str(req.get("system_prompt_file") or ""))}
+            if op == "antigravity_hook":
+                from .antigravity_adapter import approval
+                return {"ok": True, "hook": approval(self, sid, req.get("payload") or {}, stage=str(req.get("stage") or "pre"))}
             if op == "configure":
                 return {"ok": True, **self.configure(
                     sid, model=req.get("model") if isinstance(req.get("model"), str) else None,

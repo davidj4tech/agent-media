@@ -147,7 +147,7 @@ def approval_of(entry: dict) -> dict:
            "suggestions": req.get("permission_suggestions") or [],
            "at": entry.get("at"), "partial": False,
            "key": hashlib.sha1(rid.encode()).hexdigest()[:12],
-           "agent": "opencode" if entry.get("oc") else "claude"}
+           "agent": "antigravity" if entry.get("antigravity") else "opencode" if entry.get("oc") else "claude"}
     if tool == "AskUserQuestion":
         qs = []
         for q in inp.get("questions") or []:
@@ -212,7 +212,7 @@ class HeadlessDriver:
                 free_text_answers=True, live_events=True)
     #: Harnesses with a headless adapter: Claude Code's stream-json, and
     #: opencode's own server (sessiond_opencode.py).
-    agents = ("claude", "opencode")
+    agents = ("claude", "opencode", "antigravity")
 
     # -- ownership and reading --
 
@@ -290,7 +290,7 @@ class HeadlessDriver:
         r = call("start", cwd=cwd, text=compose(text, quote), agent=agent, workspace=host,
                  model=model, mode=mode, timeout=30.0,
                  **({"system_prompt_file": system_prompt_file} if system_prompt_file else {}))
-        if not r.get("ok") and r.get("code") == "unsupported" and agent != "claude":
+        if not r.get("ok") and r.get("code") == "unsupported" and agent not in ("claude", "antigravity"):
             # A sessiond older than this canvas (it restarts only when its own
             # code changes, and a restart ends its chats): the chat opens in a
             # pane, as before it had an adapter for this agent.

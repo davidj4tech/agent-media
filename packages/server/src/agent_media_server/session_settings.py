@@ -145,6 +145,11 @@ def state(session: str) -> dict:
     drv = driver.for_session(session)
     if drv.kind == driver.HEADLESS:
         v = drv._get(session)
+        if v.get("agent") == "antigravity":
+            mid = str(v.get("model") or v.get("init_model") or "")
+            return {"agent": "antigravity", "live": bool(v.get("live")),
+                    "model": mid, "model_id": mid, "plan": v.get("mode") == "plan",
+                    "driver": driver.HEADLESS, "can": {"model": False, "plan": False}}
         if v.get("agent") == "opencode":
             # Its model rides on each prompt (sessiond_opencode.py): the one
             # chosen, else what its last reply ran on. No plan mode.
@@ -263,7 +268,8 @@ def default_note() -> str:
 
 def _answer(session: str, **extra) -> dict:
     st = state(session)
-    sheet = (_native_sheet(st["agent"], session) if st["agent"] in ("codex", "grok")
+    sheet = ([] if st["agent"] == "antigravity"
+             else _native_sheet(st["agent"], session) if st["agent"] in ("codex", "grok")
              else _opencode_sheet(st["model"]) if st["agent"] == "opencode"
              else _pi_sheet(session, st["model"]) if st["agent"] == "pi" else models())
     return {"session": session, "models": sheet, **st, **extra}

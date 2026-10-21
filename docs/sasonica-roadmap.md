@@ -1465,13 +1465,26 @@ ahead.
      aimed at the sentence follow-along is on; margin notes gathered while
      reading and applied in one pass.
 
-25. **Gemini CLI as an agent** (David, 17 Oct 2026: "let's add Gemini to
-    sasonica settings" — then "Full agent"). Plan in
-    `docs/proposals/2026-10-17-gemini-as-an-agent.md`: phase 1 Settings row,
-    speech and threads; 2 start from the phone and resume; 3 headless over
-    `gemini --acp`; 4 model picker, API key, profiles. Installed on red5
-    (0.64.0), not signed in; its context hook is in (`e53eae2`). Sign-in from
-    the phone is the open question (`NO_BROWSER=true` gives a code to paste).
+25. **Antigravity CLI as a full agent — replaces Gemini CLI** (David,
+    17 Oct 2026: "let's add Gemini to sasonica settings" — then "Full
+    agent"; 21 Oct: migrate to Antigravity and put the remaining integration
+    on the roadmap). **Configuration done 21 Oct:** `agy` replaces Gemini
+    in Settings, with sign-in and update controls; agent-config supplies
+    shared instructions, skills and MCP migration, and agent-workspace
+    supplies installers and Neovim launchers. Dotfiles checked. Migration
+    details: [antigravity-cli.md](reference/antigravity-cli.md).
+    **App adapter done 21 Oct:** New chat, thread replies and tool activity,
+    follow-ups, parked resume using the native conversation ID, and automatic
+    reply speech. Runs headless through sessiond's persistent JSON stream;
+    waits for native `init` before sending. A hook bridge supplies app tool
+    approvals and question cards. Real CLI smoke checks used scratch files
+    and captured speech, never playback. Sign-in succeeded in the smoke;
+    Settings still reports keyring status as unknown rather than guessing.
+    **Remaining:** model/effort controls, additional account profiles, and
+    importing conversations started independently in a terminal. Preserve
+    existing Gemini history with its original reader and harness identity.
+    The original Gemini plan remains in
+    `docs/proposals/2026-10-17-gemini-as-an-agent.md` as historical context.
 26. **Quick chat** (David, 17 Oct 2026; renamed from "Quick question" the same day). A chat that skips the coding
     agent: the question goes straight to a fast model (Haiku, Gemini Flash)
     through red5's LiteLLM gateway — the route the speech summaries already

@@ -154,7 +154,7 @@ def agents(bearer: str) -> tuple[bool, dict]:
     from agent_media_core import harness_profiles
 
     rows = []
-    for name in harnesses.HARNESSES:
+    for name in harnesses.SETTINGS_HARNESSES:
         here = harnesses.program(name)
         version = harnesses.version_of(name) if here else ""
         # The default login, then one row per harness profile: each is its
@@ -276,6 +276,11 @@ def _window(argv: list[str], title: str) -> tuple[str, str]:
            f"sh -c {shlex.quote(inner)}")
     pane = panes._tmux(["new-window", "-d", "-t", f"{host}:", "-c", cwd,
                         "-n", title, "-P", "-F", "#{pane_id}", cmd])
+    if pane:
+        # A phone-attached host can be 40x17. Setup menus need a stable
+        # terminal size, independent of the active tmux client's viewport.
+        panes._tmux(["set-option", "-w", "-t", pane, "window-size", "manual"])
+        panes._tmux(["resize-window", "-t", pane, "-x", "80", "-y", "30"])
     return (pane, "") if pane else ("", "tmux could not open a window")
 
 
@@ -290,7 +295,7 @@ def run(agent: str, action: str, bearer: str, profile: str = "") -> tuple[bool, 
         return False, detail
     agent = (agent or "").strip()
     action = (action or "").strip()
-    if agent not in harnesses.HARNESSES:
+    if agent not in harnesses.SETTINGS_HARNESSES:
         return False, {"error": f"not an agent: {agent!r}", "status": 400}
     if action not in ACTIONS:
         return False, {"error": f"not an action: {action!r}", "status": 400}
@@ -432,7 +437,7 @@ def updates(bearer: str, refresh: bool = False) -> tuple[bool, dict]:
     ok, detail = auth.may_control_speech(bearer)
     if not ok:
         return False, detail
-    names = [n for n in harnesses.HARNESSES if harnesses.installed(n)]
+    names = [n for n in harnesses.SETTINGS_HARNESSES if harnesses.installed(n)]
     now = time.time()
     ask = [n for n in names
            if refresh or now - _LATEST.get(n, (0.0, ""))[0] > UPDATE_TTL_S]
@@ -479,7 +484,7 @@ def sign_out(agent: str, bearer: str, timeout: float = 30.0, profile: str = "") 
     if not ok:
         return False, detail
     agent = (agent or "").strip()
-    if agent not in harnesses.HARNESSES:
+    if agent not in harnesses.SETTINGS_HARNESSES:
         return False, {"error": f"not an agent: {agent!r}", "status": 400}
     argv = harnesses.logout_argv(agent)
     if not argv:

@@ -91,7 +91,7 @@ def sheet(listing: str, first: str = "") -> list[dict]:
     default provider), then the rest as pi lists them; `MAX_SHEET` at most."""
     rows = parse(listing)
     rows.sort(key=lambda m: m["provider"] != first)
-    return [{"id": m["id"], "label": m["model"],
+    return [{"id": m["id"], "label": m["model"], "provider": m["provider"],
              "note": m["provider"] + (f" · {m['context']} context" if m["context"] else "")}
             for m in rows[:MAX_SHEET]]
 

@@ -90,6 +90,8 @@ def test_install_opens_a_window_running_the_recipe(monkeypatch):
     assert "/x/npm install -g p" in cmd
     # The window outlives the command, and what follows it is not a shell.
     assert "[finished: %s]" in cmd and "exec sleep" in cmd
+    assert ["set-option", "-w", "-t", "%7", "window-size", "manual"] in calls
+    assert ["resize-window", "-t", "%7", "-x", "80", "-y", "30"] in calls
 
 
 def test_login_of_a_missing_agent_is_refused(monkeypatch):
@@ -447,3 +449,17 @@ def test_a_new_pi_profile_is_wired_for_speech(monkeypatch, tmp_path):
     assert agents.add_profile("pi", "venice", "", "b")[0]
     assert agents.add_profile("codex", "work", "", "b")[0]
     assert ran == ["pi"]
+
+
+def test_antigravity_replaces_gemini_in_settings_without_reusing_its_auth(monkeypatch):
+    monkeypatch.setattr(harnesses, "program", lambda name: "/x/agy" if name == "antigravity" else "/x/" + name)
+    monkeypatch.setattr(harnesses, "version_of", lambda name, **k: "")
+    monkeypatch.setattr(harnesses, "_gemini_auth", lambda *a: (_ for _ in ()).throw(AssertionError("legacy credentials")))
+    ok, detail = agents.agents("bearer")
+    rows = {r["name"]: r for r in detail["agents"]}
+    assert ok and "gemini" not in rows
+    assert rows["antigravity"]["path"] == "/x/agy"
+    assert rows["antigravity"]["auth"] == "unknown"
+    assert rows["antigravity"]["actions"] == ["install", "login"]
+    assert harnesses.install_argv("antigravity") == ["/x/agy", "update"]
+    assert harnesses.login_argv("antigravity") == ["env", "SSH_CONNECTION=sasonica", "/x/agy"]
