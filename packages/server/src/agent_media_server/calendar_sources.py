@@ -272,10 +272,16 @@ def _item(cal: dict, ev, occ, length: dt.timedelta) -> dict:
     row = {"type": "event", "source": "calendar", "overdue": False,
            "calendar": {"id": cal["id"], "name": cal["name"], "color": cal["color"]},
            "uid": str(ev.get("UID") or ""), "title": str(ev.get("SUMMARY") or "").strip() or "(no title)",
-           "state": "", "priority": "", "tags": [], "level": 1}
+           "state": "", "priority": "", "tags": [], "level": 1,
+           "busy": str(ev.get("TRANSP") or "OPAQUE").upper() != "TRANSPARENT"}
     if loc := str(ev.get("LOCATION") or "").strip():
         row["location"] = loc
+    if str(ev.get("X-SASONICA-MANAGED") or "") == "1":
+        row["managed"] = True
+        row["shift_source"] = str(ev.get("X-SASONICA-SOURCE") or "")
     if isinstance(occ, dt.datetime):
+        row["start_at"] = occ.astimezone().isoformat()
+        row["end_at"] = (occ + length).astimezone().isoformat()
         s = _local(occ)
         e = _local(occ + length)
         row.update(date=s.date().isoformat(), time=s.strftime("%H:%M"), all_day=False)
@@ -285,6 +291,8 @@ def _item(cal: dict, ev, occ, length: dt.timedelta) -> dict:
             if last > s.date():
                 row["end_date"] = last.isoformat()
     else:
+        row["start_at"] = dt.datetime.combine(occ, dt.time()).astimezone().isoformat()
+        row["end_at"] = dt.datetime.combine(occ + max(length, dt.timedelta(days=1)), dt.time()).astimezone().isoformat()
         row.update(date=occ.isoformat(), all_day=True)
         last = occ + max(length, dt.timedelta(days=1)) - dt.timedelta(days=1)
         if last > occ:

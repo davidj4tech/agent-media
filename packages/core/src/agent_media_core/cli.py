@@ -8670,6 +8670,42 @@ def _server_module(name: str):
         return None
 
 
+def cmd_calendar(a) -> int:
+    """Read the owner's configured calendars, independently of the harness."""
+    from pathlib import Path
+    calendar = _server_module("calendar_access")
+    if calendar is None:
+        return 1
+    try:
+        if a.action == "treatments-sync":
+            adapter = _server_module("phs_calendar")
+            if adapter is None:
+                return 1
+            result = adapter.sync()
+        elif a.action == "publish":
+            publisher = _server_module("calendar_publish")
+            if publisher is None:
+                return 1
+            if not a.publish_config:
+                raise ValueError("--publish-config FILE required")
+            result = publisher.publish(a.publish_config)
+        elif a.action == "events":
+            result = calendar.query(a.start, a.end, a.search)
+        else:
+            writer = _server_module("calendar_write")
+            if writer is None:
+                return 1
+            if not a.event:
+                raise ValueError("--event JSON_FILE required (use - for stdin)")
+            event = json.load(sys.stdin) if a.event == "-" else json.loads(Path(a.event).read_text())
+            result = writer.write(event, a.calendar, a.etag, a.action == "delete")
+    except (ValueError, RuntimeError, OSError) as e:
+        print(f"media calendar: {e}", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_contacts(a) -> int:
     """`media contacts …`: the server's contacts and their timeline
     (agent_media_server.contacts): status, sync, seed, note, timeline,
@@ -9668,6 +9704,17 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="drop the choice; back to MEDIA_SPEECH_DEFAULT_TARGET")
     st.add_argument("--json", action="store_true", help="machine-readable")
     st.set_defaults(func=cmd_speech_target)
+
+    calendar = sub.add_parser("calendar", help="read the owner's shared calendars (JSON)")
+    calendar.add_argument("action", nargs="?", choices=("events", "put", "delete", "publish", "treatments-sync"), default="events")
+    calendar.add_argument("--publish-config", default="", help="private HTTPS publishing configuration")
+    calendar.add_argument("--event", default="", help="event JSON file, or - for stdin (writes)")
+    calendar.add_argument("--calendar", default="", help="vdirsyncer pair (default configured write_pair)")
+    calendar.add_argument("--etag", default="", help="current event ETag required for updates/deletes")
+    calendar.add_argument("--start", default="", help="first date, YYYY-MM-DD (default today)")
+    calendar.add_argument("--end", default="", help="last date, inclusive (default seven days)")
+    calendar.add_argument("--search", default="", help="match event title or location")
+    calendar.set_defaults(func=cmd_calendar)
 
     contacts = sub.add_parser(
         "contacts", add_help=False,

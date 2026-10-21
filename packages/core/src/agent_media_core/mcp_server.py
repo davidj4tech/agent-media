@@ -68,6 +68,34 @@ log = logging.getLogger(__name__)
 mcp = MCPServer("agent-media")
 
 
+@mcp.tool()
+def calendar_events(start: str = "", end: str = "", search: str = "") -> dict:
+    """Read the owner's calendars shared with this host, without an OpenAI connector.
+
+    Dates are YYYY-MM-DD, inclusive; defaults to today through six days later.
+    Search matches title/location. Includes calendar names and busy/free flags.
+    Read-only; local copies may be stale. Inspect source status and freshness_note.
+    This tool is for trusted owner harnesses, like the local media CLI.
+    """
+    from agent_media_server.calendar_access import query
+
+    return query(start, end, search)
+
+
+@mcp.tool()
+def calendar_write(event: dict, calendar: str = "", etag: str = "", delete: bool = False) -> dict:
+    """Write an event when the owner asks; shared across local harnesses.
+
+    event: title, start/end (ISO with offsets), timezone (default Melbourne),
+    optional uid, busy, all_day, location, description, rrule. All-day end is
+    exclusive. Use a stable uid to avoid duplicates. Existing event returns
+    its ETag without changes; supply that ETag to update/delete. Only events
+    created by this tool may be edited. Never invent roster hours.
+    """
+    from agent_media_server.calendar_write import write
+    return write(event, calendar, etag, delete)
+
+
 # --- shared singletons ----------------------------------------------------
 
 def _state() -> StateStore:
@@ -1453,6 +1481,8 @@ def main() -> None:
 # forgotten). Everything omitted here remains available via the `media` CLI and
 # via the full media-mcp entrypoint.
 NARROW_TOOLS = (
+    "calendar_events",     # shared owner's calendars, available to every harness
+    "calendar_write",
     "converse",            # genuinely interactive; awkward to drive from a CLI
     "phone_ask",           # the same: it waits on David's yes on the phone
     "errors",              # lets an agent see what just went wrong
@@ -1496,6 +1526,10 @@ def main_http() -> None:
     """streamable-HTTP entrypoint — for remote callers over Tailscale."""
     load_env_file("media-mcp-http")
     _configure_logging()
+    # The legacy HTTP transport has no owner authentication. Private calendar
+    # data belongs only on the trusted local stdio transport and CLI.
+    mcp.remove_tool("calendar_events")
+    mcp.remove_tool("calendar_write")
     _ensure_autoadvance_watcher()
     log.info("media-mcp http listening on %s:%d", _host(), _port())
     mcp.run(transport="streamable-http", host=_host(), port=_port())

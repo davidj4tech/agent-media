@@ -1,0 +1,8 @@
+[Unit]
+Description=Publish timing-only calendar availability to the booking site
+
+[Service]
+Type=oneshot
+Environment="PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=%h/.local/bin/calendar-availability-sync --config %h/.config/agent-media/calendar-publish.json
+TimeoutStartSec=300

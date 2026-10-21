@@ -68,10 +68,54 @@ tokens, page captures or request bodies into a chat or log.
    errors, keep the last verified calendar entries and report a failed sync.
    Do not convert a failure or ambiguous empty page into destructive changes.
 
-The regular sync and calendar writer are **not yet installed or enabled**.
-They depend on authenticating to Employment Hero, verifying the published
-roster/feed and its coverage, and checking the first proposed calendar diff.
-No fabricated shifts or guessed treatment slots have been written.
+Shared CalDAV writing and the PHS treatment sync are now installed. The
+published-roster sync still depends on an interactive Employment Hero login
+or verified feed. No PHS designated shift hours have been guessed. The
+time-only Netbookings reader independently syncs today and tomorrow hourly.
+
+## Marlo's Spa and Rye Remedial availability
+
+David also asked for a fortnightly Tuesday **09:45–13:45** Marlo's Spa
+shift in the calendar, and for Rye Remedial treatments to become available
+**one hour after the designated shift ends**. Use Australia/Melbourne.
+David confirmed the first Tuesday as **27 October 2026**. The recurring
+event was created and verified through the existing CalDAV connection,
+independently of OpenAI's connector. Existing `marlo-session` / `marlo-bookings` tools
+already read Timely, should confirmed Marlo's treatment times be needed.
+
+Calendar reads now have a shared local interface: `media calendar` and the
+stdio MCP `calendar_events` tool. They read the existing vdirsyncer copies
+without OpenAI's connector; see [shared calendar access](../reference/shared-calendar.md).
+Writes are available through `media calendar put` / `calendar_write`, with
+stable UIDs, ownership checks and conditional ETag updates/deletes.
+
+Preserve a shift's real end time in Google Calendar. Apply the one-hour
+offset in Rye Remedial's availability calculation: a Marlo's shift ending
+13:45 permits Rye Remedial starts from **14:45**. Across several shifts
+on one day, use the latest designated shift's end, then add one hour. A
+booking is still subject to its normal notice, latest-start, travel and
+existing-appointment constraints. Never move an existing customer booking
+automatically when a shift changes; surface the conflict for the owner.
+
+The inspected website currently uses fixed fortnightly opening times in
+`rye_booking/src/Availability.php`, configured by `rye_booking.settings`.
+It now consumes timing-only calendar snapshots over scoped HTTPS. Confirmed
+calendar shift hours replace the fixed opening time for their day,
+rather than merely layering a later static evening opening over an earlier
+shift finish. Unknown roster days retain the existing fallback; do not
+infer that they are available all day. Free week markers are not work shifts
+and must not create closures. Other real busy events still prevent overlaps.
+
+The website integration is deployed. Snapshots refresh every ten minutes,
+contain only busy intervals and opening times, and never contain titles,
+client data or source URLs. A successful vdirsyncer run is required before
+publication. After two hours without a fresh snapshot the site closes new
+slots; existing bookings stay in place and conflicts raise an alert. The
+live booking service verified the 13:45 → 14:45 Marlo boundary, with zero
+existing booking conflicts. Both installed timer jobs completed successfully.
+Employment Hero's email-first browser flow remains at the email screen;
+David confirmed interactive login is needed. A reusable authenticated browser
+session or the account's private roster subscription is the remaining input.
 
 ## Validation
 

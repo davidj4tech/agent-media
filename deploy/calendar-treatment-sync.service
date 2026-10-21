@@ -1,0 +1,8 @@
+[Unit]
+Description=Sync private Hot Springs treatment times into the calendar
+
+[Service]
+Type=oneshot
+Environment="PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=%h/.local/bin/calendar-availability-sync --treatments
+TimeoutStartSec=300
