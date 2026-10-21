@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""Collect Employment Hero credentials locally and encrypt them with SOPS.
+
+No login attempt, browser, calendar write or plaintext credential file.
+"""
+from __future__ import annotations
+
+import argparse
+import getpass
+import json
+import os
+from pathlib import Path
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+
+EMPLOYEE_URL = "https://employmenthero.yourpayroll.com.au/Employee/10816568"
+SECRET_NAME = "secrets/employmenthero/employee.env"
+
+
+def collect(secret_input=getpass.getpass) -> dict[str, str]:
+    email = secret_input("Employment Hero email (hidden): ").strip()
+    password = secret_input("Employment Hero password (hidden): ")
+    if not email or "@" not in email or not password:
+        raise ValueError("An email address and password are required.")
+    return {"EH_EMPLOYEE_URL": EMPLOYEE_URL, "EH_EMAIL": email,
+            "EH_PASSWORD": password}
+
+
+def encrypt(credentials: dict[str, str], secrets_repo: Path) -> bytes:
+    exe = shutil.which("sops")
+    if not exe or not (secrets_repo / ".sops.yaml").is_file():
+        raise ValueError("SOPS and the dotfiles-secrets encryption policy are required.")
+    # JSON on a pipe safely represents punctuation, quotes and Unicode in
+    # passwords. Only ciphertext reaches disk; secrets never enter argv/env.
+    done = subprocess.run(
+        [exe, "--encrypt", "--input-type", "json", "--output-type", "dotenv",
+         "--config", str(secrets_repo / ".sops.yaml"),
+         "--filename-override", SECRET_NAME, "/dev/stdin"],
+        input=json.dumps(credentials).encode(), stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, cwd=secrets_repo, timeout=30, check=False)
+    if done.returncode or b"EH_PASSWORD=ENC[" not in done.stdout:
+        # A tool's error may include its input: never echo it to the terminal.
+        raise ValueError("Encryption failed; check the local SOPS configuration. Nothing saved.")
+    return done.stdout
+
+
+def save(ciphertext: bytes, destination: Path, *, replace: bool = False) -> None:
+    old_umask = os.umask(0o077)
+    try:
+        destination.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+        parent = destination.parent.lstat()
+        if not stat.S_ISDIR(parent.st_mode) or parent.st_uid != os.getuid():
+            raise ValueError("The credential directory must be owned by you and not a symlink.")
+        os.chmod(destination.parent, 0o700)
+        if destination.exists() or destination.is_symlink():
+            st = destination.lstat()
+            if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid():
+                raise ValueError("Refusing to replace an unsafe credential path.")
+            if not replace:
+                raise ValueError("Credentials already exist; use --replace to change them.")
+        fd, name = tempfile.mkstemp(prefix=".employee-", dir=destination.parent)
+        tmp = Path(name)
+        try:
+            with os.fdopen(fd, "wb") as out:
+                out.write(ciphertext)
+                out.flush()
+                os.fsync(out.fileno())
+            if replace:
+                os.replace(tmp, destination)
+            else:
+                # No overwrite if another setup finished while we encrypted.
+                os.link(tmp, destination)
+        finally:
+            tmp.unlink(missing_ok=True)
+    finally:
+        os.umask(old_umask)
+
+
+def check(destination: Path) -> None:
+    st = destination.lstat()
+    if (not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid()
+            or stat.S_IMODE(st.st_mode) & 0o077):
+        raise ValueError("Credential file must be an owner-only regular file.")
+    data = destination.read_bytes()
+    if not all(key + b"=ENC[" in data for key in (b"EH_EMAIL", b"EH_PASSWORD")):
+        raise ValueError("The credential file does not contain encrypted login fields.")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--check", action="store_true", help="check storage without displaying or decrypting credentials")
+    ap.add_argument("--replace", action="store_true", help="replace previously saved credentials")
+    args = ap.parse_args()
+    repo = Path.home() / "dotfiles-secrets"
+    destination = repo / SECRET_NAME
+    try:
+        if args.check:
+            check(destination)
+            print("Encrypted Employment Hero credentials are configured. Website login is not yet verified.")
+            return 0
+        if not sys.stdin.isatty():
+            raise ValueError("Run this interactively in a terminal, not through chat or a pipe.")
+        if (destination.exists() or destination.is_symlink()) and not args.replace:
+            raise ValueError("Credentials already exist; use --replace to change them.")
+        credentials = collect()
+        ciphertext = encrypt(credentials, repo)
+        credentials.clear()
+        save(ciphertext, destination, replace=args.replace)
+        print("Saved SOPS-encrypted Employment Hero credentials (owner-only).")
+        print("No website login attempted. Tell the assistant setup is complete; MFA may be needed next.")
+        return 0
+    except ValueError as error:
+        # These are our fixed validation messages, never external tool output.
+        print(str(error), file=sys.stderr)
+        return 1
+    except (OSError, subprocess.SubprocessError):
+        # Library exceptions can contain sensitive input.
+        print("Setup did not complete. Check SOPS, file permissions and whether credentials already exist.", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
