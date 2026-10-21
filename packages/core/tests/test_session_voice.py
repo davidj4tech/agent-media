@@ -82,6 +82,42 @@ def test_conversation_choice_overrides_a_hooks_automatic_workspace_voice():
     assert S._engine_and_voice(automatic, Target("sasonica")) == ("device", MOLLY)
 
 
+def test_generic_hook_engine_does_not_mask_a_conversation_voice(monkeypatch):
+    from agent_media_core.intake import _hook_stdin
+
+    V.set_voice(A, MOLLY)
+    device.set_override("sasonica", "phone", RYAN)
+    monkeypatch.setenv("MEDIA_RENDER_ENGINE", "edge")
+    monkeypatch.setenv("CODEX_TTS_ENABLED", "1")
+    monkeypatch.delenv("CODEX_TTS_ENGINE", raising=False)
+    monkeypatch.delenv("CODEX_TTS_VOICE", raising=False)
+    monkeypatch.setattr(_hook_stdin, "_load_env_file", lambda _: None)
+    submitted = []
+    monkeypatch.setattr(_hook_stdin, "submit_event", submitted.append)
+
+    assert _hook_stdin.run(Source.CODEX, "CODEX", text="A reply",
+                           metadata={"session": A}) == 0
+    assert len(submitted) == 1
+    assert submitted[0].engine is None
+    assert S._engine_and_voice(submitted[0], Target("sasonica")) == ("device", MOLLY)
+
+
+def test_explicit_hook_engine_still_wins_over_conversation_voice(monkeypatch):
+    from agent_media_core.intake import _hook_stdin
+
+    V.set_voice(A, MOLLY)
+    monkeypatch.setenv("CODEX_TTS_ENABLED", "1")
+    monkeypatch.setenv("CODEX_TTS_ENGINE", "kokoro")
+    monkeypatch.setattr(_hook_stdin, "_load_env_file", lambda _: None)
+    submitted = []
+    monkeypatch.setattr(_hook_stdin, "submit_event", submitted.append)
+
+    assert _hook_stdin.run(Source.CODEX, "CODEX", text="A reply",
+                           metadata={"session": A}) == 0
+    assert submitted[0].engine == "kokoro"
+    assert S._engine_and_voice(submitted[0], Target("sasonica")) == ("kokoro", None)
+
+
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("mode", ["phone", "server"])
 def test_submission_uses_the_voice_on_both_render_paths(monkeypatch, streaming, mode):
