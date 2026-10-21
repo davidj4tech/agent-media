@@ -1614,7 +1614,10 @@ ahead.
     catch me up and read aloud, draft a reply, send later and remind me;
     then a second round (pinned and saved messages, mentions, a gallery,
     message requests, quiet hours, translate, ask about a chat, chat lock
-    and more). Chosen 20 Oct 2026; not started.
+    and more). Chosen 20 Oct 2026; not started. **Voice clips and emoji
+    reactions confirmed 22 Oct 2026** (David): attach a recorded voice
+    clip to a message in the Messages tab, including when replying to a
+    particular message; also offer a quick emoji reaction on a message.
 
 35. **Mail in Sasonica** (David, 20 Oct 2026: "I'd like to handle emails
     from Sasonica"). Both a Mail tab (accounts, folders, search, compose)
@@ -1639,6 +1642,17 @@ ahead.
     from the proposal). Its switcher gives way to one merged list with a
     filter per server (David, 20 Oct 2026: "Merged, with a filter"). The
     settings split is not started.
+
+38. **Threads and Messages together, with many views** (David, 22 Oct
+    2026). One collection of human and agent conversations, organised as
+    threads of information and communication as well as work. Views may
+    follow people, subjects, spaces, timelines, linked knowledge
+    (Zettelkasten), reference collections, GTD, kanban, PARA, agendas and
+    reviews. The same conversation can appear in several views. Builds on
+    item 33's spaces for chats and coding threads and the Organiser's Org,
+    GTD and linked-note foundations. Scope, candidate views and design
+    questions: [Unified conversations and views](proposals/2026-10-22-unified-conversations-and-views.md).
+    Direction requested; design proposal only, not started.
 
 ## Loose ends
 

@@ -65,6 +65,12 @@ Proposed order: media shown (receive) → reactions and replies → read state
 with peek → sending media → per-chat controls → voice notes transcribed →
 catch me up / read aloud → draft a reply → send later / remind me.
 
+Confirmed by David, 22 Oct 2026: in the Messages tab, offer **attach a voice
+clip** to a message, including a reply to a particular message, and **react
+with an emoji** on a message. Voice clips are sent as playable audio;
+recording a clip is separate from dictating text. These extend sending
+media (2), reactions (3) and replies (4) above; queued, not built.
+
 Second round, all chosen (David, 20 Oct 2026):
 
 - In a chat: jump to the first unread (a "new" line, drafts kept per
