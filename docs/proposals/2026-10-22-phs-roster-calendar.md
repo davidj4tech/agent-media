@@ -14,8 +14,9 @@ Google read-back verified that change. Speech attention and meeting rules
 remain unchanged; actual busy events should still hold speech normally.
 
 Employment Hero's employee portal supplies the published working hours.
-The public login is email-first; authenticated access and the roster data
-shape are not yet verified. Employment Hero documents a calendar subscription
+The public login is email-first. Authenticated employee calendar access and
+the published shift data shape are now verified using an encrypted browser
+session imported from phone Firefox. Employment Hero documents a calendar subscription
 for published shifts, but availability depends on the organisation/product:
 [official calendar-sync instructions](https://help.employmenthero.com/hc/en-au/articles/17426887868303-Calendar-sync-How-to-sync-your-calendars-with-rosters).
 Prefer that feed if this account exposes it; do not assume the HR feature
@@ -45,7 +46,7 @@ store MFA codes. Prefer a private reusable browser session or a roster feed
 over repeated password logins. Never print decrypted values, cookies, feed
 tokens, page captures or request bodies into a chat or log.
 
-## Sync behaviour to implement after access is verified
+## Sync behaviour
 
 1. Retain the **free** week marker so PHS weeks remain visible at a glance.
 2. Check for published shifts in a rolling 14-day window. Use confirmed
@@ -69,8 +70,10 @@ tokens, page captures or request bodies into a chat or log.
    Do not convert a failure or ambiguous empty page into destructive changes.
 
 Shared CalDAV writing and the PHS treatment sync are now installed. The
-published-roster sync still depends on an interactive Employment Hero login
-or verified feed. No PHS designated shift hours have been guessed. The
+published-roster sync is now configured and verified: seven shifts in the
+rolling fortnight were written to the dedicated PHS calendar. Renewed session
+cookies are encrypted after each successful read; later login expiry is
+reported and leaves previous shifts intact. No designated hours are guessed. The
 time-only Netbookings reader independently syncs today and tomorrow hourly.
 
 ## Marlo's Spa and Rye Remedial availability
@@ -113,9 +116,10 @@ publication. After two hours without a fresh snapshot the site closes new
 slots; existing bookings stay in place and conflicts raise an alert. The
 live booking service verified the 13:45 → 14:45 Marlo boundary, with zero
 existing booking conflicts. Both installed timer jobs completed successfully.
-Employment Hero's email-first browser flow remains at the email screen;
-David confirmed interactive login is needed. A reusable authenticated browser
-session or the account's private roster subscription is the remaining input.
+Employment Hero's interactive login was completed on phone Firefox. A fresh
+cookie import passed repeated roster reads and encrypted session renewal.
+The hourly job now syncs published shifts plus treatment refinement; login
+failures retain prior shifts, alert, and still attempt treatment refresh.
 
 ## Validation
 

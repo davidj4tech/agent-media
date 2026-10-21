@@ -10,19 +10,24 @@ parser.add_argument("--treatments", action="store_true")
 args = parser.parse_args()
 ok = False
 conflicts = 0
+partial = False
 try:
-    command = ["media", "calendar", "treatments-sync"] if args.treatments else ["media", "calendar", "publish", "--publish-config", args.config]
+    command = ["media", "calendar", "roster-sync"] if args.treatments else ["media", "calendar", "publish", "--publish-config", args.config]
     done = subprocess.run(command,
                           text=True, capture_output=True, timeout=260)
     result = json.loads(done.stdout) if done.returncode == 0 else {}
     ok = result.get("ok") is True
     conflicts = int(result.get("booking_conflicts", 0))
+    partial = result.get("treatment_sync_ok") is False
+    if args.treatments and not ok:
+        # A payroll login failure must not stop the independent booking source.
+        subprocess.run(["media", "calendar", "treatments-sync"], capture_output=True, timeout=180)
 except Exception:
     pass
 label = "Treatment calendar" if args.treatments else "Booking calendar"
-subprocess.run(["agent-alert", "report", "calendar.treatment-sync" if args.treatments else "calendar.availability-sync", "--level", "warn" if ok and conflicts else "ok" if ok else "needs",
-                "--title", "Calendar conflicts need review" if ok and conflicts else label + " sync healthy" if ok else label + " sync failed",
-                "--detail", f"{conflicts} existing bookings conflict with calendar holds; no bookings moved." if ok and conflicts else "Timing-only availability published." if ok else
+subprocess.run(["agent-alert", "report", "calendar.treatment-sync" if args.treatments else "calendar.availability-sync", "--level", "warn" if ok and (conflicts or partial) else "ok" if ok else "needs",
+                "--title", "Calendar conflicts need review" if ok and conflicts else "PHS treatments need refresh" if ok and partial else label + " sync healthy" if ok else label + " sync failed",
+                "--detail", f"{conflicts} existing bookings conflict with calendar holds; no bookings moved." if ok and conflicts else "Published shifts updated; treatment source unavailable, so designated shifts remain busy." if ok and partial else "Published PHS shifts and treatment windows updated." if ok and args.treatments else "Timing-only availability published." if ok else
                 "Last verified snapshot retained. New slots close if the snapshot is older than two hours.",
                 "--every", "3600" if args.treatments else "600"], timeout=20, check=False)
 print("Calendar availability published" if ok else "Calendar availability sync failed")

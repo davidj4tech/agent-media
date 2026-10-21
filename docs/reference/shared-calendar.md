@@ -60,10 +60,14 @@ before its personal-calendar copy was removed. It writes only David's treatment 
 consultation forms, and only cancels its own future events after complete
 source reads. These intervals do not establish the designated shift finish.
 
-Employment Hero roster access is still awaiting an interactive login or a
-verified roster subscription. No published PHS shift hours are inferred from
-treatment times. Automatic conversion of a PHS shift into a free work-hours
-context plus busy treatment intervals also remains pending that roster source.
+Employment Hero roster access is verified using the phone-exported browser
+session. The first cookie import stopped authenticating; a fresh export after
+David completed login passed roster reads across three separate browser
+launches. Refreshed cookies are encrypted and saved atomically after verified
+reads. Seven assigned shifts were synced into the dedicated PHS calendar for
+22 October–5 November. No shift hours are inferred from treatment times.
+Today and tomorrow's shifts become free work-hours context only after a
+successful treatment sync; their actual appointment intervals remain busy.
 
 David shared `davidj4marlospa@gmail.com` with the primary account. CalDAV read
 and write privileges are verified. It is now synced as `cal_davidj4marlospa`,
@@ -90,3 +94,15 @@ domains and writes a SOPS-encrypted `browser-pending.env` directly from memory.
 It preserves any verified `browser.env` and the phone export until server
 verification succeeds. Never paste cookie values into chat. Six synthetic
 tests cover formats, scope, redaction, paths and ciphertext-only storage.
+
+The `employmenthero-roster` reader emits only assigned shift IDs and
+StartTime/EndTime from the employee schedule endpoint. The API's `allDay` flag
+is a display convention; `Biddable` shifts are excluded. `media calendar
+roster-sync` has regression coverage for local time, cancellation ownership and
+failed sources. `calendar.phs.roster_command` and `calendar.phs.node` configure
+the reader and a stable absolute Node path. The hourly treatment job now runs
+roster-sync, which includes treatment refinement; if the roster login fails it
+still attempts the independent treatment sync and reports failure. Subsequent
+login expiry can still require David to provide a new session. No MFA codes
+or authenticator setup secrets are retained. Rye uses the real designated end
+plus one hour, including when the shift context is marked free.

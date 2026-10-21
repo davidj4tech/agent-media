@@ -8677,7 +8677,12 @@ def cmd_calendar(a) -> int:
     if calendar is None:
         return 1
     try:
-        if a.action == "treatments-sync":
+        if a.action == "roster-sync":
+            adapter = _server_module("roster_calendar")
+            if adapter is None:
+                return 1
+            result = adapter.sync()
+        elif a.action == "treatments-sync":
             adapter = _server_module("phs_calendar")
             if adapter is None:
                 return 1
@@ -9706,7 +9711,7 @@ def _build_parser() -> argparse.ArgumentParser:
     st.set_defaults(func=cmd_speech_target)
 
     calendar = sub.add_parser("calendar", help="read the owner's shared calendars (JSON)")
-    calendar.add_argument("action", nargs="?", choices=("events", "put", "delete", "publish", "treatments-sync"), default="events")
+    calendar.add_argument("action", nargs="?", choices=("events", "put", "delete", "publish", "treatments-sync", "roster-sync"), default="events")
     calendar.add_argument("--publish-config", default="", help="private HTTPS publishing configuration")
     calendar.add_argument("--event", default="", help="event JSON file, or - for stdin (writes)")
     calendar.add_argument("--calendar", default="", help="vdirsyncer pair (default configured write_pair)")
