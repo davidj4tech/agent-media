@@ -378,8 +378,16 @@ def test_antigravity_and_rate_limit_warning_notifications(host, monkeypatch):
     })
     wait_for(lambda: len(spoken) == 1 and spoken[0][:2] == ("6a1e0000-0000-4000-8000-0000000000cc", "Hello from streamed step!") and bool(spoken[0][2]))
 
+    # Trailing EOF result when no turn is in flight is ignored (no duplicate transcript/speech)
+    antigravity_adapter.event(host.sup, s, {
+        "event": "result",
+        "result": {"status": "ERROR", "response": "Hello from streamed step!", "error": "prior step failed", "duration_seconds": 0.5},
+    })
+    assert len(spoken) == 1
+
     # Antigravity hitting quota limit records cut_off and emits limit notification
     s.last_text = "keep coding"
+    s.agy_queue.append("u2")
     antigravity_adapter.event(host.sup, s, {
         "event": "result",
         "result": {

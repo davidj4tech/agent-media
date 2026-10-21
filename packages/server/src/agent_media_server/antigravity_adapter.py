@@ -201,15 +201,6 @@ def speak(s, text: str) -> None:
         'voice_from': 'session',
         'dedup_key': dedup_key,
     }
-    try:
-        from agent_media_core import session_settings
-        sp = session_settings.speak_priority(s.id)
-        if sp is not None:
-            meta['speak_priority'] = sp
-        if session_settings.toast(s.id):
-            meta['toast'] = True
-    except Exception:
-        pass
     run(Source.ANTIGRAVITY, 'ANTIGRAVITY', text=text, metadata=meta)
 
 
