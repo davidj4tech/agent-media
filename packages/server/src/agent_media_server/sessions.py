@@ -634,6 +634,12 @@ def approval_for(pane: str, agent: str = "claude", session: str = "") -> dict | 
         q = asks.approval(cap, session, agent)
         if q is not None:
             return q
+    if agent == "codex":
+        from . import codex_asks
+
+        q = codex_asks.approval(cap, session)
+        if q is not None:
+            return q
     dialog = parse_dialog(cap)
     if not dialog or not dialog["options"]:
         return None

@@ -112,7 +112,7 @@ def follow(session: str, pane: str, tool_use_id: str) -> None:
         cur = pending_asks.read(session)
         if not cur or (cur.get("tool_use_id") or "") != tool_use_id:
             return                           # answered, or another question
-        approval = sessions.approval_for(pane, "claude", session)
+        approval = sessions.approval_for(pane, cur.get("harness") or "claude", session)
         now = time.monotonic()
         if approval and approval.get("kind") == "question" and approval.get("tool_use_id") == tool_use_id:
             seen_at = now

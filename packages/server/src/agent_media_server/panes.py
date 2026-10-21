@@ -333,6 +333,8 @@ def classify(pane: str, agent: str = "claude") -> "str | None":
     "Working..." spinner, an editor boxed by two rules, and no approvals.
     """
     if agent == "codex":
+        if re.search(r"^\s*Question \d+/\d+", pane, re.M):
+            return "approval"
         # Changed hooks.json holds the whole TUI on a trust prompt until
         # someone at the desk answers it.
         if ((len(_NUMBERED.findall(pane)) >= 2 and (_SELECTED.search(pane) or _KEYS.search(pane)))

@@ -1347,7 +1347,7 @@ def test_open_window_runs_the_agents_own_resume(monkeypatch):
     send.open_window(sid, "/tmp", resume=True, agent="pi")
     send.open_window(sid, "/tmp", resume=False, agent="pi")
     cmds = [c[-1] for c in calls if c[0] == "new-window"]
-    assert cmds[0].endswith(f"/bin/codex resume {sid}")
+    assert cmds[0].endswith(f"/bin/codex resume {sid} --cd /tmp")
     assert cmds[1].endswith(f"/bin/pi --session {sid}")
     assert cmds[2].endswith(f"/bin/pi --session-id {sid}")
 

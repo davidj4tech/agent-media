@@ -819,6 +819,20 @@ all draw the same numbered list. The fields:
 
 Answer with `POST /session/answer`.
 
+Codex's `request_user_input` uses the same question form below (21 Oct
+2026), with single-select options and free text. Its PreToolUse event uses
+shared question storage and speech, including reading later parts only when
+the earlier part is answered. `codex_asks.py` reads the `Question i/n` overlay
+and checks the stored request against it; an unfinished rollout is a fallback
+when no hook copy exists (`source: "rollout"`). With neither copy available,
+the visible question is offered one part at a time (`source: "screen"`).
+Digits commit and advance in Codex, so its answer driver never follows a
+choice with Enter. Free text selects "None of the above" and opens the notes
+composer before typing. Stale cards are rejected by the same `key` check.
+When launching or resuming Codex, the server passes the chosen working root
+explicitly with `--cd`, including after a menu move; tmux's cwd alone leaves
+Codex asking whether to restore the session's previous directory.
+
 **Question form** (22 Sep 2026). Claude Code's AskUserQuestion on a pane is
 read by `agent_media_server/asks.py`, and its approval carries the fields
 above **and**:

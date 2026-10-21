@@ -735,7 +735,7 @@ def _emit_ask(ask: str, payload: dict, lead: str = "", structure: list | None = 
             pending_asks.update(session, str(payload["tool_use_id"]), held=True)
         except Exception:  # noqa: BLE001
             pass
-    event = Event(text=msg, source=Source.CLAUDE_CODE,
+    event = Event(text=msg, source=Source.CODEX if payload.get("harness") == "codex" else Source.CLAUDE_CODE,
                   priority=Priority.NORMAL if held else priority,
                   voice=voice_for_session(sess),
                   metadata={"kind": "notif", "ask": structure or True,
@@ -763,6 +763,7 @@ def _keep_pending_ask(payload: dict) -> None:
 
         pending_asks.record(session, str(payload.get("tool_use_id") or ""),
                             payload.get("tool_input") or {},
+                            harness=payload.get("harness") or "claude",
                             voice=voice_for_session(_session_name()) or "",
                             place=_source_place(session))
     except Exception as e:  # noqa: BLE001 — the phone falls back to the screen
@@ -863,7 +864,8 @@ def speak_ask_part(session: str, part: int, tool_use_id: str = "") -> str:
     except Exception as e:  # noqa: BLE001 — the cut still ends it between clips
         log.info("hook: could not stop the part before (%s)", e)
     place = cur.get("place") if isinstance(cur.get("place"), dict) else {}
-    event = Event(text=text, source=Source.CLAUDE_CODE, priority=Priority.NORMAL,
+    event = Event(text=text, source=Source.CODEX if cur.get("harness") == "codex" else Source.CLAUDE_CODE,
+                  priority=Priority.NORMAL,
                   voice=cur.get("voice") or None,
                   metadata={"kind": "notif", "ask": True, "ask_part": part,
                             "session": session, **place})

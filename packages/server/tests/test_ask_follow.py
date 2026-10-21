@@ -103,3 +103,18 @@ def test_the_watcher_gives_up_when_the_card_is_gone(spoken, monkeypatch):
     monkeypatch.setattr(ask_follow, "GONE_S", 0)
     ask_follow.follow(S1, "%9", "t1")
     assert not spoken
+
+
+def test_codex_watcher_reads_codex_overlay(spoken, monkeypatch):
+    pending_asks.update(S1, "t1", harness="codex")
+    seen = []
+    def approval(pane, agent, session):
+        seen.append(agent)
+        if len(seen) > 1:
+            pending_asks.clear(S1, "t1")
+            return None
+        return {"kind": "question", "tool_use_id": "t1", "current": 1}
+    monkeypatch.setattr(sessions, "approval_for", approval)
+    monkeypatch.setattr(ask_follow, "POLL_S", 0)
+    ask_follow.follow(S1, "%9", "t1")
+    assert seen == ["codex", "codex"] and spoken == [(S1, 1)]

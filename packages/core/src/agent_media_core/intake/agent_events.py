@@ -52,6 +52,27 @@ def handle(payload: dict, harness: str) -> int:
             from .. import activity
 
             activity.record(payload)
+        if (harness == "codex" and event in ("PreToolUse", "PostToolUse", "PostToolUseFailure")
+                and str(payload.get("tool_name") or "").split(".")[-1] == "request_user_input"):
+            from .hook_claude_code import _handle_pretooluse, _handle_posttooluse
+
+            # Share question storage, speech, holding and part-by-part
+            # read-out. Only the terminal's answer keys differ.
+            question = {**payload, "tool_name": "AskUserQuestion", "harness": "codex"}
+            if event == "PreToolUse":
+                return _handle_pretooluse(question)
+            response = payload.get("tool_response") or {}
+            if isinstance(response, str):
+                try:
+                    response = json.loads(response)
+                except ValueError:
+                    response = {}
+            if isinstance(response, dict):
+                answers = response.get("answers") or {}
+                question["tool_response"] = {"answers": {
+                    q["question"]: ", ".join((answers.get(q.get("id")) or {}).get("answers") or [])
+                    for q in (payload.get("tool_input") or {}).get("questions") or []}}
+            return _handle_posttooluse(question)
         if event == "UserPromptSubmit":
             from .hook_claude_code import _handle_user_prompt
 

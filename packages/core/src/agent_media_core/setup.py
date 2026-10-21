@@ -1851,7 +1851,9 @@ def _row_codex(args, *, check_only: bool):
     notify = _codex_notify(config)
     if notify and not any(CODEX_HOOK_COMMAND in str(a) for a in notify):
         return "absent", f"a notify of your own is set in {config}: {notify}"
-    have_hook = _hook_installed(hooks, CODEX_HOOK_COMMAND)
+    settings = _load_json(hooks)
+    events = _gemini_hook_events(settings, CODEX_HOOK_COMMAND)
+    have_hook = all(e in events for e in ("UserPromptSubmit", "PreToolUse", "PostToolUse"))
     if check_only:
         return ("ok" if notify and have_hook else "missing"), str(config)
     changed = False
@@ -1869,8 +1871,18 @@ def _row_codex(args, *, check_only: bool):
             config.write_text(line + old)
         changed = True
     merged, hook_changed = _merge_hook_entry(
-        _load_json(hooks), "UserPromptSubmit",
+        settings, "UserPromptSubmit",
         hook_command(CODEX_HOOK_COMMAND) + " event", CODEX_HOOK_COMMAND, 10, False)
+    for event in ("PreToolUse", "PostToolUse"):
+        merged, did = _merge_hook_entry(merged, event,
+            hook_command(CODEX_HOOK_COMMAND) + " event", CODEX_HOOK_COMMAND, 30, True)
+        hook_changed = hook_changed or did
+        for group in merged["hooks"][event]:
+            if any(CODEX_HOOK_COMMAND in h.get("command", "") for h in group.get("hooks") or []):
+                matcher = r"^(?:functions\.)?request_user_input$"
+                if group.get("matcher") != matcher:
+                    group["matcher"] = matcher
+                    hook_changed = True
     if hook_changed:
         _write_settings(hooks, merged, dry_run=args.dry_run)
     return ("installed" if changed or hook_changed else "ok"), str(config)

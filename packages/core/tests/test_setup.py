@@ -1031,7 +1031,15 @@ def test_codex_gets_notify_and_the_prompt_hook(tmp_path, monkeypatch):
     hooks = json.loads((tmp_path / "codex" / "hooks.json").read_text())
     entry = hooks["hooks"]["UserPromptSubmit"][0]["hooks"][0]
     assert entry["command"].endswith(setup.CODEX_HOOK_COMMAND + " event")
+    for event in ("PreToolUse", "PostToolUse"):
+        group = hooks["hooks"][event][0]
+        assert group["matcher"] == r"^(?:functions\.)?request_user_input$"
+        assert group["hooks"][0]["async"] is True
+    assert setup._row_codex(args, check_only=True)[0] == "ok"
     assert setup._row_codex(args, check_only=False)[0] == "ok"   # a re-run
+    del hooks["hooks"]["PreToolUse"]
+    (tmp_path / "codex" / "hooks.json").write_text(json.dumps(hooks))
+    assert setup._row_codex(args, check_only=True)[0] == "missing"
 
 
 def test_a_codex_notify_of_your_own_is_left_alone(tmp_path, monkeypatch):

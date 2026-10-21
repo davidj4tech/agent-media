@@ -235,3 +235,50 @@ def test_main_routes_the_event_and_records_nothing(monkeypatch):
     monkeypatch.setattr(H, "load_env_file", lambda name: None)
     assert H.main() == 0
     assert seen == [] and read == ["s-2"]
+
+
+def test_codex_question_uses_shared_storage_and_speech(tmp_path, monkeypatch):
+    from agent_media_core import harnesses, pending_asks
+    from agent_media_core.intake import agent_events
+    from agent_media_core.types import Source
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("MEDIA_ASK_PARTS", "0")
+    monkeypatch.setattr(harnesses, "codex_run_scripted", lambda *a: False)
+    monkeypatch.setattr(H, "_session_name", lambda: "")
+    monkeypatch.setattr(H, "_ask_location_label", lambda: "")
+    monkeypatch.setattr(H, "_source_place", lambda session: {})
+    monkeypatch.setattr(H, "_client_pane_focused", lambda: False)
+    from agent_media_core.intake import toast
+    monkeypatch.setattr(toast, "should_hold", lambda session: False)
+    seen = _capture_submit(monkeypatch)
+    question = {"question": "Where?", "header": "Place", "options": [{"label": "Here"}, {"label": "There"}]}
+    payload = {"hook_event_name": "PreToolUse", "session_id": "codex-question",
+               "tool_name": "functions.request_user_input", "tool_use_id": "codex-ask-1",
+               "tool_input": {"questions": [question]}}
+    assert agent_events.handle(payload, "codex") == 0
+    kept = pending_asks.read("codex-question")
+    assert kept["harness"] == "codex" and kept["tool_use_id"] == "codex-ask-1"
+    assert kept["questions"][0]["question"] == "Where?"
+    event = seen["event"]
+    assert event.source == Source.CODEX
+    assert event.metadata["ask"][0]["question"] == "Where?"
+    assert payload["tool_name"] == "functions.request_user_input"
+
+
+def test_codex_answer_is_translated_and_cleared(monkeypatch):
+    from agent_media_core import harnesses, pending_asks
+    from agent_media_core.intake import agent_events
+    monkeypatch.setattr(harnesses, "codex_run_scripted", lambda *a: False)
+    monkeypatch.setattr(H, "_stop_playing_ask", lambda session: None)
+    from agent_media_core.intake import toast
+    monkeypatch.setattr(toast, "drop_asks", lambda session: None)
+    seen = []
+    monkeypatch.setattr(H, "_record_listener_text", lambda session, text: seen.append((session, text)) or 0)
+    pending_asks.record("codex-question", "ask-1", {"questions": [{"question": "Where?"}]}, harness="codex")
+    agent_events.handle({"hook_event_name": "PostToolUse", "tool_name": "request_user_input",
+                         "session_id": "codex-question", "tool_use_id": "ask-1",
+                         "tool_input": {"questions": [{"id": "place", "question": "Where?"}]},
+                         "tool_response": '{"answers":{"place":{"answers":["There"]}}}'}, "codex")
+    assert seen == [("codex-question", "There")]
+    assert pending_asks.read("codex-question") is None

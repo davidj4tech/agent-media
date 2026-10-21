@@ -142,6 +142,10 @@ def _answer_pane(session: str, choice: int, key: str, answers=None) -> tuple[boo
     if key and key != dialog["key"]:
         return False, {"error": "the question has changed", "status": 409,
                        "approval": dialog}
+    if agent == "codex" and dialog.get("kind") == "question":
+        from . import codex_asks
+
+        return codex_asks.answer(session, pane, dialog, choice, answers)
     if dialog.get("kind") == "question" and (answers is not None or not dialog.get("review")):
         # (The review page by number is its own list: 1 sends, 2 cancels.)
         qs = dialog.get("questions") or []
@@ -441,6 +445,10 @@ def open_window(session: str, cwd: str, *, resume: bool, host: str = "",
     cmd += f" {shlex.quote(exe)}"
     args = (harnesses.resume_argv(agent, session) if resume
             else harnesses.fresh_argv(agent, session))
+    if agent == "codex":
+        # The caller chose the working root. A tmux cwd alone still leaves
+        # Codex asking whether to restore the old session directory.
+        args += ["--cd", cwd]
     if args:
         cmd += " " + shlex.join(args)
     if flags:
