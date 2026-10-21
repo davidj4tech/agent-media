@@ -143,11 +143,13 @@ def _clean_media_env(monkeypatch, tmp_path, request):
     search._reset_for_tests()
     # The model sheet asks Claude Code for its own list (claude_models.py):
     # never here — the bare names serve, and no sheet is kept between tests.
-    from agent_media_core import claude_models
+    from agent_media_core import antigravity, claude_models
     from agent_media_server import session_settings
 
     monkeypatch.setattr(claude_models, "models", lambda **_: [])
     monkeypatch.setattr(session_settings, "_models_memo", (0.0, []))
+    antigravity.forget()
+    monkeypatch.setattr(antigravity, "_list", lambda *a, **k: "")
     # No server pinned the thread-watching table here, so a stream never
     # writes it (core's watching.publish_pinned); and the watchers stop now,
     # while the environment above is still in place (this teardown runs

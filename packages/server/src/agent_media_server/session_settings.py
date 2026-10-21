@@ -87,6 +87,10 @@ def clean_new(agent: str, model: str, mode: str) -> tuple[str, str]:
         from agent_media_core import pi_models
 
         return pi_models.allowed(model), ""
+    if agent == "antigravity":
+        from agent_media_core import antigravity
+
+        return antigravity.allowed(model), ("plan" if mode == "plan" else "")
     if agent in ("codex", "grok"):
         from agent_media_core import native_models
 
@@ -146,10 +150,14 @@ def state(session: str) -> dict:
     if drv.kind == driver.HEADLESS:
         v = drv._get(session)
         if v.get("agent") == "antigravity":
-            mid = str(v.get("model") or v.get("init_model") or "")
+            from agent_media_core import antigravity
+
+            offered, default = antigravity.models()
+            mid = str(v.get("model") or v.get("init_model") or "") or default
             return {"agent": "antigravity", "live": bool(v.get("live")),
                     "model": mid, "model_id": mid, "plan": v.get("mode") == "plan",
-                    "driver": driver.HEADLESS, "can": {"model": False, "plan": False}}
+                    "driver": driver.HEADLESS,
+                    "can": {"model": bool(offered or mid), "plan": False}}
         if v.get("agent") == "opencode":
             # Its model rides on each prompt (sessiond_opencode.py): the one
             # chosen, else what its last reply ran on. No plan mode.
@@ -268,11 +276,20 @@ def default_note() -> str:
 
 def _answer(session: str, **extra) -> dict:
     st = state(session)
-    sheet = ([] if st["agent"] == "antigravity"
+    sheet = (_antigravity_sheet(st["model"]) if st["agent"] == "antigravity"
              else _native_sheet(st["agent"], session) if st["agent"] in ("codex", "grok")
              else _opencode_sheet(st["model"]) if st["agent"] == "opencode"
              else _pi_sheet(session, st["model"]) if st["agent"] == "pi" else models())
     return {"session": session, "models": sheet, **st, **extra}
+
+
+def _antigravity_sheet(current: str) -> list:
+    from agent_media_core import antigravity
+
+    offered, _ = antigravity.models()
+    if current and not any(m["id"] == current for m in offered):
+        offered = [{"id": current, "label": current, "note": ""}, *offered]
+    return offered
 
 
 def _native_sheet(agent: str, session: str) -> list:
@@ -475,6 +492,12 @@ def new_sheet(agent: str = "claude", profile: str = "") -> dict:
             return {"models": []}
         offered, default = pi_models.models(profile)
         return {"models": offered, "default": pi_models.default_note(offered, default)}
+    if agent == "antigravity":
+        from agent_media_core import antigravity
+
+        offered, default = antigravity.models()
+        return {"models": offered, "default": antigravity.default_note(offered, default),
+                "can": {"model": bool(offered), "plan": False}}
     if agent != "claude":
         return {"models": []}
     return {"models": models(), "default": default_note()}
@@ -509,6 +532,13 @@ def post(session: str, body: dict, bearer: str) -> tuple[bool, dict]:
     if model is not None and agent in ("codex", "grok"):
         if not isinstance(model, str) or model not in {m["id"] for m in _native_sheet(agent, session)}:
             return False, {"error": "model must be one of this harness's offered models", "status": 400}
+    elif model is not None and agent == "antigravity":
+        from agent_media_core import antigravity
+
+        offered = {m["id"] for m in _antigravity_sheet("")}
+        model = antigravity.allowed(str(model)) if isinstance(model, str) else ""
+        if not model or (offered and model not in offered):
+            return False, {"error": "model must be one of Antigravity's offered models", "status": 400}
     elif model is not None and agent in ("opencode", "pi"):
         from agent_media_core import opencode_models, pi_models
 

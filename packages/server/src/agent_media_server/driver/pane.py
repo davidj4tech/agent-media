@@ -46,7 +46,7 @@ class PaneDriver:
                          else f for f in flags] + ["--permission-mode", "plan"]
         elif agent == "opencode" and model:
             flags += ["-m", model]
-        elif agent in ("codex", "grok") and model:
+        elif agent in ("codex", "grok", "antigravity") and model:
             flags += ["--model", model]
         elif agent == "pi" and model:
             from agent_media_core import pi_models

@@ -152,19 +152,45 @@ def test_hook_install_preserves_other_hooks_and_unmanaged_sessions(host, monkeyp
 
 
 def test_antigravity_settings_never_offer_claude_models(host, monkeypatch):
-    from agent_media_server import driver, session_settings
+    from agent_media_server import auth, driver, session_settings
     from agent_media_server.driver import headless
     sup, work, _ = host
     s = sessiond.Session(SID, str(work), agent="antigravity")
     sup.sessions[SID] = s
     sup._save(s)
-    monkeypatch.setattr(headless, "call", lambda op, **kw: {"ok": True, **s.view()})
+    monkeypatch.setattr(headless, "call", lambda op, **kw: (
+        {"ok": True, **sup.configure(kw["session"], model=kw.get("model"), mode=kw.get("mode"))}
+        if op == "configure" else {"ok": True, **s.view()}))
+    monkeypatch.setattr(auth, "gate", lambda b: ({"id": "u"}, {}))
     st = session_settings._answer(SID)
     assert st["agent"] == "antigravity"
     assert st["models"] == []
     assert st["can"] == {"model": False, "plan": False}
     assert driver.for_new("antigravity").kind == "headless"
     assert driver.for_session(SID).kind == "headless"
+    listing = (
+        "gemini-4-argon-medium\tGemini 4 Argon (Medium)\n"
+        "gemini-4-argon-high\tGemini 4 Argon (High)\n"
+        "claude-sonnet-5-5-medium\tClaude Sonnet 5.5 (Medium)\n"
+    )
+    antigravity.forget()
+    monkeypatch.setattr(antigravity, "_list", lambda *a, **k: listing)
+    sheet = session_settings.new_sheet("antigravity")
+    assert [m["id"] for m in sheet["models"]] == [
+        "gemini-4-argon-medium", "gemini-4-argon-high", "claude-sonnet-5-5-medium"]
+    assert sheet["models"][0]["label"] == "Gemini 4 Argon (Medium)"
+    assert sheet["default"] == "Gemini 4 Argon (Medium)"
+    assert sheet["can"] == {"model": True, "plan": False}
+    assert session_settings.clean_new("antigravity", "gemini-4-argon-high", "") == ("gemini-4-argon-high", "")
+    assert session_settings.clean_new("antigravity", "--help", "") == ("", "")
+    st = session_settings._answer(SID)
+    assert st["model"] == "gemini-4-argon-medium"
+    assert st["can"] == {"model": True, "plan": False}
+    assert [m["id"] for m in st["models"]] == [
+        "gemini-4-argon-medium", "gemini-4-argon-high", "claude-sonnet-5-5-medium"]
+    ok, updated = session_settings.post(SID, {"model": "gemini-4-argon-high"}, "t")
+    assert ok and updated["model"] == "gemini-4-argon-high" and s.model == "gemini-4-argon-high"
+    assert not session_settings.post(SID, {"model": "not-offered"}, "t")[0]
 
 
 def test_question_card_returns_answers_without_a_native_terminal_prompt(host):

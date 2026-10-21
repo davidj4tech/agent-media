@@ -224,7 +224,11 @@ def agent_of(session: str) -> str:
     """Which agent holds `session`: "claude", "codex" or "pi" ("claude" when
     nothing says otherwise — every conversation before these was one)."""
     from agent_media_core import harnesses
+    from . import sessiond
 
+    rec = sessiond.read_record(session) if _SESSION.fullmatch(session or "") else None
+    if rec and rec.get("agent"):
+        return str(rec["agent"])
     return harnesses.harness_of(session) or harnesses.CLAUDE
 
 
