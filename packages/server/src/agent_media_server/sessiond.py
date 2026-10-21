@@ -2012,7 +2012,7 @@ class Supervisor:
             busy = s.state == "working"
             if s.agent == "antigravity":
                 try:
-                    from agent_media_core.sinks.speech import end_session_speech_cut
+                    from agent_media_core.intake.submit import end_session_speech_cut
                     end_session_speech_cut(s.id)
                 except Exception:
                     pass

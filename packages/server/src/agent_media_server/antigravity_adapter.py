@@ -241,7 +241,7 @@ def event(supervisor, s, obj: dict) -> None:
                 uid, text = s.agy_inputs.pop(0)
                 transcript(s, {'type': 'user', 'uuid': uid, 'message': {'role': 'user', 'content': [{'type': 'text', 'text': text}]}})
             try:
-                from agent_media_core.sinks.speech import end_session_speech_cut, session_reply_read
+                from agent_media_core.intake.submit import end_session_speech_cut, session_reply_read
                 end_session_speech_cut(s.id)
                 session_reply_read(s.id)
             except Exception:
@@ -265,6 +265,8 @@ def event(supervisor, s, obj: dict) -> None:
             # pretending their payload is a completed tool result.
             supervisor._on_event(s, {'type': 'antigravity_step', **step})
     elif kind == 'result':
+        if (s.parking or s.closing or s.agy_had_result) and not s.agy_queue:
+            return
         s.agy_had_result = True
         result = obj.get('result') or {}
         status = str(result.get('status') or '')
