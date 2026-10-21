@@ -333,10 +333,12 @@ def is_clip(path: "str | Path") -> bool:
     return str(path).endswith(SUFFIX)
 
 
-def write_clip(text: str, outfile: Path, **_ignored) -> tuple[bool, Optional[str]]:
+def write_clip(text: str, outfile: Path, *, pinned_voice: str | None = None, **_ignored) -> tuple[bool, Optional[str]]:
     """The render_text stand-in: the clip is the sentence itself."""
     try:
         Path(outfile).write_text(text, encoding="utf-8")
+        if pinned_voice:
+            set_clip_voice(outfile, pinned_voice)
     except OSError as e:
         return False, str(e)
     return True, None

@@ -1517,6 +1517,56 @@ questions are never touched):
 Pinned by `packages/server/tests/test_reap.py` and
 `packages/core/tests/test_speak_priority.py`.
 
+#### `GET|POST /session/voice` — gated (21 Oct 2026)
+
+The Speech card's per-conversation voice override. GET takes `?session=`;
+POST takes `{"session": "<id>", "voice": "edge:<ShortName>" | null}`.
+Null clears the override (**Use default voice**). Both answer `{"ok": true,
+"session", "voice", "default_voice", "effective_voice", "voices", "languages"}`.
+`voice` is the stored override or null; `default_voice` is the current target's
+voice, and `effective_voice` is the override or that default. `voices` and
+`languages` are the named Microsoft voice catalog used by `/speech/voice`.
+These voices can render on either phone or server; choosing one changes no
+render-side or global voice setting. Gate/session checks match `/session/priority`.
+Missing, empty, non-string or unknown voice is 400; a null voice is valid.
+Save failure is 500.
+
+Kept by session in `<state_dir>/session-voices.json`, shared across devices.
+Applies to subsequent replies, questions and thinking; a reading already
+submitted keeps its choice. An explicit event engine/voice still wins over
+this setting; the hooks' automatically assigned workspace voices do not.
+Server rendering selects Edge and its voice name; phone clips pin the choice
+in a `.voice` sidecar, so replay retains it even after the override changes.
+Removing the override makes subsequent speech follow its usual target defaults.
+
+#### `GET|POST /session/thinking-speech` — gated (21 Oct 2026)
+
+A conversation's **Read thinking aloud** switch, separate from its speech
+level, off by default and shared across devices. GET takes `?session=`;
+POST takes `{"session": "<id>", "enabled": true|false}`. Both answer
+`{"ok": true, "session": "<id>", "enabled": false, "supported": true}`.
+Gated and checked for session existence as `/session/priority`: 400 for a
+bad session or a non-boolean/missing `enabled`, 404 for no session, 409 when
+enabling a harness without a readable reasoning adapter, 500 on save failure.
+`supported` means the harness has an adapter, not that its current model
+necessarily exposes thinking. Empty and redacted reasoning remains silent.
+
+The server keeps enabled sessions in `<state_dir>/thinking-speech.json` and
+watches independently of app connections. Enabling, restarting the server,
+replacing or truncating a transcript establishes a baseline: old thinking
+is never replayed. New readable reasoning parts are spoken after their
+writes settle, through the configured voice/player. They follow the thread's
+speech level, mute, gate and holds. Busy/unheard thinking is discarded;
+questions and replies take precedence at a sentence boundary. Disabling
+finishes the current sentence and drops the rest. The legacy remote-say
+command bridge has no cancellable playback and skips thinking speech.
+
+Thinking playback is tagged `thinking: true`, `thinking_message` (the source
+transcript message id) and `thinking_part` (its zero-based part index) on the
+live speech row. It adds no speech-history reply or shelf/feed entry; the
+reasoning stays in its original transcript part. Temporary rendered clips
+are removed after playback.
+
 #### `POST /session/pocket` — gated (28 Sep 2026)
 
 `{"session", "pocketed": true|false}` → `{"ok": true, "session", "until"}`.

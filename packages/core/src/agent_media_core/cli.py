@@ -5424,6 +5424,7 @@ def cmd_say(a) -> int:
     from .intake.hook_claude_code import voice_for_session
 
     voice = voice_for_session(os.environ.get("MEDIA_SOURCE_WORKSPACE", "").strip())
+    metadata["voice_from"] = "session"
     hold = getattr(a, "hold", False)
     if hold and getattr(a, "digest", None):
         metadata["digest"] = a.digest

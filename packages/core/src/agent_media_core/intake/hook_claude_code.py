@@ -738,7 +738,7 @@ def _emit_ask(ask: str, payload: dict, lead: str = "", structure: list | None = 
     event = Event(text=msg, source=Source.CODEX if payload.get("harness") == "codex" else Source.CLAUDE_CODE,
                   priority=Priority.NORMAL if held else priority,
                   voice=voice_for_session(sess),
-                  metadata={"kind": "notif", "ask": structure or True,
+                  metadata={"kind": "notif", "voice_from": "session", "ask": structure or True,
                             "session": session,
                             **_source_place(session)})
     if held:
@@ -867,7 +867,7 @@ def speak_ask_part(session: str, part: int, tool_use_id: str = "") -> str:
     event = Event(text=text, source=Source.CODEX if cur.get("harness") == "codex" else Source.CLAUDE_CODE,
                   priority=Priority.NORMAL,
                   voice=cur.get("voice") or None,
-                  metadata={"kind": "notif", "ask": True, "ask_part": part,
+                  metadata={"kind": "notif", "voice_from": "session", "ask": True, "ask_part": part,
                             "session": session, **place})
     if held:
         toast.remember(event, ask=True)
@@ -995,7 +995,7 @@ def _handle_notification(payload: dict) -> int:
     submit_event(Event(text=msg, source=Source.CLAUDE_CODE,
                        priority=priority,
                        voice=voice_for_session(sess),
-                       metadata={"kind": "notif",
+                       metadata={"kind": "notif", "voice_from": "session",
                                  "session": payload.get("session_id") or "",
                                  **_source_place(payload.get("session_id") or "")}))
     return 0
@@ -1316,6 +1316,7 @@ def _handle_stop(payload: dict) -> int:
     level = level_of(metadata["session"])
     if level == "quiet":
         metadata["held"] = True
+    metadata["voice_from"] = "session"
     event = Event(text=text, source=Source.CLAUDE_CODE,
                   priority=Priority.HIGH if level == "interrupt" else Priority.NORMAL,
                   voice=voice_for_session(_session_name()),

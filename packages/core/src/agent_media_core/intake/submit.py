@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import hashlib
+from functools import partial
 import json
 import logging
 import os
@@ -58,6 +59,12 @@ def _engine_and_voice(event: Event, target: Target) -> tuple[str, Optional[str]]
     """The engine and voice a reply to `target` renders in here: the app's
     choice of a Microsoft voice for the server (render/device.py), unless
     the event names its own engine or voice, else the configured ones."""
+    if not event.engine and (not event.voice or (event.metadata or {}).get("voice_from") == "session"):
+        from .. import session_voice
+
+        own = session_voice.voice_for(_source_session(event.metadata))
+        if own:
+            return ("device", own) if device_voice.renders_on_device(target.name) else ("edge", own[5:])
     chosen = None if event.engine or event.voice else device_voice.server_choice(target.name)
     if chosen:
         return chosen
@@ -3994,12 +4001,16 @@ def submit_event(event: Event,
                  *,
                  state: Optional[StateStore] = None,
                  coordinator: Optional[Coordinator] = None,
-                 sink: Optional[SinkSpeech] = None) -> Optional[int]:
+                 sink: Optional[SinkSpeech] = None,
+                 playback_allowed: Optional[Callable[[], bool]] = None) -> Optional[int]:
     """Render `event` sentence-by-sentence and play through sink-speech.
 
     Each sentence is rendered to its own clip and played in order. The
     source tmux pane highlights the current sentence as it starts playing
     (karaoke-style). Returns the history-row id, or None on failure.
+
+    For disposable thinking speech, `playback_allowed` is checked before
+    playback and between sentences. Thinking never queues or enters history.
 
     Blocks until all clips finish. Callers that need fire-and-forget
     should run this in a thread.
@@ -4012,7 +4023,7 @@ def submit_event(event: Event,
     from ..sinks import _mpv_ipc
     with _mpv_ipc.reuse_connections():
         return _submit_event(event, state=state, coordinator=coordinator,
-                             sink=sink)
+                             sink=sink, playback_allowed=playback_allowed)
 
 
 def _submit_event(event: Event,
@@ -4020,6 +4031,7 @@ def _submit_event(event: Event,
                   state: Optional[StateStore] = None,
                   coordinator: Optional[Coordinator] = None,
                   sink: Optional[SinkSpeech] = None,
+                  playback_allowed: Optional[Callable[[], bool]] = None,
                   source=None) -> Optional[int]:
     """The body of `submit_event` and `submit_stream`, run with connection
     reuse on.
@@ -4037,6 +4049,16 @@ def _submit_event(event: Event,
     # whole text for up front — the gate's words, a silenced record, the
     # remote-say bridge — gathers the source first, and from then on it is an
     # iterator over a list that is already complete.
+    thinking = bool((event.metadata or {}).get("thinking"))
+    def _allowed() -> bool:
+        try:
+            return playback_allowed is None or playback_allowed()
+        except Exception:  # fail closed for disposable speech
+            log.exception("thinking speech permission check failed")
+            return False
+
+    if thinking and (not _allowed() or speech_hold_until() > 0):
+        return None
     arriving = source is not None
     if arriving:
         text = ""
@@ -4076,6 +4098,8 @@ def _submit_event(event: Event,
                 return _record_silenced(state, event, target, _gather(),
                                         None, "gate")
         elif _gate_hold(target, _gate_text(state, event, text)):
+            if thinking:
+                return None
             return _record_silenced(state, event, target, text, None, "gate")
 
     # The device asked for quiet, and this is an alert nobody asked for. Held
@@ -4086,6 +4110,8 @@ def _submit_event(event: Event,
     # word is needed before anything is decided.)
     held = _ringer_hold(target, event)
     if held:
+        if thinking:
+            return None
         return _record_silenced(state, event, target,
                                 _gather() if arriving else text, held)
 
@@ -4107,6 +4133,8 @@ def _submit_event(event: Event,
     else:
         busy = _busy_hold(target, event, text[:300])
     if busy:
+        if thinking:
+            return None
         if (event.metadata or {}).get("alert"):
             return _record_silenced(state, event, target,
                                     _gather() if arriving else text, busy, "busy")
@@ -4121,6 +4149,9 @@ def _submit_event(event: Event,
     # lane for this target ⇒ the local render+play path below is unchanged.
     remote_say = _remote_say_cmd(target)
     if remote_say:
+        # A fire-and-forget bridge cannot cancel at sentence boundaries.
+        if thinking:
+            return None
         return _submit_remote_say(_gather() if arriving else text, remote_say,
                                   coordinator, state, event)
 
@@ -4129,7 +4160,9 @@ def _submit_event(event: Event,
     renderer = render_text
     if device_voice.renders_on_device(target.name):
         # The device says it in its own voice: each clip is its sentence.
-        engine, ext, renderer = "device", device_voice.SUFFIX[1:], device_voice.write_clip
+        engine, ext = "device", device_voice.SUFFIX[1:]
+        renderer = partial(device_voice.write_clip,
+                           pinned_voice=voice if voice and voice.startswith("edge:") else None)
 
     audio_dir = _audio_dir()
     # Per-submission unique: second-resolution time is NOT enough — two
@@ -4157,7 +4190,8 @@ def _submit_event(event: Event,
     # finish rendering first, find the queue empty, and speak ahead of us.
     # Created here, acquired for real once the clips exist (and released on
     # every path out, including muted / render-failed).
-    playback_lock = _SpeechPlaybackLock(speaker=source_session)
+    playback_lock = _SpeechPlaybackLock(speaker=source_session,
+                                        kind="thinking" if thinking else "reply")
     playback_lock.announce(event.priority, session=order_session,
                            seq=started_at)
     # The tmux session that owns the source pane, and the conversation title
@@ -4181,6 +4215,9 @@ def _submit_event(event: Event,
     # blind hold's cap, below): written to its row as a stop, so the message
     # keeps its Resume and the thread its paused mark (14 Oct 2026).
     left_paused_at: Optional[int] = None
+    if thinking and muted:
+        playback_lock.release()
+        return None
     if muted:
         # Nothing will be played, so give the queue slot announced above back
         # immediately rather than making this session's next reply wait on a
@@ -4222,7 +4259,7 @@ def _submit_event(event: Event,
     # Start remote MPRIS detect-and-pause in background so SSH cold-connect
     # (~4.8s) overlaps with sentence rendering below. Skipped when muted —
     # nothing will play, so there's nothing to pause for.
-    if not muted:
+    if not muted and not thinking:
         coordinator.pre_pause_remote()
 
     # The reply's sentences, and for each its paragraph, its clip's path and
@@ -4522,6 +4559,8 @@ def _submit_event(event: Event,
         playback_lock.release()   # nothing to say; stop holding our queue slot
         if not muted:
             coordinator.cancel_pre_pause()
+        if thinking:
+            _forget_clips([str(p) for p in outfiles])
         return None
 
     total_duration_s = sum(durations)
@@ -4631,6 +4670,9 @@ def _submit_event(event: Event,
         # Streaming: the sentences still in flight belong to this reply even if
         # nobody heard them, so they are resolved before the row is written.
         _settle_rest_now()
+        if thinking:
+            _forget_clips([str(p) for p in outfiles] + [str(p) for _, p in clip_data])
+            return None
         extras = {"engine": engine, "voice": voice,
                   "priority": event.priority.value,
                   "source_pane": source_pane,
@@ -4749,19 +4791,35 @@ def _submit_event(event: Event,
         waited_from = time.time()
         ask_over_live = source_ask and _other_speaking(state, source_session,
                                                        source_pane)
+        def _thinking_done() -> bool:
+            # Include pending renders: a final answer or question should not
+            # wait for another thinking sentence to start rendering/playing.
+            return thinking and (not _allowed() or speech_hold_until() > 0
+                                 or any(rank > _PRIO_RANK[Priority.LOW]
+                                        for rank, *_ in playback_lock._other_waiters()))
+
         while True:
-            _wait_speech_hold(refresh=_keep_our_place)
+            if _thinking_done():
+                playback_lock.release()
+                coordinator.cancel_pre_pause()
+                return _archive()
+            if not thinking:
+                _wait_speech_hold(refresh=_keep_our_place)
             playback_lock.acquire(
                 event.priority, session=order_session,
                 supersede=bool((event.metadata or {}).get("supersede")),
                 seq=started_at)
+            if thinking and (playback_lock._fd is None or _thinking_done()):
+                playback_lock.release()
+                coordinator.cancel_pre_pause()
+                return _archive()
             # Superseded before we started (a later URGENT in this session
             # dropped us): hand the token straight back and skip playback
             # entirely — no broker claim, no music duck, no history row.
             if playback_lock.should_abort():
                 playback_lock.release()
                 coordinator.cancel_pre_pause()
-                return None
+                return _archive() if thinking else None
             if speech_hold_until() <= 0.0:
                 break
             # A hold landed in the gap between the wait and the take. Hand the
@@ -4783,7 +4841,7 @@ def _submit_event(event: Event,
             return _archive(flushed=True)
         # Nobody is looking any more: it waited its turn while the listener
         # left the thread. Held like one that was never looked at.
-        if _unwatched_by_now(event, source_session):
+        if not thinking and _unwatched_by_now(event, source_session):
             playback_lock.release()
             coordinator.cancel_pre_pause()
             muted = True
@@ -4834,7 +4892,7 @@ def _submit_event(event: Event,
             # else holds the player) or not understood (an older app, mpv):
             # the usual way below.
             fast = getattr(sink, "claim_and_play", None)
-            if (fast is not None and not barged_in and _remote_playlist(target)
+            if (not thinking and fast is not None and not barged_in and _remote_playlist(target)
                     and device_voice.renders_on_device(target.name)
                     and _lead_ready.wait(timeout=1.0) and not _abandon.is_set()):
                 with _clip_lock:
@@ -4866,7 +4924,7 @@ def _submit_event(event: Event,
             # read from depends on whether that succeeded. Not after a
             # reply that rendered nothing: there is nothing to load.
             load = getattr(sink, "load_playlist", None)
-            if load is not None and clip_data and _remote_playlist(target):
+            if not thinking and load is not None and clip_data and _remote_playlist(target):
                 with _clip_lock:
                     lead = [p for _, p in clip_data]
                 _preloaded["ok"] = bool(load(lead, target))
@@ -5063,6 +5121,10 @@ def _submit_event(event: Event,
                           "clip_uris": clip_uris,
                           "clip_durations_s": clip_durs,
                           "writer_pid": os.getpid()}
+                if thinking:
+                    extras.update({k: event.metadata[k] for k in
+                                   ("thinking", "thinking_message", "thinking_part")
+                                   if k in event.metadata})
                 if arriving:
                     extras["streaming"] = True
                 # Figure-bearing message ([[visual:]]/[[reveal:]]): surfaces as
@@ -5145,7 +5207,7 @@ def _submit_event(event: Event,
                 # being spoken, as it is spoken.
                 coordinator.speaking_line(sentence_i)
 
-            if _remote_playlist(target):
+            if _remote_playlist(target) and not thinking:
                 # Autonomous gapless playlist: load every clip and let the remote
                 # player advance through them itself — no per-sentence drive to
                 # stall, and gapless (no inter-sentence gap). We only *follow*
@@ -5661,13 +5723,15 @@ def _submit_event(event: Event,
                 def _stopping() -> bool:
                     # The two checks at the head of the loop, asked while it
                     # waits for a clip the model has not written yet.
-                    return (playback_lock.should_abort()
+                    return (_thinking_done() or playback_lock.should_abort()
                             or _speech_cut(source_session, started_at,
                                            playing=True, ask=source_ask))
 
                 i = 0
                 nav_jump = False  # True when this clip was reached via a popup skip
                 while i >= 0:
+                    if _thinking_done():
+                        break
                     # Given up on only for a cut or a supersede, which the
                     # checks below then act on; otherwise there is no clip i
                     # and never will be, and the reply is over.
@@ -5680,6 +5744,8 @@ def _submit_event(event: Event,
                     # Superseded by a later URGENT in this session — drop the
                     # remaining sentences instead of yielding-and-resuming.
                     # Or stopped from the app (`all` cut): the same drop.
+                    if _thinking_done():
+                        break
                     if playback_lock.should_abort():
                         if played_any:
                             note_displaced()    # the superseder barged in
@@ -5695,6 +5761,8 @@ def _submit_event(event: Event,
                     # Step aside between sentences if a higher-priority speaker
                     # (e.g. a notification) is waiting; resume it once that's done.
                     if playback_lock.should_yield():
+                        if thinking:
+                            break
                         playback_lock.yield_to_higher()
                     if i >= len(clip_data):
                         break   # gave up waiting, and the checks let it be

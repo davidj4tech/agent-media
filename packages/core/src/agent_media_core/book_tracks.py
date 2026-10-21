@@ -774,6 +774,8 @@ def _live_turn(session: str) -> Optional[dict]:
             ex = {}
     if not isinstance(ex, dict):
         return None
+    if ex.get("thinking"):
+        return None  # already present as a reasoning part, never a reply
     if ex.get("source_session") != session:
         return None
     # A question is spoken on the alert lane but belongs to the conversation —

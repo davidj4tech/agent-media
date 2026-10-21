@@ -2278,6 +2278,9 @@ def main() -> None:
     # priority, then kept up; MEDIA_SEARCH_INDEX=0 leaves it to the queries.
     from agent_media_server import search as _search
     _search.start()
+    # Optional thinking read-outs keep working with no app stream open.
+    from agent_media_server import thinking_speech as _thinking_speech
+    _thinking_speech.start()
     # The radio's loop (agent_media_server.radio): idle until a station is on.
     from agent_media_server import radio as _radio
     _radio.start()

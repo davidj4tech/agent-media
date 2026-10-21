@@ -316,7 +316,7 @@ CORS_PATHS = frozenset({
     "/conversation", "/conversation/log", "/conversations", "/targets", "/item",
     "/reply", "/ask", "/focus", "/session/resume", "/session/close", "/draft",
     "/session/answer", "/session/archive", "/session/seal", "/session/pin", "/session/priority", "/session/pocket",
-    "/session/stop",
+    "/session/stop", "/session/thinking-speech", "/session/voice",
     "/session/retract", "/session/move", "/session/move/cancel", "/session/settings",
     "/session/ask/part",
     "/speech/now", "/speech/ctl", "/speech/sentences", "/speech/clip", "/speech/default", "/speech/balance", "/speech/voice",
@@ -1650,6 +1650,18 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
             _json(h, 404, {"ok": False, "error": "no such spoken reply"})
             return True
         _json(h, 200, {"ok": True, "id": int(raw), "sentences": found})
+    elif path == "/session/voice":
+        from . import session_voice
+
+        ok, detail = session_voice.setting(
+            (parse_qs(query).get("session") or [""])[0], _bearer(h))
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/session/thinking-speech":
+        from . import thinking_speech
+
+        ok, detail = thinking_speech.setting(
+            (parse_qs(query).get("session") or [""])[0], _bearer(h))
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/speech/default":
         # The level of a thread with none of its own (speak_priority.py).
         ok, detail = pins.speech_default(_bearer(h))
@@ -2625,6 +2637,19 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         if not ok:
             print(f"settings: refused ({detail.get('error')}) for "
                   f"{str(body.get('session'))[:8]}", file=sys.stderr, flush=True)
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/session/voice":
+        from . import session_voice
+
+        body = _read_json(h) or {}
+        ok, detail = session_voice.setting(str(body.get("session") or ""), _bearer(h), body=body)
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/session/thinking-speech":
+        from . import thinking_speech
+
+        body = _read_json(h) or {}
+        ok, detail = thinking_speech.setting(str(body.get("session") or ""),
+                                             _bearer(h), body=body)
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/session/priority":
         # Always speak this thread (agent_media_core.speak_priority).
