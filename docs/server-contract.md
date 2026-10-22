@@ -3775,7 +3775,7 @@ or not one of its actions now (already answered); 501 no handler on this
 host; 502 the handler refused or failed, with its `error` (a sentence to
 show). Today: `calendar.rye.booking.<n>` (the Rye booking mirror,
 `booking_calendar.alert_action`; docs/reference/shared-calendar.md) with
-`apply` | `cancel` | `keep`. The app does not render the buttons yet: until
+`apply` | `apply-quiet` | `cancel` | `keep`. The app does not render the buttons yet: until
 it does, Fix it opens a chat with the alert, whose `fix` names the matching
 `media calendar bookings-decide` commands.
 

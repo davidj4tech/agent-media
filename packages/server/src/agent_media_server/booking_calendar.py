@@ -237,22 +237,55 @@ def _site_ready() -> bool:
     return bool(config.load().get("calendar", {}).get("rye", {}).get("site_command"))
 
 
-def _fix(n: str, apply: str) -> str:
-    return (f"{apply}: media calendar bookings-decide --booking {n} --decision {'apply' if apply.startswith('Change') else 'cancel'}"
-            f" · Put the website's booking back in Google: media calendar bookings-decide --booking {n} --decision keep")
+def _fix(n: str, apply: str, decision: str, quiet: bool = False) -> str:
+    cmd = "media calendar bookings-decide --booking"
+    return (f"{apply}: {cmd} {n} --decision {decision}"
+            + (f" · Change, no email: {cmd} {n} --decision apply-quiet" if quiet else "")
+            + f" · Put the website's booking back in Google: {cmd} {n} --decision keep")
+
+
+#: A change of start or end by more than this tells the client (David, 22 Oct
+#: 2026: "Only for more than a 15 minute change").
+EMAIL_OVER_S = 15 * 60
+
+
+def emails_client(was: list[str], now: list[str]) -> bool:
+    """Whether applying `now` over `was` sends the client the site's change
+    email: the start or the end moves by more than 15 minutes, or the day
+    changes (Melbourne)."""
+    try:
+        a = [dt.datetime.fromisoformat(x) for x in was]
+        b = [dt.datetime.fromisoformat(x) for x in now]
+        if any(t.tzinfo is None for t in a + b):
+            return True
+    except (TypeError, ValueError):
+        return True
+    if a[0].astimezone(ZONE).date() != b[0].astimezone(ZONE).date():
+        return True
+    return any(abs((y - x).total_seconds()) > EMAIL_OVER_S for x, y in zip(a, b))
 
 
 def _ask_moved(uid: str, s: dict) -> None:
     n, who = _number(uid), s["who"]
+    google = s["pending"]["google"]
+    email = emails_client(s["feed"], google)
     actions = [{"id": "keep", "label": "Keep the website's time"}]
     if _site_ready():
-        actions.insert(0, {"id": "apply", "label": "Change the website"})
+        if email:
+            actions[:0] = [{"id": "apply", "label": f"Change and email {who}"[:40]},
+                           {"id": "apply-quiet", "label": "Change, no email"}]
+        else:
+            actions.insert(0, {"id": "apply", "label": "Change the website"})
+    ask = f"Change the website and email {who}?" if email else "Change the booking on the website?"
+    tell = (f"Changing it emails {who} the new time, as the website's Move does (more than "
+            "15 minutes); Change, no email skips that." if email else
+            "A change of 15 minutes or less does not email the client.")
     _notify({"id": ASK + n, "level": "warn", "host": "rye-bookings",
-             "title": f"You moved {who} to {_when(s['pending']['google'])} in Google. "
-                      "Change the booking on the website?",
+             "title": f"You moved {who} to {_when(google)} in Google. {ask}",
              "detail": f"The website has {_when(s['feed'])}. Google keeps your time until you "
-                       "choose; changing the website does not email the client.",
-             "fix": _fix(n, "Change the website"), "actions": actions})
+                       f"choose. {tell}",
+             "fix": _fix(n, f"Change the website{' and email ' + who if email else ''}", "apply", email),
+             "actions": actions})
 
 
 def _ask_deleted(uid: str, s: dict) -> None:
@@ -266,7 +299,7 @@ def _ask_deleted(uid: str, s: dict) -> None:
              "detail": "Nothing is cancelled on the website until you say, and Google stays "
                        "without it meanwhile. Cancelling emails the client, as the website's "
                        "own Cancel does.",
-             "fix": _fix(n, "Cancel it on the website"), "actions": actions})
+             "fix": _fix(n, "Cancel it on the website", "cancel"), "actions": actions})
 
 
 def _settle(uid: str) -> None:
@@ -459,6 +492,12 @@ try {
   }
   if ($availability->overlaps(['minutes' => $minutes] + $b, $in['start']) !== NULL) { $out(FALSE, 'overlap'); return; }
   $n = $db->update('rye_booking')->fields($fields)->condition('id', $b['id'])->condition('start', $b['start'])->execute();
+  if ($n && $in['email'] && $b['email'] !== '') {
+    // The site's own change email, as MoveForm sends it ('moved': the client's
+    // new time with a calendar update, and David's copy). moved_from is the new
+    // start in the mail only, so it offers no "go back" link.
+    rye_booking_notify($fields + ['was' => (int) $b['start'], 'moved_from' => $in['start']] + $b, 'moved');
+  }
   $out((bool) $n, $n ? NULL : 'changed');
 } finally { $lock->release('rye_booking'); }
 """
@@ -495,8 +534,9 @@ class DrushSite:
             code = answer.get("error") if isinstance(answer, dict) else None
             raise SiteError(_SITE_ERRORS.get(code, "The website refused the change; nothing was changed"))
 
-    def move(self, booking: int, *, was: int, start: int, end: int) -> None:
-        self._run({"op": "move", "id": booking, "was": was, "start": start, "end": end})
+    def move(self, booking: int, *, was: int, start: int, end: int, email: bool) -> None:
+        self._run({"op": "move", "id": booking, "was": was, "start": start, "end": end,
+                   "email": bool(email)})
 
     def cancel(self, booking: int, *, was: int) -> None:
         self._run({"op": "cancel", "id": booking, "was": was})
@@ -549,9 +589,12 @@ def decide(booking: str, decision: str) -> dict:
             return {"ok": True, "booking": n, "decision": "keep",
                     "note": "Recorded; the next mirror run puts it back in Google."}
         return {"ok": True, "booking": n, "decision": "keep", "mirror": result}
-    if decision == "apply" and pending["kind"] == "moved":
+    email = None
+    if decision in ("apply", "apply-quiet") and pending["kind"] == "moved":
         google = pending["google"]
-        _site().move(n, was=_epoch(s["feed"][0]), start=_epoch(google[0]), end=_epoch(google[1]))
+        email = decision == "apply" and emails_client(s["feed"], google)
+        _site().move(n, was=_epoch(s["feed"][0]), start=_epoch(google[0]), end=_epoch(google[1]),
+                     email=email)
         s["feed"] = s["wrote"] = google
         s.pop("pending", None)
     elif decision == "cancel" and pending["kind"] == "deleted":
@@ -561,7 +604,8 @@ def decide(booking: str, decision: str) -> dict:
         raise ValueError(f"'{decision}' does not answer this booking (it was {pending['kind']} in Google)")
     _save_state(state)
     _settle(uid)
-    return {"ok": True, "booking": n, "decision": decision}
+    return {"ok": True, "booking": n, "decision": decision,
+            **({"emailed_client": email} if email is not None else {})}
 
 
 def alert_action(aid: str, action: str) -> tuple[bool, dict]:

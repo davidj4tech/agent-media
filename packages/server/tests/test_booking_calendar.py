@@ -102,8 +102,8 @@ class Site:
     def __init__(self):
         self.calls = []
 
-    def move(self, booking, *, was, start, end):
-        self.calls.append(("move", booking, was, start, end))
+    def move(self, booking, *, was, start, end, email):
+        self.calls.append(("move", booking, was, start, end, email))
 
     def cancel(self, booking, *, was):
         self.calls.append(("cancel", booking, was))
@@ -168,13 +168,64 @@ def test_google_move_is_kept_and_asked_about_once(world):
     assert world.google.writes == [("create", UID18)]
     [ask] = world.asks()
     assert ask["id"] == "calendar.rye.booking.18"
-    assert ask["title"].startswith("You moved Nicole to 7:30–8:30pm Fri 23 Oct in Google.")
-    assert [a["id"] for a in ask["actions"]] == ["apply", "keep"]
+    assert ask["title"] == ("You moved Nicole to 7:30–8:30pm Fri 23 Oct in Google. "
+                            "Change the website and email Nicole?")
+    assert [a["id"] for a in ask["actions"]] == ["apply", "apply-quiet", "keep"]
+    assert [a["label"] for a in ask["actions"]][:2] == ["Change and email Nicole", "Change, no email"]
     assert "Shared address" not in json.dumps(ask) and "0400" not in json.dumps(ask)
     # Moved again: asked again, with the new time.
     world.google.david_moves(UID18, "2099-10-23T09:00:00+00:00", "2099-10-23T10:00:00+00:00")
     bookings.sync()
     assert len(world.asks()) == 2 and "8–9pm" in world.asks()[-1]["title"]
+
+
+def _moved_and_applied(world, start, end, decision="apply"):
+    """Booking 18 (8–9am UTC) moved in Google to start/end, then answered."""
+    bookings.sync()
+    world.google.david_moves(UID18, start, end)
+    bookings.sync()
+    ask = world.asks()[-1]
+    result = bookings.decide("18", decision)
+    return ask, result, world.site.calls[-1][-1]
+
+
+def test_exactly_15_minutes_changes_the_website_without_an_email(world):
+    ask, result, email = _moved_and_applied(world, "2099-10-23T08:15:00+00:00", "2099-10-23T09:15:00+00:00")
+    assert ask["title"].endswith("Change the booking on the website?")
+    assert [a["id"] for a in ask["actions"]] == ["apply", "keep"]
+    assert email is False and result["emailed_client"] is False
+
+
+def test_16_minutes_emails_the_client(world):
+    ask, result, email = _moved_and_applied(world, "2099-10-23T08:16:00+00:00", "2099-10-23T09:16:00+00:00")
+    assert ask["title"].endswith("Change the website and email Nicole?")
+    assert email is True and result["emailed_client"] is True
+
+
+def test_another_day_emails_the_client(world):
+    ask, _, email = _moved_and_applied(world, "2099-10-24T08:00:00+00:00", "2099-10-24T09:00:00+00:00")
+    assert "Sat 24 Oct" in ask["title"] and email is True
+
+
+def test_a_resize_whose_end_moves_20_minutes_emails_the_client(world):
+    ask, _, email = _moved_and_applied(world, "2099-10-23T08:00:00+00:00", "2099-10-23T09:20:00+00:00")
+    assert ask["title"].endswith("email Nicole?") and email is True
+
+
+def test_change_no_email_skips_it_once(world):
+    _, result, email = _moved_and_applied(world, "2099-10-23T09:00:00+00:00", "2099-10-23T10:00:00+00:00",
+                                          "apply-quiet")
+    assert email is False and result["decision"] == "apply-quiet"
+
+
+def test_the_email_rule():
+    was = ["2099-10-23T08:00:00+00:00", "2099-10-23T09:00:00+00:00"]
+    assert not bookings.emails_client(was, ["2099-10-23T07:45:00+00:00", "2099-10-23T08:45:00+00:00"])
+    assert not bookings.emails_client(was, ["2099-10-23T08:00:00+00:00", "2099-10-23T09:15:00+00:00"])
+    assert bookings.emails_client(was, ["2099-10-23T08:00:00+00:00", "2099-10-23T09:16:00+00:00"])
+    # 10 minutes, but past midnight in Melbourne (13:00Z is midnight AEDT): another day.
+    late = ["2099-10-23T12:50:00+00:00", "2099-10-23T13:50:00+00:00"]
+    assert bookings.emails_client(late, ["2099-10-23T13:00:00+00:00", "2099-10-23T14:00:00+00:00"])
 
 
 def test_without_a_site_command_only_keep_is_offered(world):
@@ -189,9 +240,9 @@ def test_apply_changes_the_website_and_settles_the_ask(world):
     bookings.sync()
     world.google.david_moves(UID18, "2099-10-23T08:30:00+00:00", "2099-10-23T10:00:00+00:00")
     bookings.sync()
-    assert bookings.decide("18", "apply")["decision"] == "apply"
+    assert bookings.decide("18", "apply")["emailed_client"] is True
     assert world.site.calls == [("move", 18, ts("2099-10-23T08:00:00+00:00"),
-                                 ts("2099-10-23T08:30:00+00:00"), ts("2099-10-23T10:00:00+00:00"))]
+                                 ts("2099-10-23T08:30:00+00:00"), ts("2099-10-23T10:00:00+00:00"), True)]
     assert world.settled()[-1]["id"] == "calendar.rye.booking.18"
     # The website's feed now says what Google says: nothing to write or ask.
     world.feed = feed(entry(start="20991023T083000Z", end="20991023T100000Z"))
@@ -359,13 +410,16 @@ def _fake_drush(tmp_path, answer):
 
 def test_drush_site_sends_only_ids_and_times(tmp_path):
     command, seen = _fake_drush(tmp_path, {"ok": True})
-    bookings.DrushSite(command).move(18, was=100, start=200, end=4000)
+    bookings.DrushSite(command).move(18, was=100, start=200, end=4000, email=True)
     php = seen.read_text()
     assert "rye_booking" in php and "condition('start', $b['start'])" in php
+    # The site's own change email, only when asked for and the client has an address.
+    assert "if ($n && $in['email'] && $b['email'] !== '')" in php
+    assert "rye_booking_notify($fields + ['was' => (int) $b['start'], 'moved_from' => $in['start']] + $b, 'moved')" in php
     payload = php.split("base64_decode('")[1].split("'")[0]
     import base64
     assert json.loads(base64.b64decode(payload)) == {"op": "move", "id": 18, "was": 100,
-                                                     "start": 200, "end": 4000}
+                                                     "start": 200, "end": 4000, "email": True}
 
 
 @pytest.mark.parametrize("answer,words", [({"ok": False, "error": "changed"}, "changed on the website"),
