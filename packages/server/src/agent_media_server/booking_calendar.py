@@ -493,10 +493,12 @@ try {
   if ($availability->overlaps(['minutes' => $minutes] + $b, $in['start']) !== NULL) { $out(FALSE, 'overlap'); return; }
   $n = $db->update('rye_booking')->fields($fields)->condition('id', $b['id'])->condition('start', $b['start'])->execute();
   if ($n && $in['email'] && $b['email'] !== '') {
-    // The site's own change email, as MoveForm sends it ('moved': the client's
-    // new time with a calendar update, and David's copy). moved_from is the new
-    // start in the mail only, so it offers no "go back" link.
-    rye_booking_notify($fields + ['was' => (int) $b['start'], 'moved_from' => $in['start']] + $b, 'moved');
+    // The site's 'rescheduled' email: a move David agreed with the client first,
+    // so a short confirmation of the new time (was the old one), the client's
+    // calendar update and David's copy; no flexible-window or go-back wording.
+    // The row has changed by now, so a mail failure is logged, not reported.
+    try { rye_booking_notify($fields + ['was' => (int) $b['start']] + $b, 'rescheduled'); }
+    catch (\Throwable $e) { \Drupal::logger('rye_booking')->error('Rescheduled email failed: @m', ['@m' => $e->getMessage()]); }
   }
   $out((bool) $n, $n ? NULL : 'changed');
 } finally { $lock->release('rye_booking'); }

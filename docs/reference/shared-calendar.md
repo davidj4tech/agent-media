@@ -64,9 +64,16 @@ website emails the client only when its start or end changes by more than 15
 minutes, or it moves to another day (David, 22 Oct 2026): then the alert asks
 "Change the website and email Nicole?" and adds "Change, no email"
 (`apply-quiet`) to skip it once; 15 minutes or less it asks "Change the booking
-on the website?" and sends nothing. The email is the site's own change mail
-(`rye_booking_notify(…, 'moved')`, as the Move form sends it, with no "go
-back" link), skipped for a client without an address. While a Google move waits, the website's
+on the website?" and sends nothing. The email is the site's 'rescheduled' mail
+(`rye_booking_notify(…, 'rescheduled')`, websites `rye_booking`): moves are
+agreed with the client first, so it confirms the new time, "Your Rye Remedial
+booking: new time confirmed" / "Hi Nicole, as arranged, your booking has moved
+to Friday 23 October, 7:30–8:30pm (was 6:00pm). See you then.", with the
+booking's details, the calendar update and David's copy, and none of the Move
+form's flexible-window or "go back" wording. It is skipped for a client
+without an address, and a mail failure after the change is logged on the site
+rather than reported as a refusal. The site needs that event deployed first:
+an older site has no 'rescheduled' mail. While a Google move waits, the website's
 other changes to that booking (status, title) wait with it.
 
 Changing the website needs `calendar.rye.site_command`: an argv that runs the

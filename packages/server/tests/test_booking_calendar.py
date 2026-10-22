@@ -415,7 +415,9 @@ def test_drush_site_sends_only_ids_and_times(tmp_path):
     assert "rye_booking" in php and "condition('start', $b['start'])" in php
     # The site's own change email, only when asked for and the client has an address.
     assert "if ($n && $in['email'] && $b['email'] !== '')" in php
-    assert "rye_booking_notify($fields + ['was' => (int) $b['start'], 'moved_from' => $in['start']] + $b, 'moved')" in php
+    # The 'rescheduled' event (a move agreed with the client), not the Move form's 'moved'.
+    assert "rye_booking_notify($fields + ['was' => (int) $b['start']] + $b, 'rescheduled')" in php
+    assert "'moved')" not in php and "moved_from" not in php
     payload = php.split("base64_decode('")[1].split("'")[0]
     import base64
     assert json.loads(base64.b64decode(payload)) == {"op": "move", "id": 18, "was": 100,
