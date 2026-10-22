@@ -156,3 +156,13 @@ def test_a_reply_left_paused_is_listed(monkeypatch):
     assert out["left_paused"] == [SID]
     _, out = speech.speech_now("tok", {"paused": True, "session": SID})
     assert out["left_paused"] == []
+
+
+def test_thinking_marker_is_live_only(monkeypatch):
+    _as(monkeypatch)
+    _, current = speech.speech_now("tok", {"speaking": True, "thinking": True})
+    _, stopped = speech.speech_now("tok", {"speaking": False, "thinking": True})
+    _, reply = speech.speech_now("tok", {"speaking": True})
+    assert current["thinking"] is True
+    assert stopped["thinking"] is False
+    assert reply["thinking"] is False

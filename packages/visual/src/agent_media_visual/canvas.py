@@ -1224,6 +1224,8 @@ def speech_state() -> dict:
         # the conversation on its speech bar (paused too).
         state["session"] = str(ex["source_session"])[:80]
     if state["speaking"] or state.get("paused"):
+        if ex.get("thinking"):
+            state["thinking"] = True
         # Which turn this is, so a reader can tell whether the sentences it
         # holds are the ones being spoken. Without it the app can see a
         # position but not what the position is *into*.

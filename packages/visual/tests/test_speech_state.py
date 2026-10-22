@@ -252,3 +252,11 @@ def test_speed_is_shown_while_speaking_too(monkeypatch):
     _fake_media(monkeypatch, "▶ 00:02 / 00:30")
     monkeypatch.setattr(canvas, "_speech_extras", lambda: {"live_speed": 1.25})
     assert canvas.speech_state()["speed"] == 1.25
+
+
+def test_live_thinking_marker_reaches_the_snapshot(monkeypatch):
+    _fake_media(monkeypatch, "▶ 00:02 / 00:10")
+    monkeypatch.setattr(canvas, "_speech_extras", lambda: {"thinking": True})
+    assert canvas.speech_state()["thinking"] is True
+    _fake_media(monkeypatch, "○")
+    assert not canvas.speech_state().get("thinking")

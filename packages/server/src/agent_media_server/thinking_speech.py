@@ -135,7 +135,9 @@ class Watcher:
     def speak(self, session: str, token: str, key: tuple[str, int], text: str) -> None:
         try:
             if not self.allowed(session, token, key[0]):
+                log.info("thinking readout discarded before submission for %s", session[:8])
                 return
+            log.info("thinking readout submitting %s part %s", session[:8], key[1])
             from agent_media_core.intake.submit import submit_event
 
             submit_event(Event(text=text, source=Source.WATCHER, priority=Priority.LOW,
@@ -144,6 +146,7 @@ class Watcher:
                                          "private": private.is_private(session),
                                          "thinking_message": key[0], "thinking_part": key[1]}),
                          playback_allowed=lambda: self.allowed(session, token, key[0]))
+            log.info("thinking readout finished for %s", session[:8])
         except Exception:
             log.exception("thinking speech failed for %s", session[:8])
         finally:

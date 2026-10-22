@@ -258,6 +258,7 @@ def speech_now(bearer: str, state: dict) -> tuple[bool, dict]:
     # A recorded reply played again (the bar's replay, ▶ on a bubble): what is
     # heard is that reply, under its own session, and not a new one.
     out["replay"] = bool(out["live"] and state.get("replay"))
+    out["thinking"] = bool(out["live"] and state.get("thinking"))
     # Which turn the player is on, keyed the way the log's lines are
     # (`{"at", "id"}`). The transcript can then match `pos` to a line it
     # already holds — which is the whole point of a line carrying its
