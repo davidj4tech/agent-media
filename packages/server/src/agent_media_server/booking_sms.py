@@ -63,8 +63,8 @@ class SmsError(RuntimeError):
 
 # --- the words (all of them, here) ---------------------------------------------
 
-#: The service, as a client would say it ("a reminder of your massage").
-WHAT = {"Massage therapy": "massage", "Yoga": "yoga session"}
+#: The service, as a client would say it ("a reminder of your treatment"; David, 22 Oct 2026: "instead of massage treatment").
+WHAT = {"Massage therapy": "treatment", "Yoga": "yoga session"}
 SIGN = " – David"
 
 
@@ -85,7 +85,7 @@ def _hours(a: dt.datetime, b: dt.datetime) -> str:
     return (x[:-2] if x[-2:] == y[-2:] else x) + "–" + y  # 7:00–8:00pm, 11:30am–12:30pm
 
 
-def text(kind: str, first: str, span: list[str], what: str = "massage") -> str:
+def text(kind: str, first: str, span: list[str], what: str = "treatment") -> str:
     """The text for one booking; the site's voice (rye_booking.module)."""
     a, b = _local(span[0]), _local(span[1])
     when = f"{_day(a)}, {_hours(a, b)}"
@@ -475,6 +475,6 @@ def trial(to: str, kind: str, *, now: float | None = None, sender=None) -> dict:
     day = base.date() + dt.timedelta(days=1)
     a = dt.datetime.combine(day, dt.time(19), ZONE)
     span = [a.isoformat(), (a + dt.timedelta(hours=1)).isoformat()]
-    body = text(kind, "Nicole", span, "massage")
+    body = text(kind, "Nicole", span, "treatment")
     (sender or _sender)(settings()).send(number, body, f"rye-sms-trial-{uuid.uuid4().hex}")
     return {"ok": True, "kind": kind, "text": body}

@@ -110,8 +110,8 @@ def test_the_four_texts():
     assert sms.text("moved", "Nicole", SPAN) == (
         "Hi Nicole, your Rye Remedial booking has moved to Friday 23 October, 7:00–8:00pm. "
         "Reply here if anything changes. – David")
-    assert sms.text("reminder", "Nicole", SPAN, "massage") == (
-        "Hi Nicole, a reminder of your massage tomorrow, Friday 23 October at 7:00pm. "
+    assert sms.text("reminder", "Nicole", SPAN, "treatment") == (
+        "Hi Nicole, a reminder of your treatment tomorrow, Friday 23 October at 7:00pm. "
         "Reply here if anything changes. – David")
     assert sms.text("cancelled", "Nicole", SPAN) == (
         "Hi Nicole, your Rye Remedial booking on Friday 23 October, 7:00–8:00pm has been cancelled. "
@@ -122,7 +122,7 @@ def test_the_four_texts():
 
 def test_first_name_and_service_from_the_title():
     assert sms._first("Massage therapy: nicole smith") == "Nicole"
-    assert sms._what("Yoga: Sam") == "yoga session" and sms._what("Massage therapy: Sam") == "massage"
+    assert sms._what("Yoga: Sam") == "yoga session" and sms._what("Massage therapy: Sam") == "treatment"
 
 
 @pytest.mark.parametrize("raw,want", [("0400 111 222", "+61400111222"), ("+61 400 111 222", "+61400111222"),
@@ -295,7 +295,7 @@ def test_the_reminder_goes_once_the_day_before_in_its_window(world):
     bookings.sync()
     world.clock = at("2026-10-23T11:00")
     bookings.sync()
-    assert world.texts() == [sms.text("reminder", "Nicole", SPAN, "massage")]
+    assert world.texts() == [sms.text("reminder", "Nicole", SPAN, "treatment")]
 
 
 def test_no_reminder_for_a_pending_booking(world):
@@ -326,9 +326,9 @@ def test_a_booking_moved_to_another_day_is_reminded_again(world):
     bookings.sync()
     bookings.sync()
     sat = ["2026-10-24T08:00:00+00:00", "2026-10-24T09:00:00+00:00"]
-    assert world.texts() == [sms.text("reminder", "Nicole", SPAN, "massage"),
+    assert world.texts() == [sms.text("reminder", "Nicole", SPAN, "treatment"),
                              sms.text("moved", "Nicole", sat),
-                             sms.text("reminder", "Nicole", sat, "massage")]
+                             sms.text("reminder", "Nicole", sat, "treatment")]
 
 
 # --- quiet hours, test_to --------------------------------------------------------
@@ -432,7 +432,7 @@ def test_a_trial_by_test_to_works_without_the_site(world, monkeypatch):
 def test_the_trial_sends_one_made_up_text_to_the_given_number_only():
     bridge = Bridge()
     got = sms.trial(TRIAL, "reminder", now=at("2026-10-22T12:00"), sender=bridge)
-    assert got["text"] == sms.text("reminder", "Nicole", SPAN, "massage")
+    assert got["text"] == sms.text("reminder", "Nicole", SPAN, "treatment")
     assert [n for n, _, _ in bridge.sent] == ["+61400999888"]
     with pytest.raises(ValueError):
         sms.trial(TRIAL, "hello", sender=bridge)
