@@ -270,13 +270,14 @@ def test_hermes_still_answers_from_its_spoken_lines():
     assert T.messages("20260921_102508_f74b02") is None
 
 
-def test_codex_preserves_only_explicit_public_progress_channel():
+@pytest.mark.parametrize("field", ["phase", "channel"])
+def test_codex_preserves_only_explicit_public_progress_channel(field):
     builder = T.CodexBuilder()
     for channel in ("commentary", "final", None):
         payload = {"type": "message", "id": "part-" + str(channel), "role": "assistant",
                    "content": [{"type": "output_text", "text": "Public message"}]}
         if channel:
-            payload["channel"] = channel
+            payload[field] = channel
         builder.feed({"type": "response_item", "timestamp": iso(1790000000), "payload": payload})
     parts = builder.messages[0]["parts"]
     assert parts[0]["channel"] == "commentary"

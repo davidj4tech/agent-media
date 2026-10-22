@@ -645,7 +645,7 @@ class CodexBuilder(_HarnessBuilder):
             msg["turn"]["running"] = True
             part = {"type": "text", "text": _cut(text, TEXT_MAX)}
             # Only explicitly public progress may be read during a turn.
-            if p.get("channel") == "commentary":
+            if (p.get("phase") or p.get("channel")) == "commentary":
                 part["channel"] = "commentary"
             msg["parts"].append(part)
         elif role == "user" and not _CODEX_ASIDE.match(text):
