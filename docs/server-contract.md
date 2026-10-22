@@ -2030,6 +2030,19 @@ characters, 502 the render failed (`error` says why). Same gate as
 phone's; the newest `speech=frames` stream is the one frames go to, so a
 browser turned on takes speech from the phone until the phone's stream
 reconnects.
+
+A phone paired with several servers plays one server's speech at a time
+(sasonica roadmap item 7, 20 Oct 2026). Its `POST /speech/state` reports to
+a server whose speech is not the one playing carry `elsewhere: {"owner":
+"<the server playing>", "deadline": <epoch s>}` (the deadline pushed out
+every heartbeat), and `elsewhere: null` once the player is free. While it
+stands, this server's broker claim (`am-claim`, `am-claim-play` on
+`user-data/am-owner`) is answered with `{"owner": "elsewhere:<name>",
+"deadline"}`, so its reply waits as it would for another host and speaks
+next once the phone is free. A claim marked `"interrupt": true` (an
+interrupt-level reply, a prompt, an urgent say) takes the player anyway; its
+frame starts with a `take` op, on which the phone stops the other server's
+speech. The phone's word never replaces a live claim of this server's own.
 - `ok: true` means the command ran, not that it did anything — read `out`.
 - `error` is added (and `out` starts `error: `) when the verb ran and could
   not do it — a replay whose audio was cleared from the cache, or was

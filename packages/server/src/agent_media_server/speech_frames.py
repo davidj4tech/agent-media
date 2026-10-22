@@ -23,7 +23,16 @@ changes, but nothing dials the phone:
   A report that predates the last frame sent (its `seq` is behind) moves
   only the playhead, so a jump just made is not undone by old news.
 * **The claim** (`am-claim`, `am-claim-play`, `user-data/am-owner`) is kept
-  here: there is one server.
+  here. A phone paired with several servers plays one server's speech at a
+  time (sasonica roadmap item 7; David, 20 Oct 2026): while another server
+  owns its player, its reports say so (`elsewhere: {owner, deadline}`, the
+  deadline pushed out every heartbeat), and that stands here as someone
+  else's claim (`elsewhere:<owner>`), so this server's replies wait their
+  turn as they wait for another host's (`_wait_and_claim_broker`) and speak
+  next once the phone says it is free (`elsewhere: null`). A reply worth
+  interrupting for (the claim's `interrupt`) takes the player anyway: its
+  frame carries a `take` op, which the phone obeys by stopping the other
+  server's speech.
 
 With no frame device connected, a connection is passed through untouched to
 `MEDIA_SPEECH_FRAMES_UPSTREAM` — the relay, whose spares stay warm — so an
@@ -249,6 +258,22 @@ class Model:
         if isinstance(r.get("extra"), dict):
             self.extra = r["extra"]
             self.extra_at = time.time()
+        if "elsewhere" in r:
+            self.elsewhere(r.get("elsewhere"))
+
+    def elsewhere(self, e) -> None:
+        """The phone's word on another server owning its player: someone
+        else's claim while it stands, gone once the phone says it is free.
+        Never over a claim of this server's own that is still ahead."""
+        cur = self.stored.get(OWNER_KEY)
+        theirs = isinstance(cur, dict) and str(cur.get("owner") or "").startswith(ELSEWHERE)
+        if isinstance(e, dict) and _num(e.get("deadline"), 0) > 0:
+            owner = ELSEWHERE + str(e.get("owner") or "another server")[:80]
+            if theirs or not isinstance(cur, dict) or _num(cur.get("deadline"), 0) <= time.time() \
+                    or not str(cur.get("owner") or ""):
+                self.stored[OWNER_KEY] = {"owner": owner, "deadline": _num(e.get("deadline"), 0)}
+        elif theirs:
+            self.stored[OWNER_KEY] = {"owner": "", "deadline": 0}
 
 
 class _Hub:
@@ -258,6 +283,8 @@ class _Hub:
         self.channel = channel
         self.lock = threading.Condition()
         self.model = Model()
+        #: A claim just took the player from another server (`_claim`).
+        self.take = False
         #: Callers connected to this channel's port, for their observations.
         self.clients: list["_Client"] = []
         self.clients_lock = threading.Lock()
@@ -657,8 +684,16 @@ def _seek_target(argv: list, hub: "_Hub") -> float | None:
     return None
 
 
+#: The broker's claim (sinks/speech.py `_BROKER_OWNER_KEY`).
+OWNER_KEY = "user-data/am-owner"
+#: How another server's ownership of the phone's player is named in the claim.
+ELSEWHERE = "elsewhere:"
+
+
 def _claim(key: str, mine, now: float, hub: "_Hub"):
-    """MpvServer.claim: take `key` unless someone else's deadline is ahead."""
+    """MpvServer.claim: take `key` unless someone else's deadline is ahead.
+    Another server's hold on the phone's player (`elsewhere:`) gives way to
+    a claim marked `interrupt`, which sets `hub.take` for the frame."""
     if not _stored(key) or not isinstance(mine, dict):
         return None
     cur = hub.model.stored.get(key)
@@ -666,7 +701,9 @@ def _claim(key: str, mine, now: float, hub: "_Hub"):
         owner = str(cur.get("owner") or "")
         if owner and owner != str(mine.get("owner") or "") \
                 and _num(cur.get("deadline"), 0) > now:
-            return cur
+            if not (owner.startswith(ELSEWHERE) and mine.get("interrupt") is True):
+                return cur
+            hub.take = True
     hub.model.stored[key] = mine
     return mine
 
@@ -730,8 +767,12 @@ def _dispatch(argv: list, ops: list[dict], hub: "_Hub") -> tuple[bool, object]:
         mine = argv[2] if len(argv) > 2 else None
         with hub.lock:
             held = _claim(str(argv[1]), mine, _num(argv[3], 0) if len(argv) > 3 else 0, hub)
+            take, hub.take = hub.take, False
         if held is None:
             return False, "invalid parameter"
+        if take:
+            # Taken from another server: the phone stops its speech first.
+            ops.append({"op": "take"})
         if held is mine and verb == "am-claim-play" and len(argv) > 4 \
                 and isinstance(argv[4], list):
             for sub in argv[4]:

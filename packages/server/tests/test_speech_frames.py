@@ -109,6 +109,80 @@ def test_someone_elses_claim_holds_and_its_commands_do_not_run(endpoint):
     assert speech_frames.frames_after(0) == []
 
 
+# --- a phone paired with several servers (sasonica roadmap item 7) -----------
+
+
+def _elsewhere(owner="hpo", ahead=30.0):
+    """The phone's report while another server owns its player."""
+    speech_frames.report("d_test", {"seq": speech_frames.seq(), "pos": -1, "count": 0, "idle": True,
+                                    "elsewhere": {"owner": owner, "deadline": time.time() + ahead}})
+
+
+def test_another_server_owning_the_phone_holds_our_reply(endpoint):
+    _listening()
+    _elsewhere()
+    ipc = Ipc(endpoint)
+    got = ipc("am-claim-play", "user-data/am-owner", {"owner": "reply", "deadline": time.time() + 30},
+              time.time(), [["stop"], ["loadfile", "tts:x", "append"]])
+    assert got["data"]["owner"] == "elsewhere:hpo"
+    assert speech_frames.frames_after(0) == []
+    # Read as someone else's claim, as a waiter watches it (active_other_owner).
+    assert ipc("get_property", "user-data/am-owner")["data"]["owner"] == "elsewhere:hpo"
+    ipc.close()
+
+
+def test_free_again_our_reply_speaks_next(endpoint):
+    _listening()
+    _elsewhere()
+    speech_frames.report("d_test", {"seq": speech_frames.seq(), "pos": -1, "count": 0, "idle": True,
+                                    "elsewhere": None})
+    ipc = Ipc(endpoint)
+    mine = {"owner": "reply", "deadline": time.time() + 30}
+    got = ipc("am-claim-play", "user-data/am-owner", mine, time.time(),
+              [["stop"], ["loadfile", "tts:x", "append"]])
+    assert got["data"] == mine
+    frames = speech_frames.frames_after(0)
+    assert len(frames) == 1 and "take" not in [o["op"] for o in frames[0]["ops"]]
+    ipc.close()
+
+
+def test_a_reply_worth_interrupting_for_takes_the_phone(endpoint):
+    _listening()
+    _elsewhere()
+    ipc = Ipc(endpoint)
+    mine = {"owner": "urgent", "deadline": time.time() + 30, "interrupt": True}
+    got = ipc("am-claim-play", "user-data/am-owner", mine, time.time(),
+              [["stop"], ["loadfile", "tts:x", "append"]])
+    assert got["data"] == mine
+    ops = [o["op"] for o in speech_frames.frames_after(0)[0]["ops"]]
+    assert ops[0] == "take" and "load" in ops
+    ipc.close()
+
+
+def test_interrupt_does_not_take_this_servers_own_claim(endpoint):
+    _listening()
+    ipc = Ipc(endpoint)
+    theirs = {"owner": "book", "deadline": time.time() + 30}
+    ipc("am-claim", "user-data/am-owner", theirs, time.time())
+    got = ipc("am-claim", "user-data/am-owner", {"owner": "urgent", "deadline": time.time() + 30, "interrupt": True},
+              time.time())
+    assert got["data"] == theirs
+    ipc.close()
+
+
+def test_the_phones_word_never_overwrites_our_live_claim(endpoint):
+    _listening()
+    ipc = Ipc(endpoint)
+    mine = {"owner": "reply", "deadline": time.time() + 30}
+    ipc("am-claim", "user-data/am-owner", mine, time.time())
+    _elsewhere()
+    assert ipc("get_property", "user-data/am-owner")["data"] == mine
+    # Nor does "free" clear it.
+    speech_frames.report("d_test", {"seq": speech_frames.seq(), "elsewhere": None})
+    assert ipc("get_property", "user-data/am-owner")["data"] == mine
+    ipc.close()
+
+
 def test_set_get_seek_and_metadata(endpoint):
     _listening()
     ipc = Ipc(endpoint)

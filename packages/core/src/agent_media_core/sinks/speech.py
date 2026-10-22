@@ -67,6 +67,16 @@ def _broker_max_volume() -> float:
         return 200.0
 
 
+def _claim_of(me: str, ttl: float, interrupt: bool = False) -> dict:
+    """The claim sent with am-claim: owner and deadline, and `interrupt` for a
+    reply worth interrupting for — which may take a phone's player from
+    another server it is paired with (server speech_frames.py)."""
+    claim: dict = {"owner": me, "deadline": time.time() + ttl}
+    if interrupt:
+        claim["interrupt"] = True
+    return claim
+
+
 def _broker_owner_id() -> str:
     """Stable id for this claimer. Same-host/same-pid callers are already
     serialized by the local flock, so host:pid is enough to tell hosts apart."""
@@ -898,7 +908,7 @@ class SinkSpeech:
         return cur
 
     def claim_broker(self, target: Target = DEFAULT_TARGET,
-                     ttl: float = BROKER_TTL_S) -> bool:
+                     ttl: float = BROKER_TTL_S, interrupt: bool = False) -> bool:
         """Best-effort claim of a shared remote broker. Returns True once we own
         it — or immediately for a local target, or if the broker is unreachable
         (never block a reply on the token machinery itself)."""
@@ -914,7 +924,7 @@ class SinkSpeech:
         if sock not in _no_atomic_claim:
             try:
                 held = ipc.command(sock, "am-claim", _BROKER_OWNER_KEY,
-                                   {"owner": me, "deadline": time.time() + ttl},
+                                   _claim_of(me, ttl, interrupt),
                                    time.time(), timeout=2.0, retry_errors=False)
             except ipc.MpvIpcError:
                 _no_atomic_claim.add(sock)
@@ -940,7 +950,8 @@ class SinkSpeech:
         return isinstance(cur, dict) and cur.get("owner") == me
 
     def claim_and_play(self, uris: "list", target: Target = DEFAULT_TARGET,
-                       ttl: float = BROKER_TTL_S, gapless: bool = True) -> "bool | None":
+                       ttl: float = BROKER_TTL_S, gapless: bool = True,
+                       interrupt: bool = False) -> "bool | None":
         """Claim the broker and, only if that succeeded, load and start
         `uris` — one message (Sasonica's am-claim-play), one round trip.
 
@@ -956,7 +967,7 @@ class SinkSpeech:
         cmds = self._load_cmds(uris, target, gapless) + self._start_cmds(target=target)
         try:
             held = ipc.command(sock, "am-claim-play", _BROKER_OWNER_KEY,
-                               {"owner": me, "deadline": time.time() + ttl},
+                               _claim_of(me, ttl, interrupt),
                                time.time(), cmds, timeout=5.0, critical=True,
                                retry_errors=False)
         except ipc.MpvIpcError as e:

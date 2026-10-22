@@ -3245,7 +3245,19 @@ def _remote_playlist(target: Target) -> bool:
     return str(_socket_for(target)).startswith("tcp://")
 
 
-def _wait_and_claim_broker(sink: "SinkSpeech", target: Target) -> None:
+def _with_interrupt(fn, interrupt: bool, *args):
+    """Call a sink's claim with `interrupt=True` when the reply is worth
+    interrupting for; a sink (or a test's) that takes no such keyword is
+    asked as before."""
+    if not interrupt:
+        return fn(*args)
+    try:
+        return fn(*args, interrupt=True)
+    except TypeError:
+        return fn(*args)
+
+
+def _wait_and_claim_broker(sink: "SinkSpeech", target: Target, interrupt: bool = False) -> None:
     """Cross-host serialization for a *shared remote* (tcp://) broker.
 
     The playback flock only serializes this host; the phone broker is driven by
@@ -3272,7 +3284,9 @@ def _wait_and_claim_broker(sink: "SinkSpeech", target: Target) -> None:
         # read separately only when the claim loses, to watch whether the
         # holder is still alive.
         try:
-            if claim(target):
+            # `interrupt`: may take a phone's player from another server it is
+            # paired with (sasonica roadmap item 7), never from this server's own.
+            if _with_interrupt(claim, interrupt, target):
                 return
         except Exception:  # noqa: BLE001
             return
@@ -4854,6 +4868,10 @@ def _submit_event(event: Event,
         # arrived. Taken here, once the token is ours — the yield happens
         # while we wait for it. A question into silence needs no warning.
         barged_in = _take_displaced(waited_from) or ask_over_live
+        # Worth interrupting for (an interrupt-level reply, a prompt, an urgent
+        # say): may take a phone's player from another server it is paired
+        # with, as it would barge in here (sasonica roadmap item 7).
+        interrupting = _PRIO_RANK.get(event.priority, 0) >= _PRIO_RANK[Priority.HIGH]
         # Set on the ways out that end this reply on purpose — a per-session
         # cut (`all`, `ask`, `read`) or End of reply — not a supersede, a
         # sentence skip, a natural end or a yield: those get the `cut` earcon
@@ -4900,10 +4918,10 @@ def _submit_event(event: Event,
                     and _lead_ready.wait(timeout=1.0) and not _abandon.is_set()):
                 with _clip_lock:
                     lead = [p for _, p in clip_data]
-                if lead and fast(lead, target):
+                if lead and _with_interrupt(fast, interrupting, lead, target):
                     _preloaded["ok"] = _preloaded["started"] = True
                     return
-            _wait_and_claim_broker(sink, target)
+            _wait_and_claim_broker(sink, target, interrupting)
             if barged_in and not _abandon.is_set():
                 # Before anything of ours is loaded — loading starts with a
                 # stop, which would take the tone with it — and waited out
