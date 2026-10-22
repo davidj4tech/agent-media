@@ -133,7 +133,7 @@ def voice_note(payload: dict) -> str:
         return ""
     from .. import voice_mode
 
-    return voice_mode.NOTE if voice_mode.active(session) else ""
+    return voice_mode.note(session)
 
 
 def main() -> int:

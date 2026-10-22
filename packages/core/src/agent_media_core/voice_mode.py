@@ -15,6 +15,17 @@ only the agent's new line. After a question it asks it once more, shorter
 and simpler; after anything else it offers one useful next step as a yes/no
 question, or answers `QUIET` when there is none, which is never spoken
 (`is_quiet`) and never shown.
+
+The quick model (David, 22 Oct 2026): while the loop is on, a thread's
+spoken replies come from a faster model (`VOICE_MODELS`, per harness: Claude
+→ `sonnet`), and the heavy work it hands to background agents still runs on
+the strong one (`SUBAGENT_MODELS`: `opus`) — the note tells it to pass that
+model when it spawns one. The server switches the thread on the way in and
+back to what it ran before on the way out (agent_media_server/voice_model.py),
+always between turns; the switch is recorded here (`switched`) so the prompt
+hook knows to add the subagent line. MEDIA_VOICE_MODEL=0 turns it off;
+MEDIA_VOICE_MODEL_<HARNESS> / MEDIA_VOICE_SUBAGENT_MODEL_<HARNESS> name other
+models.
 """
 
 from __future__ import annotations
@@ -56,6 +67,108 @@ NUDGE = (
     "genuinely no sensible next step, reply with exactly " + QUIET + " and "
     "nothing else. Do not start any work or use any tools for this; just ask."
 )
+
+
+#: The faster model a harness's thread talks on in voice mode. A harness not
+#: listed keeps its model (Claude only for now).
+VOICE_MODELS = {"claude": "sonnet"}
+
+#: The model its background agents are told to run on meanwhile.
+SUBAGENT_MODELS = {"claude": "opus"}
+
+SUBAGENT_NOTE = (
+    "Your spoken replies run on a faster model while the listener is hands-free. "
+    "When you hand real work to a background agent (the Agent tool), pass "
+    "model: \"{model}\" so it runs on the stronger model; keep quick answers "
+    "to yourself."
+)
+
+
+def _enabled() -> bool:
+    return os.environ.get("MEDIA_VOICE_MODEL", "1").strip().lower() not in ("0", "off", "false", "no")
+
+
+def voice_model(agent: str) -> str:
+    """The model `agent`'s thread switches to in voice mode, or "" (off, or
+    a harness without one)."""
+    if not _enabled():
+        return ""
+    agent = (agent or "").strip().lower()
+    env = os.environ.get(f"MEDIA_VOICE_MODEL_{agent.upper()}", "").strip()
+    return env or VOICE_MODELS.get(agent, "")
+
+
+def subagent_model(agent: str) -> str:
+    agent = (agent or "").strip().lower()
+    env = os.environ.get(f"MEDIA_VOICE_SUBAGENT_MODEL_{agent.upper()}", "").strip()
+    return env or SUBAGENT_MODELS.get(agent, "")
+
+
+def _model_path(session: str) -> Path:
+    return _dir() / (hashlib.sha1(session.encode("utf-8")).hexdigest() + ".model")
+
+
+def record_switch(session: str, agent: str, prev: str, to: str, *, now: float | None = None) -> None:
+    """`session` was switched from `prev` to `to` for voice mode."""
+    session = (session or "").strip()
+    if not session:
+        return
+    path = _model_path(session)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"session": session, "agent": agent, "prev": prev,
+                                   "to": to, "at": time.time() if now is None else now}))
+        tmp.replace(path)
+    except OSError:
+        pass
+
+
+def switched(session: str) -> dict | None:
+    """The switch voice mode made on `session` and has not undone:
+    `{"session", "agent", "prev", "to", "at"}`, or None."""
+    session = (session or "").strip()
+    if not session:
+        return None
+    try:
+        rec = json.loads(_model_path(session).read_text())
+    except (OSError, ValueError):
+        return None
+    return rec if isinstance(rec, dict) and rec.get("to") else None
+
+
+def clear_switch(session: str) -> None:
+    try:
+        _model_path((session or "").strip()).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def all_switched() -> list[dict]:
+    """Every switch not yet undone."""
+    out = []
+    try:
+        paths = list(_dir().glob("*.model"))
+    except OSError:
+        return out
+    for p in paths:
+        try:
+            rec = json.loads(p.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(rec, dict) and rec.get("session") and rec.get("to"):
+            out.append(rec)
+    return out
+
+
+def note(session: str) -> str:
+    """The prompt hook's note for `session`: NOTE while in voice mode, with
+    the subagent line when its model was switched; "" otherwise."""
+    if not active(session):
+        return ""
+    rec = switched(session)
+    sub = subagent_model(str(rec.get("agent") or "")) if rec else ""
+    return NOTE + ("\n\n" + SUBAGENT_NOTE.format(model=sub) if sub else "")
 
 
 def nudge_text() -> str:
