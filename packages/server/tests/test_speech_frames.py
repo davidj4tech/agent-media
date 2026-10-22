@@ -183,6 +183,49 @@ def test_the_phones_word_never_overwrites_our_live_claim(endpoint):
     ipc.close()
 
 
+def test_a_reply_sent_before_we_heard_the_phone_was_busy_waits_on_the_phone(endpoint):
+    """The race: our claim went through before the phone's `elsewhere` came,
+    so our reply's frames went out. The phone holds them behind the other
+    server's speech and says so: our reply loaded and paused at its start,
+    and busy elsewhere. Our model keeps the reply (it is not ended), our own
+    claim stands, and nothing new is sent until the phone plays it."""
+    _listening()
+    ipc = Ipc(endpoint)
+    mine = {"owner": "reply", "deadline": time.time() + 30}
+    got = ipc("am-claim-play", "user-data/am-owner", mine, time.time(),
+              [["stop"], ["playlist-clear"], ["loadfile", "tts:a", "append"],
+               ["loadfile", "tts:b", "append"], ["set_property", "pause", False],
+               ["set_property", "playlist-pos", 0]])
+    assert got["data"] == mine
+    sent = len(speech_frames.frames_after(0))
+    speech_frames.report("d_test", {"seq": speech_frames.seq(), "pos": 0, "count": 2, "paused": True,
+                                    "idle": False, "time_pos": 0, "duration": -1,
+                                    "elsewhere": {"owner": "hpo", "deadline": time.time() + 30}})
+    assert ipc("get_property", "playlist-count")["data"] == 2
+    assert ipc("get_property", "idle-active")["data"] is False
+    assert ipc("get_property", "pause")["data"] is True
+    assert ipc("get_property", "user-data/am-owner")["data"] == mine
+    assert len(speech_frames.frames_after(0)) == sent
+    ipc.close()
+
+
+def test_one_server_reports_carry_no_elsewhere_and_claims_are_as_before(endpoint):
+    """A phone paired with one server never sends `elsewhere`: the claim,
+    the model and the frames are what they were before several servers."""
+    _listening()
+    ipc = Ipc(endpoint)
+    a = {"owner": "one", "deadline": time.time() + 30}
+    assert ipc("am-claim-play", "user-data/am-owner", a, time.time(), [["loadfile", "tts:x", "append"]])["data"] == a
+    speech_frames.report("d_test", {"seq": speech_frames.seq(), "pos": 0, "count": 1, "idle": False})
+    assert ipc("get_property", "user-data/am-owner")["data"] == a
+    # Our own claim holds the next one off, interrupt or not, as before.
+    b = {"owner": "two", "deadline": time.time() + 30, "interrupt": True}
+    assert ipc("am-claim", "user-data/am-owner", b, time.time())["data"] == a
+    ops = [o["op"] for f in speech_frames.frames_after(0) for o in f["ops"]]
+    assert "take" not in ops
+    ipc.close()
+
+
 def test_set_get_seek_and_metadata(endpoint):
     _listening()
     ipc = Ipc(endpoint)

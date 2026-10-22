@@ -940,8 +940,11 @@ ahead.
    frame starts with a `take` op. On the phone, `SpeechOwner` keeps the
    owner: the first server to load, until the player has been idle 3 s (a
    reply's next sentence may come a moment after the last); a non-owner's
-   frames are not applied over it (their `seq` kept), its reports are an
-   idle player with `elsewhere`; a `take` stops the owner's speech first.
+   frames are held behind it in order and played next when it is free
+   (their `seq` kept), its reports say its reply is loaded and paused and
+   `elsewhere`; a `take` stops the owner's speech first. With one server
+   none of it runs: frames applied as they come, no `elsewhere`, no claim
+   waits.
    Each other server's notifier loop asks for `speech=frames` and feeds its
    own channel (`SpeechFrames.speechFor`). The page asks the owning server
    what is speaking and sends it the bar's controls (`SpeechStatus.owner`,
@@ -952,8 +955,8 @@ ahead.
    sentences (the 3 s grace) not losing the player mid-reply; the speech
    bar's stop, pause, next and previous reaching the server that is
    speaking; and a reply the other server sent in the moment before it
-   heard the phone was busy (a race: its frames are not applied, and that
-   reply is lost rather than held).
+   heard the phone was busy (held on the phone and played next — the race
+   is covered by SpeechOwnerTest and test_speech_frames, not yet heard).
    **One voice, and a thread's Speech sheet** (David, 22 Oct 2026; built on
    `multi-base-11`, its own commit): the voice chosen in Settings is set on
    every paired server that has it; one without it (or unreachable) keeps
