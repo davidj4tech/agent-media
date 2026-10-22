@@ -3792,8 +3792,10 @@ or not one of its actions now (already answered); 501 no handler on this
 host; 502 the handler refused or failed, with its `error` (a sentence to
 show). Today: `calendar.rye.booking.<n>` (the Rye booking mirror,
 `booking_calendar.alert_action`; docs/reference/shared-calendar.md) with
-`apply` | `apply-quiet` | `cancel` | `keep`. The app does not render the buttons yet: until
-it does, Fix it opens a chat with the alert, whose `fix` names the matching
+`apply` | `apply-quiet` | `cancel` | `keep`. The app's Home renders each
+alert's `actions` as buttons (22 Oct 2026), asks first for any but `keep`, and
+shows the answer's `message` or `note` (else "Done: <label>") or its `error`;
+Fix it still opens a chat with the alert, whose `fix` names the matching
 `media calendar bookings-decide` commands.
 
 The `alerts` frame on `/sessions/events` (§6.13, 27 Sep 2026) carries the
