@@ -3,6 +3,13 @@
 One server-owned watcher, independent of SSE subscribers. Old parts are a
 baseline, never a playback backlog. Speech is disposable and uses core's
 ordinary renderer/player, with cancellation checked between sentences.
+
+Claude Code keeps almost none of its thinking as text (signature-only
+blocks), so for a Claude thread the step names shown in the thread — a
+Bash or Agent call's own `description` (transcript `step_description`) —
+are read too, never a command, path or output. Real thinking text wins; a
+burst of steps reads only the newest, at most one per `STEP_GAP_S` per
+thread, and never over speech or a listening mic (David, 23 Oct 2026).
 """
 from __future__ import annotations
 
@@ -23,6 +30,10 @@ from ._jsonmap import JsonMap
 log = logging.getLogger(__name__)
 POLL_S = 0.5
 SETTLE_S = 0.5
+# A step is read only this long after the thread's last readout, and a step
+# waiting for that longer than this is stale and dropped.
+STEP_GAP_S = 15.0
+STEP_STALE_S = 15.0
 _PREFS = JsonMap("thinking-speech.json")
 _DEFAULT = JsonMap("thinking-speech-default.json")
 _HARNESS = frozenset({"claude", "codex", "pi", "gemini", "grok", "opencode"})
@@ -77,6 +88,29 @@ def _parts(messages: list[dict]) -> dict[tuple[str, int], str]:
             and str(p.get("text") or "").strip()}
 
 
+def _steps(harness: str, messages: list[dict]) -> dict[tuple[str, int], str]:
+    """A Claude thread's step names, in transcript order. Other harnesses
+    keep their behaviour: only their reasoning and progress are read."""
+    if harness != "claude":
+        return {}
+    return {(m["id"], i): str(p.get("description") or "").strip()
+            for m in messages if m.get("role") == "assistant"
+            for i, p in enumerate(m.get("parts") or [])
+            if p.get("type") == "tool" and str(p.get("description") or "").strip()}
+
+
+def _speech_busy() -> bool:
+    """A reply speaking, or a speech hold (the mic listening). Fails closed."""
+    try:
+        from agent_media_core import cli
+        from agent_media_core.intake.submit import speech_hold_until
+
+        return speech_hold_until() > 0 or cli._speech_in_flight()
+    except Exception:  # noqa: BLE001 — a step is disposable
+        log.exception("thinking step speech check failed")
+        return True
+
+
 def _eligible(session: str) -> bool:
     if sealed.is_sealed(session):
         return False
@@ -105,6 +139,11 @@ class Cursor:
     identity: tuple
     seen: set = field(default_factory=set)
     pending: dict = field(default_factory=dict)
+    steps_seen: set = field(default_factory=set)
+    # The newest unread step: (key, text, first seen), or None.
+    step: tuple | None = None
+    # When this thread last had a readout launched (a thought or a step).
+    last_read: float | None = None
 
 
 class Watcher:
@@ -120,7 +159,9 @@ class Watcher:
             identity, messages = _read(session)
         except OSError:
             identity, messages = (), []
-        self.cursors[session] = Cursor(token, identity, set(_parts(messages)))
+        harness = identity[0] if identity else ""
+        self.cursors[session] = Cursor(token, identity, set(_parts(messages)),
+                                       steps_seen=set(_steps(harness, messages)))
 
     def allowed(self, session: str, token: str, message: str) -> bool:
         if self.stop.is_set() or _token(session) != token or not _eligible(session):
@@ -197,7 +238,37 @@ class Watcher:
             if key[0] != latest or self.busy or not _eligible(session) or not _working(session):
                 continue
             self.busy = True
+            cursor.last_read = now
             self.launch(session, token, key, text)
+        self._step(session, token, cursor, identity[0] if identity else "",
+                   messages, latest, now)
+
+    def _step(self, session: str, token: str, cursor: Cursor, harness: str,
+              messages: list[dict], latest, now: float) -> None:
+        steps = _steps(harness, messages)
+        new = [k for k in steps if k not in cursor.steps_seen]
+        cursor.steps_seen.intersection_update(steps)
+        cursor.steps_seen.update(new)
+        if new:  # latest-only: a burst keeps just its newest step
+            cursor.step = (new[-1], steps[new[-1]], now)
+        if cursor.step is None:
+            return
+        key, text, at = cursor.step
+        if key[0] != latest or now - at > STEP_STALE_S:
+            cursor.step = None
+            return
+        if (self.busy or cursor.pending
+                or (cursor.last_read is not None and now - cursor.last_read < STEP_GAP_S)):
+            return  # held: real thinking first, then the throttle
+        if not _eligible(session) or not _working(session):
+            cursor.step = None  # consumed unheard, as a thought is
+            return
+        if _speech_busy():
+            return
+        cursor.step = None
+        self.busy = True
+        cursor.last_read = now
+        self.launch(session, token, key, text)
 
     def launch(self, session: str, token: str, key: tuple[str, int], text: str) -> None:
         threading.Thread(target=self.speak, args=(session, token, key, text),

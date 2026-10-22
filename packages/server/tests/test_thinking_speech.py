@@ -373,3 +373,209 @@ def test_codex_activity_reads_without_resuming(env, monkeypatch, status, expecte
     monkeypatch.setattr(codex_control, "connect", connect)
     assert codex_control.working(SID) is expected
     assert calls == [("thread/read", {"threadId": SID, "includeTurns": False})]
+
+
+# --- Claude step names (23 Oct 2026) ----------------------------------------
+
+
+def step(env, description="Run the server tests", name="Bash", **extra):
+    part = {"type": "tool", "name": name, "title": description or name,
+            "input_summary": "pytest -q packages/server/tests", "status": "running",
+            "result_summary": "", "tool_use_id": f"t{len(env.messages[0]['parts'])}"}
+    part.update(extra)
+    if description:
+        part["description"] = description
+    env.messages[0]["parts"].append(part)
+
+
+@pytest.fixture
+def quiet_speech(monkeypatch):
+    busy = [False]
+    monkeypatch.setattr(T, "_speech_busy", lambda: busy[0])
+    return busy
+
+
+def test_claude_step_description_is_read_but_never_its_command_or_output(env, quiet_speech):
+    enable()
+    step(env, result_summary="12 passed")
+    step(env, None, name="Read", input_summary="/home/x/secret.py")
+    settle(env)
+    assert [c[-1] for c in env.calls] == ["Run the server tests"]
+    said = " ".join(c[-1] for c in env.calls)
+    assert "pytest" not in said and "passed" not in said and "secret" not in said
+
+
+def test_steps_are_latest_only_and_throttled_per_thread(env, quiet_speech):
+    enable()
+    settle(env)
+    step(env, "First step")
+    step(env, "Second step")
+    step(env, "Third step")
+    env.watcher.tick()
+    assert [c[-1] for c in env.calls] == ["Third step"]
+    env.clock[0] += 5
+    step(env, "Too soon")
+    env.watcher.tick()
+    step(env, "Newer, still too soon")
+    env.clock[0] += 5
+    env.watcher.tick()
+    assert len(env.calls) == 1
+    env.clock[0] += T.STEP_GAP_S - 10  # 15 s after the first readout
+    env.watcher.tick()
+    assert [c[-1] for c in env.calls][-1] == "Newer, still too soon"
+    env.watcher.tick()
+    assert len(env.calls) == 2
+    # A step held past the stale limit is dropped, not read late.
+    env.clock[0] += 1
+    step(env, "Stale step")
+    env.watcher.tick()
+    env.clock[0] += T.STEP_STALE_S + 1
+    env.watcher.tick()
+    assert len(env.calls) == 2
+
+
+def test_real_thinking_text_is_preferred_over_a_step(env, quiet_speech):
+    enable()
+    thought(env, "A real thought")
+    step(env, "A step")
+    settle(env)
+    assert [c[-1] for c in env.calls] == ["A real thought"]
+    env.clock[0] += 1
+    env.watcher.tick()
+    assert len(env.calls) == 1
+
+
+def test_steps_wait_for_speech_and_the_mic(env, quiet_speech):
+    enable()
+    quiet_speech[0] = True
+    step(env, "Held step")
+    settle(env)
+    assert env.calls == []
+    quiet_speech[0] = False
+    env.watcher.tick()
+    assert [c[-1] for c in env.calls] == ["Held step"]
+
+
+def test_speech_check_fails_closed(monkeypatch):
+    from agent_media_core.intake import submit as S
+
+    def broken():
+        raise RuntimeError("no state")
+    monkeypatch.setattr(S, "speech_hold_until", broken)
+    assert T._speech_busy() is True
+
+
+@pytest.mark.parametrize("how", ["never", "off", "default-on-thread-off"])
+def test_steps_are_never_read_when_thread_thinking_is_off(env, quiet_speech, how):
+    if how == "off":
+        enable()
+        T.setting(SID, "t", body={"enabled": False})
+    elif how != "never":
+        T.default_setting("t", body={"enabled": True})
+        T.setting(SID, "t", body={"enabled": False})
+    settle(env)
+    step(env)
+    settle(env)
+    assert env.calls == []
+
+
+def test_unheard_steps_are_consumed(env, quiet_speech):
+    enable()
+    speak_priority.set_level(SID, "quiet")
+    step(env)
+    settle(env)
+    speak_priority.set_level(SID, "auto")
+    env.watcher.tick()
+    assert env.calls == []
+
+
+def test_other_harnesses_do_not_read_step_descriptions(env, quiet_speech, monkeypatch):
+    monkeypatch.setattr(transcript, "transcript_of", lambda s: ("codex", str(env.path)))
+    monkeypatch.setattr(T, "_working", lambda s: True)
+    enable()
+    step(env)
+    settle(env)
+    assert env.calls == []
+
+
+def test_claude_transcript_carries_only_plain_words_descriptions(env, quiet_speech, monkeypatch):
+    monkeypatch.setattr(transcript, "messages", lambda *a, **kw:
+                        transcript.messages_at(str(env.path), harness="claude", **kw))
+    enable()
+    record = {"type": "assistant", "uuid": "a", "message": {
+        "role": "assistant", "stop_reason": "tool_use", "content": [
+            {"type": "thinking", "thinking": "", "signature": "sig"},
+            {"type": "tool_use", "id": "t1", "name": "Bash",
+             "input": {"command": "rm -rf build", "description": "Clear the  build\nfolder"}},
+            {"type": "tool_use", "id": "t2", "name": "mcp__media__calendar_write",
+             "input": {"description": "Private event notes"}},
+            {"type": "tool_use", "id": "t3", "name": "Agent",
+             "input": {"description": "Survey the docs", "prompt": "Long brief"}}]}}
+    env.path.write_text(json.dumps(record, separators=(",", ":")) + "\n")
+    parsed = transcript.messages(SID, limit=30)[0]
+    assert list(T._steps("claude", parsed).values()) == ["Clear the build folder", "Survey the docs"]
+    settle(env)
+    assert [c[-1] for c in env.calls] == ["Survey the docs"]
+
+
+def test_a_step_is_spoken_through_submission_with_the_think_earcon(env, monkeypatch):
+    """End to end through core's real submission loop, with a fake sink."""
+    from pathlib import Path
+    from agent_media_core import earcons
+    from agent_media_core.intake import submit as S
+    from agent_media_core.state import StateStore
+    from agent_media_core.types import Target
+
+    played = []
+
+    class Coord:
+        def cancel_pre_pause(self): pass
+        def pre_pause_remote(self): raise AssertionError("a step pre-paused media")
+        def before_speech(self, **kw): pass
+        def after_speech(self): pass
+        def speaking_line(self, *a): pass
+
+    class Sink:
+        def play(self, uri, target, **kw): played.append(uri)
+        def play_cue(self, uri, target):
+            played.append(("cue", Path(uri).name))
+            return True
+        def play_playlist(self, uris, target, **kw):
+            played.extend(uris)
+            return True
+        def idle(self, target): return True
+        def paused(self, target): return False
+        def stop(self, target): pass
+        def load_playlist(self, *a): raise AssertionError("loaded a playlist")
+        def claim_and_play(self, *a): raise AssertionError("started a playlist")
+
+    def render(text, outfile, **kw):
+        Path(outfile).write_bytes(b"fake audio")
+        return True, ""
+
+    import time
+    # The fixture's frozen clock is the time module's: the earcon waits on it.
+    monkeypatch.setattr(T.time, "monotonic", time.perf_counter)
+    monkeypatch.setenv("MEDIA_FOLLOW_AUTO", "0")
+    for name, value in (("render_text", render), ("_clip_duration", lambda p: 0.0),
+                        ("_gate_hold", lambda *a: False), ("_busy_hold", lambda *a: None),
+                        ("_ringer_hold", lambda *a: None), ("ringer_quiet", lambda *a: None),
+                        ("_remote_playlist", lambda *a: True),
+                        ("_source_place", lambda *a: ("", ""))):
+        monkeypatch.setattr(S, name, value)
+    real = S.submit_event
+    events = []
+
+    def submit(event, **kw):
+        import dataclasses
+        events.append(event)
+        event = dataclasses.replace(event, target=Target("local"))
+        return real(event, state=StateStore(), sink=Sink(), coordinator=Coord(), **kw)
+    monkeypatch.setattr(S, "submit_event", submit)
+    enable()
+    step(env, "Check the speech route")
+    env.watcher.speak(SID, T._PREFS.get(SID), ("m", 0), "Check the speech route")
+    assert events[0].metadata["thinking"] is True
+    assert events[0].priority.value == "low"
+    assert played and played[0] == ("cue", earcons.path("think").name)
+    assert len(played) == 2  # the earcon, then the step's one sentence

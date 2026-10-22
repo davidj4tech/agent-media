@@ -13,7 +13,7 @@ hands the phone *messages*:
      "parts": [{"type": "text", "text"},
                {"type": "reasoning", "text", "redacted": bool},
                {"type": "tool", "name", "title", "input_summary", "status",
-                "result_summary", "tool_use_id"},
+                "result_summary", "tool_use_id", "description"?},
                {"type": "ask", "ask": [...], "status", "answer", "tool_use_id"}],
      "spoken": null | {"id", "key", "at", ...},     # joined in `join_speech`
      "turn": {"running": bool},
@@ -227,6 +227,21 @@ def result_summary(name: str, content) -> str:
     return _cut(text.strip(), SUMMARY_MAX)
 
 
+# Claude Code tools whose `description` is a step name written for a person
+# ("Run the server tests"), not content: the thinking read-aloud speaks it.
+_DESCRIBED = frozenset({"Bash", "PowerShell", "Agent", "Task", "Monitor"})
+
+
+def step_description(name: str, inp: dict) -> str:
+    """The call's own plain-words description, one line, or ''. Only for
+    the tools in `_DESCRIBED`: another tool's `description` (an MCP calendar
+    event's, a label's) is content, never a step name."""
+    if name not in _DESCRIBED or not isinstance(inp, dict):
+        return ""
+    desc = inp.get("description")
+    return _one_line(desc, 120) if isinstance(desc, str) and desc.strip() else ""
+
+
 def _title(name: str, inp: dict) -> str:
     """The step as the phone already words it ("Read canvas.py")."""
     try:
@@ -436,6 +451,9 @@ class Builder:
                             "input_summary": input_summary(name, inp),
                             "status": "running", "result_summary": "",
                             "tool_use_id": tid}
+                    desc = step_description(name, inp)
+                    if desc:
+                        part["description"] = desc
                 parts.append(part)
                 if tid:
                     self._tools[tid] = (name, part)
