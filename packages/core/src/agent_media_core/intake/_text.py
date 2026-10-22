@@ -8,12 +8,14 @@ import re
 
 #: Blocks the harness writes into a user prompt that the listener never said:
 #: a finished background task, a system reminder, the echo of a slash command,
-#: a `!` command and its output (bash mode).
+#: a `!` command and its output (bash mode), and the hands-free loop's nudge
+#: (voice_mode.py: the app's note, not the listener's words).
 #: They arrived in the transcript as listener turns and were read aloud — one
 #: task notification rendered 230KB of somebody spelling out a tool-use id.
 _SYSTEM_BLOCKS = re.compile(
     r"<(task-notification|system-reminder|local-command-caveat|local-command-stdout"
-    r"|command-name|command-message|command-args|bash-input|bash-stdout|bash-stderr)\b.*?</\1>",
+    r"|command-name|command-message|command-args|bash-input|bash-stdout|bash-stderr"
+    r"|voice-nudge)\b.*?</\1>",
     re.DOTALL | re.IGNORECASE)
 _SYSTEM_BANNER = re.compile(
     r"\[SYSTEM NOTIFICATION - NOT USER INPUT\].*?(?=\n\s*\n|\Z)",
@@ -43,7 +45,7 @@ def strip_system_blocks(text: str) -> str:
     out = _SYSTEM_BANNER.sub(" ", _SYSTEM_BLOCKS.sub(" ", text or ""))
     # An unterminated block (the harness truncates long ones) leaves a bare
     # opening tag and everything after it; there is no listener text in that.
-    out = re.split(r"<(?:task-notification|system-reminder|local-command-caveat)\b",
+    out = re.split(r"<(?:task-notification|system-reminder|local-command-caveat|voice-nudge)\b",
                    out, maxsplit=1)[0]
     return tidy_lines(out)
 

@@ -1280,6 +1280,12 @@ def _handle_stop(payload: dict) -> int:
         text = strip_markdown(raw)
     if not text:
         return 0
+    from .. import voice_mode
+
+    if voice_mode.is_quiet(raw) or voice_mode.is_quiet(text):
+        # A hands-free nudge the agent had nothing to ask about: not a word
+        # for anyone (voice_mode.QUIET).
+        return 0
 
     # Detach playback: a long reply's audio can outlast the hook's async timeout
     # / the session exiting, which would cut it off mid-sentence. Hand it to a
