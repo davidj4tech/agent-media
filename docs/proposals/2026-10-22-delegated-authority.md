@@ -58,8 +58,10 @@ A delegated session is a **profile** for a headless session, next to
   so leaving it in would let any member read `~ryer`.
 - The only tools are the ones from the delegated MCP server (below), given
   with a strict MCP config, so the user's other MCP servers are not loaded.
-- Agents that cannot be confined this way (pi, Hermes, a pane Claude with
-  amux's flags) are refused for delegated sessions.
+- Agents that cannot be confined this way (pi, Hermes, OpenClaw, a pane
+  Claude with amux's flags) are refused for delegated sessions. OpenClaw
+  stays an optional add-on, never the engine here:
+  [OpenClaw as an add-on](2026-10-22-openclaw-as-an-add-on.md).
 
 If the agent can run Bash as `ryer`, nothing else in this document matters.
 This is the first thing to build and the first thing to test.
