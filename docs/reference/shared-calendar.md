@@ -88,6 +88,61 @@ overlap with another visit refuses. Unset, the alert offers only `keep` and
 says to change the booking at `/admin/content/bookings`. Not yet run against
 the real site.
 
+### Texts to clients
+
+`booking_sms.py` texts clients from David's own number through the Google
+Messages bridge (David, 22 Oct 2026). It is off unless `calendar.rye.sms.enabled`
+is true. Each ten-minute mirror run compares the feed with what it saw last and
+queues a text for:
+
+- **confirmed**: a booking that appears confirmed, or a pending one that is
+  confirmed.
+- **moved**: the website moved a confirmed booking, or `bookings-decide …
+  apply` put a Google move on the website, by the email's rule (more than 15
+  minutes, or another day). `apply-quiet` sends no text.
+- **cancelled**: a future booking gone from a complete feed, or cancelled
+  through `bookings-decide … cancel`, if the website says `cancelled`. A
+  declined or deleted booking gets no text.
+- **reminder**: once, the day before a confirmed booking, inside
+  `reminder_hours` (default `10:00-18:00` Melbourne). It is skipped when a
+  confirmed or moved text went to that booking the same day. A booking moved
+  to another day can be reminded again.
+
+The first run after the feature arrives records what is already there and
+sends nothing. Changes seen while texts are disabled are recorded too, so
+turning texts on never sends a backlog. Nothing is sent in `quiet_hours`
+(default `21:00-08:00`). A text found then waits in the state file and goes at
+the first run after quiet hours end. A text is dropped once its visit has
+started. Each booking has at most one waiting text: a cancellation replaces
+any other, and a move of an unsent confirmation stays a confirmation, with the
+new time.
+
+Before each send, a read-only PHP script (`booking_calendar._LOOKUP`, through
+`site_command`) returns the booking's status, start and phone. If the status or
+start no longer fits, the text is dropped. The number is kept in memory for
+that one send only: it is never written to `rye-bookings.json` (which holds
+times, first names and what was sent), a log, Google or an alert.
+`calendar.rye.sms.test_to` sends every text to that one number instead, and
+works without `site_command`, with nothing checked. A failed send raises
+`calendar.rye.sms` (booking number and kind, never a number or name). It is
+retried on the next runs and given up after three tries. A failure never stops
+the mirror.
+
+The sender (`GmessagesSender`) calls the bridge's provisioning API
+`POST /_matrix/provision/v3/create_dm/<+61…>?user_id=<owner>` (bearer = its
+`provisioning.shared_secret`, found as `bridges.py` finds it) to get the
+portal room for the number. It joins that room as the owner and sends `m.text`
+with `MATRIX_OWNER_TOKEN`, as the Messages tab does. Each text uses a stable
+transaction id, so a retry does not send it twice. If the process environment
+has no Matrix login, it is read from `calendar.rye.sms.matrix_env` (default
+`~/.config/agent-media/matrix.env`). Other keys: `bridge` (default `gmessages`)
+and `login_id`. Not yet run against the live bridge.
+
+To try it: run `media calendar bookings-sms-test --to <your number> --kind
+confirmed|moved|reminder|cancelled`, which sends one text about a made-up
+booking (Nicole, tomorrow 7:00–8:00pm). Then set `enabled` with `test_to` set
+to your number, and later remove `test_to`.
+
 Availability publication excludes the site's own `rye-booking-<id>` event UIDs:
 Drupal already blocks these from its database, and echoing them back as
 external holds would create conflicts with themselves.

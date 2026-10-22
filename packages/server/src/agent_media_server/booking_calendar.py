@@ -40,7 +40,7 @@ import time
 import urllib.request
 from zoneinfo import ZoneInfo
 
-from . import calendar_write
+from . import booking_sms, calendar_write
 
 UID = re.compile(r"rye-booking-(\d+)@ryeremedial\.com\.au")
 MAX_BYTES = 20 * 1024 * 1024
@@ -50,6 +50,8 @@ TOLD = "calendar.rye.told."
 HEALTH = "calendar.rye.mirror"
 #: How long a "the website won" notice stays up unless acked first.
 TOLD_S = 24 * 3600
+#: The clock (tests set it).
+_clock = time.time
 
 
 # --- the feed -------------------------------------------------------------------
@@ -412,7 +414,7 @@ def sync(*, sync_local: bool = True) -> dict:
     _sync_local(pair)
     old = _local_owned(pair)
     state = _load_state()
-    now = time.time()
+    now = _clock()
     keep = {e["uid"] for e in feed["events"]}
     changed = errors = 0
     try:
@@ -442,6 +444,7 @@ def sync(*, sync_local: bool = True) -> dict:
             if until <= now:
                 state["told"].pop(uid)
                 _notify({"id": TOLD + _number(uid), "level": "ok", "host": "rye-bookings"})
+        texts = _texts(state, now, feed)
     finally:
         _save_state(state)
     skipped = len(feed["held"]) + feed["unknown"]
@@ -458,7 +461,22 @@ def sync(*, sync_local: bool = True) -> dict:
     asked = sum(1 for s in state["bookings"].values() if s.get("pending"))
     return {"ok": True, "bookings": len(feed["events"]), "changed": changed,
             "cancelled": len(feed["cancelled"]), "skipped": skipped, "errors": errors,
-            "waiting": asked}
+            "waiting": asked, "texts": texts}
+
+
+def _texts(state: dict, now: float, feed: dict | None = None) -> dict:
+    """The clients' texts (booking_sms): what changed, then what can go now.
+    Never stops the mirror; a failure is the calendar.rye.sms alert."""
+    try:
+        if feed is not None:
+            booking_sms.detect(state, feed, now)
+        return booking_sms.flush(state, now, site=_site)
+    except Exception:
+        _notify({"id": booking_sms.ALERT, "level": "warn", "host": "rye-bookings",
+                 "title": "Rye booking texts: the check failed",
+                 "detail": "The mirror carried on; nothing was texted this run.",
+                 "fix": "media calendar bookings-sync"})
+        return {"sent": 0, "failed": 1, "waiting": 0}
 
 
 # --- David's answer ------------------------------------------------------------
@@ -504,6 +522,13 @@ try {
 } finally { $lock->release('rye_booking'); }
 """
 
+#: Read only: one booking's status, start and phone, for a text to its client.
+_LOOKUP = r"""
+$in = json_decode(base64_decode('%s'), TRUE);
+$b = \Drupal::database()->select('rye_booking', 'b')->fields('b', ['status', 'start', 'phone'])->condition('id', (int) $in['id'])->execute()->fetchAssoc();
+print json_encode($b ? ['ok' => TRUE, 'status' => $b['status'], 'start' => (int) $b['start'], 'phone' => $b['phone']] : ['ok' => TRUE, 'status' => 'missing']) . "\n";
+"""
+
 _SITE_ERRORS = {
     "busy": "The booking system was busy; nothing was changed. Try again.",
     "changed": "The booking changed on the website meanwhile; nothing was changed there.",
@@ -523,10 +548,10 @@ class DrushSite:
     def __init__(self, command: list[str]):
         self.command = [str(c) for c in command]
 
-    def _run(self, params: dict) -> None:
+    def _run(self, params: dict, script: str = _MOVE) -> dict:
         payload = base64.b64encode(json.dumps(params).encode()).decode()
         try:
-            done = subprocess.run(self.command, input=(_MOVE % payload).encode(),
+            done = subprocess.run(self.command, input=(script % payload).encode(),
                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=90)
             lines = [x for x in done.stdout.decode(errors="replace").splitlines() if x.strip()]
             answer = json.loads(lines[-1]) if lines else {}
@@ -535,6 +560,7 @@ class DrushSite:
         if not isinstance(answer, dict) or answer.get("ok") is not True:
             code = answer.get("error") if isinstance(answer, dict) else None
             raise SiteError(_SITE_ERRORS.get(code, "The website refused the change; nothing was changed"))
+        return answer
 
     def move(self, booking: int, *, was: int, start: int, end: int, email: bool) -> None:
         self._run({"op": "move", "id": booking, "was": was, "start": start, "end": end,
@@ -542,6 +568,16 @@ class DrushSite:
 
     def cancel(self, booking: int, *, was: int) -> None:
         self._run({"op": "cancel", "id": booking, "was": was})
+
+    def lookup(self, booking: int) -> dict:
+        """Read only: the booking's status, start (Unix) and phone, for one
+        text (booking_sms). The phone is never kept, logged or printed here."""
+        try:
+            got = self._run({"id": int(booking)}, _LOOKUP)
+        except SiteError:
+            raise SiteError("The website could not say who to text; nothing was sent") from None
+        return {"status": str(got.get("status") or ""), "start": int(got.get("start") or 0),
+                "phone": str(got.get("phone") or "")}
 
 
 def _site():
@@ -599,11 +635,16 @@ def decide(booking: str, decision: str) -> dict:
                      email=email)
         s["feed"] = s["wrote"] = google
         s.pop("pending", None)
+        booking_sms.applied(state, uid, google, text=email, now=_clock())
     elif decision == "cancel" and pending["kind"] == "deleted":
         _site().cancel(n, was=_epoch(s["feed"][0]))
         state["bookings"].pop(uid, None)
+        booking_sms.cancelled(state, uid, _clock())
     else:
         raise ValueError(f"'{decision}' does not answer this booking (it was {pending['kind']} in Google)")
+    _save_state(state)
+    # The client's text, now if the hour allows (else the next run's).
+    _texts(state, _clock())
     _save_state(state)
     _settle(uid)
     return {"ok": True, "booking": n, "decision": decision,
