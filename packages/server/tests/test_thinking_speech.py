@@ -59,19 +59,21 @@ def settle(env):
 
 
 def test_preference_defaults_off_persists_and_is_idempotent(env):
-    assert T.setting(SID, "t")[1] == {"session": SID, "enabled": False, "supported": True}
+    assert T.setting(SID, "t")[1] == {"session": SID, "enabled": False, "supported": True,
+                                     "own": False, "default": False}
     assert enable()[1]["enabled"] is True
     token = T._PREFS.get(SID)
     assert json.loads(T._PREFS.path().read_text())[SID] == token
     assert enable()[0] and T._PREFS.get(SID) == token
     assert T.setting(SID, "t", body={"enabled": False})[1]["enabled"] is False
-    assert SID not in T._PREFS.all()
+    assert T._PREFS.get(SID) is False
 
 
 def test_validation_auth_and_missing_session(env, monkeypatch):
     assert T.setting("bad", "t")[1]["status"] == 400
-    for value in (None, 1, "true", [], {}):
+    for value in (1, "true", [], {}):
         assert T.setting(SID, "t", body={"enabled": value})[1]["status"] == 400
+    assert T.setting(SID, "t", body={})[1]["status"] == 400
     monkeypatch.setattr(auth, "gate", lambda b: (None, {"status": 403}))
     assert enable()[1]["status"] == 403
     monkeypatch.setattr(auth, "gate", lambda b: ({"id": "u"}, {}))
@@ -201,10 +203,96 @@ def test_http_routes_return_the_documented_envelope(env, monkeypatch):
     handler = SimpleNamespace(path="/session/thinking-speech", rfile=io.BytesIO(body),
                               headers={"Authorization": "Bearer t", "Content-Length": str(len(body))})
     assert app._post(handler, "/session/thinking-speech")
-    assert replies[-1] == (200, {"ok": True, "session": SID, "enabled": True, "supported": True})
+    assert replies[-1] == (200, {"ok": True, "session": SID, "enabled": True, "supported": True,
+                               "own": True, "default": False})
     handler.path += f"?session={SID}"
     assert app._get(handler, "/session/thinking-speech")
     assert replies[-1][1]["enabled"] is True
+
+
+def test_global_default_persists_and_never_replays_existing_thoughts(env):
+    thought(env, "Before default enabled")
+    assert T.default_setting("t")[1] == {"enabled": False}
+    assert T.default_setting("t", body={"enabled": True})[1] == {"enabled": True}
+    token = T._DEFAULT.get("token")
+    T.default_setting("t", body={"enabled": True})
+    assert T._DEFAULT.get("token") == token
+    assert T.setting(SID, "t")[1]["own"] is False
+    assert T.setting(SID, "t")[1]["enabled"] is True
+    settle(env)
+    assert not env.calls
+    thought(env, "After default enabled")
+    settle(env)
+    assert [c[-1] for c in env.calls] == ["After default enabled"]
+    assert env.watcher.allowed(SID, token, "m")
+    T.default_setting("t", body={"enabled": False})
+    assert not env.watcher.allowed(SID, token, "m")
+    T.default_setting("t", body={"enabled": True})
+    assert T._DEFAULT.get("token") != token
+    settle(env)
+    assert len(env.calls) == 1
+
+
+def test_thread_overrides_survive_default_changes_and_can_be_cleared(env):
+    T.setting(SID, "t", body={"enabled": False})
+    T.default_setting("t", body={"enabled": True})
+    assert not T.setting(SID, "t")[1]["enabled"]
+    assert T.setting(SID, "t")[1]["own"]
+    T.setting(SID, "t", body={"enabled": None})
+    assert T.setting(SID, "t")[1]["enabled"]
+    assert not T.setting(SID, "t")[1]["own"]
+    settle(env)
+    enable()
+    T.default_setting("t", body={"enabled": False})
+    assert T.setting(SID, "t")[1]["enabled"]
+    thought(env)
+    settle(env)
+    assert len(env.calls) == 1
+
+
+def test_global_default_discovers_new_headless_threads_and_skips_unsupported(env, monkeypatch):
+    monkeypatch.setattr(sessions, "live_sessions", lambda: {})
+    monkeypatch.setattr(sessions, "session_exists", lambda s: s == SID)
+    records = []
+    monkeypatch.setattr(T.sessiond, "records", lambda: records)
+    T.default_setting("t", body={"enabled": True})
+    env.watcher.tick()
+    assert not env.watcher.cursors
+    records.append({"session": SID, "pid": 123})
+    settle(env)
+    thought(env)
+    settle(env)
+    assert len(env.calls) == 1
+    monkeypatch.setattr(transcript, "transcript_of", lambda s: ("hermes", str(env.path)))
+    assert not T.setting(SID, "t")[1]["enabled"]
+    env.watcher.tick()
+    assert not env.watcher.cursors
+
+
+def test_default_validation_gate_and_failed_save(env, monkeypatch):
+    for body in ({}, {"enabled": None}, {"enabled": 1}, {"enabled": "true"}):
+        assert T.default_setting("t", body=body)[1]["status"] == 400
+    monkeypatch.setattr(auth, "gate", lambda b: (None, {"status": 403}))
+    assert T.default_setting("t")[1]["status"] == 403
+    monkeypatch.setattr(auth, "gate", lambda b: ({"id": "u"}, {}))
+    def fail(*a):
+        raise OSError("No space")
+    monkeypatch.setattr(T._DEFAULT, "put", fail)
+    assert T.default_setting("t", body={"enabled": True})[1]["status"] == 500
+
+
+def test_global_http_route(env, monkeypatch):
+    import io
+    replies = []
+    monkeypatch.setattr(app, "_json", lambda h, status, body: replies.append((status, body)))
+    body = json.dumps({"enabled": True}).encode()
+    handler = SimpleNamespace(path="/speech/thinking", rfile=io.BytesIO(body),
+                              headers={"Authorization": "Bearer t", "Content-Length": str(len(body))})
+    assert app._post(handler, handler.path)
+    assert replies[-1] == (200, {"ok": True, "enabled": True})
+    assert app._get(handler, handler.path)
+    assert replies[-1] == (200, {"ok": True, "enabled": True})
+    assert handler.path in app.CORS_PATHS
 
 
 @pytest.mark.parametrize("harness", ["claude", "codex", "pi"])

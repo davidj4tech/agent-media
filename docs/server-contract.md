@@ -1542,16 +1542,21 @@ Removing the override makes subsequent speech follow its usual target defaults.
 #### `GET|POST /session/thinking-speech` — gated (21 Oct 2026)
 
 A conversation's **Read thinking aloud** switch, separate from its speech
-level, off by default and shared across devices. GET takes `?session=`;
-POST takes `{"session": "<id>", "enabled": true|false}`. Both answer
-`{"ok": true, "session": "<id>", "enabled": false, "supported": true}`.
+level and shared across devices. Conversations follow the server's default
+unless explicitly set. GET takes `?session=`; POST takes
+`{"session": "<id>", "enabled": true|false|null}`; null restores inheritance.
+Both answer `{"ok": true, "session": "<id>", "enabled": false,
+"supported": true, "own": false, "default": false}`. `enabled` is effective;
+`own` marks an explicit choice (including off), and `default` is the server's
+choice. Unsupported agents remain disabled even when the default is on.
 Gated and checked for session existence as `/session/priority`: 400 for a
-bad session or a non-boolean/missing `enabled`, 404 for no session, 409 when
+bad session or an invalid/missing `enabled`, 404 for no session, 409 when
 enabling a harness without a readable reasoning adapter, 500 on save failure.
 `supported` means the harness has an adapter, not that its current model
 necessarily exposes thinking. Empty and redacted reasoning remains silent.
 
-The server keeps enabled sessions in `<state_dir>/thinking-speech.json` and
+The server keeps session overrides in `<state_dir>/thinking-speech.json`
+(an enabled generation token, or false for explicit off) and
 watches independently of app connections. Enabling, restarting the server,
 replacing or truncating a transcript establishes a baseline: old thinking
 is never replayed. New readable reasoning parts are spoken after their
@@ -1566,6 +1571,19 @@ transcript message id) and `thinking_part` (its zero-based part index) on the
 live speech row. It adds no speech-history reply or shelf/feed entry; the
 reasoning stays in its original transcript part. Temporary rendered clips
 are removed after playback.
+
+#### `GET|POST /speech/thinking` — gated (22 Oct 2026)
+
+Settings' **Read thinking aloud by default** applies on this server across
+devices to conversations without an override. Initially off. GET returns
+`{"ok": true, "enabled": false}`; POST requires `{"enabled": true|false}` and
+returns the saved value. Missing or non-boolean values are 400; failed saves
+are 500. The enabled generation token is kept in
+`<state_dir>/thinking-speech-default.json`. The watcher discovers both pane
+and headless conversations, including newly started ones, without an app
+connection. Enabling or re-enabling takes a fresh baseline and never replays
+old reasoning. Disabling cancels inherited playback at the next sentence;
+explicit thread settings still win. All ordinary speech rules still apply.
 
 #### `POST /session/pocket` — gated (28 Sep 2026)
 

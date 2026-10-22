@@ -17,14 +17,44 @@ from agent_media_core import private, sealed, speak_priority
 from agent_media_core.intake import toast
 from agent_media_core.types import Event, Priority, Source
 
-from . import auth, sessions, transcript
+from . import auth, sessiond, sessions, transcript
 from ._jsonmap import JsonMap
 
 log = logging.getLogger(__name__)
 POLL_S = 0.5
 SETTLE_S = 0.5
 _PREFS = JsonMap("thinking-speech.json")
+_DEFAULT = JsonMap("thinking-speech-default.json")
 _HARNESS = frozenset({"claude", "codex", "pi", "gemini", "grok", "opencode"})
+
+
+def _supported(session: str) -> bool:
+    harness, _ = transcript.transcript_of(session)
+    return (harness or sessions.agent_of(session)) in _HARNESS
+
+
+def _token(session: str) -> str | None:
+    own = _PREFS.get(session)
+    if own is False:
+        return None
+    if isinstance(own, str) and own:
+        return own
+    default = _DEFAULT.get("token")
+    return default if default and _supported(session) else None
+
+
+def _preferences() -> dict[str, str]:
+    prefs = _PREFS.all()
+    effective = {s: t for s, t in prefs.items() if isinstance(t, str) and t}
+    default = _DEFAULT.get("token")
+    if default:
+        candidates = set(sessions.live_sessions())
+        # Phone-started conversations have no pane and are absent from live_sessions.
+        candidates.update(r["session"] for r in sessiond.records() if r.get("pid"))
+        for session in candidates:
+            if session not in prefs and _supported(session):
+                effective[session] = default
+    return effective
 
 
 def _read(session: str) -> tuple[tuple, list[dict]]:
@@ -85,7 +115,7 @@ class Watcher:
         self.cursors[session] = Cursor(token, identity, set(_parts(messages)))
 
     def allowed(self, session: str, token: str, message: str) -> bool:
-        if self.stop.is_set() or _PREFS.get(session) != token or not _eligible(session):
+        if self.stop.is_set() or _token(session) != token or not _eligible(session):
             return False
         try:
             _, messages = _read(session)
@@ -114,7 +144,7 @@ class Watcher:
 
     def tick(self) -> None:
         with self.lock:
-            prefs = _PREFS.all()
+            prefs = _preferences()
             self.cursors = {s: c for s, c in self.cursors.items() if s in prefs}
             for session, token in prefs.items():
                 try:
@@ -185,6 +215,25 @@ def start() -> None:
     _WATCHER.start()
 
 
+def default_setting(bearer: str, *, body: dict | None = None) -> tuple[bool, dict]:
+    user, err = auth.gate(bearer)
+    if not user:
+        return False, err
+    if body is not None:
+        enabled = body.get("enabled")
+        if not isinstance(enabled, bool):
+            return False, {"error": "enabled must be true or false", "status": 400}
+        try:
+            with _WATCHER.lock:
+                if enabled and not _DEFAULT.get("token"):
+                    _DEFAULT.put("token", uuid.uuid4().hex)
+                elif not enabled:
+                    _DEFAULT.drop("token")
+        except OSError:
+            return False, {"error": "could not save default thinking speech", "status": 500}
+    return True, {"enabled": bool(_DEFAULT.get("token"))}
+
+
 def setting(session: str, bearer: str, *, body: dict | None = None) -> tuple[bool, dict]:
     session = session.strip()
     if not sessions._SESSION.fullmatch(session):
@@ -195,12 +244,11 @@ def setting(session: str, bearer: str, *, body: dict | None = None) -> tuple[boo
     if not (sessions.live_sessions().get(session) or sessions.session_exists(session)
             or sessions._folder_for_session(session)):
         return False, {"error": "no such session", "status": 404}
-    harness, _ = transcript.transcript_of(session)
-    supported = (harness or sessions.agent_of(session)) in _HARNESS
+    supported = _supported(session)
     if body is not None:
         enabled = body.get("enabled")
-        if not isinstance(enabled, bool):
-            return False, {"error": "enabled must be true or false", "status": 400}
+        if "enabled" not in body or (enabled is not None and not isinstance(enabled, bool)):
+            return False, {"error": "enabled must be true, false or null", "status": 400}
         if enabled and not supported:
             return False, {"error": "this agent has no readable thinking here", "status": 409}
         try:
@@ -209,10 +257,14 @@ def setting(session: str, bearer: str, *, body: dict | None = None) -> tuple[boo
                     token = uuid.uuid4().hex
                     _WATCHER.baseline(session, token)
                     _PREFS.put(session, token)
-                elif not enabled:
+                elif enabled is False:
+                    _PREFS.put(session, False)
+                    _WATCHER.cursors.pop(session, None)
+                elif enabled is None:
                     _PREFS.drop(session)
                     _WATCHER.cursors.pop(session, None)
         except OSError:
             return False, {"error": "could not save thinking speech", "status": 500}
-    return True, {"session": session, "enabled": bool(_PREFS.get(session)),
-                  "supported": supported}
+    return True, {"session": session, "enabled": bool(_token(session)) and supported,
+                  "supported": supported, "own": _PREFS.get(session) is not None,
+                  "default": bool(_DEFAULT.get("token"))}

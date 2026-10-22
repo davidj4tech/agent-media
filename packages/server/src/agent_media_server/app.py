@@ -319,7 +319,7 @@ CORS_PATHS = frozenset({
     "/session/stop", "/session/thinking-speech", "/session/voice",
     "/session/retract", "/session/move", "/session/move/cancel", "/session/settings",
     "/session/ask/part",
-    "/speech/now", "/speech/ctl", "/speech/sentences", "/speech/clip", "/speech/default", "/speech/balance", "/speech/voice",
+    "/speech/now", "/speech/ctl", "/speech/sentences", "/speech/clip", "/speech/default", "/speech/thinking", "/speech/balance", "/speech/voice",
     "/settings/language",
     "/sessions/state", "/commands", "/rename",
     "/harnesses", "/harnesses/run", "/harnesses/screen",
@@ -1662,6 +1662,11 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         ok, detail = thinking_speech.setting(
             (parse_qs(query).get("session") or [""])[0], _bearer(h))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/speech/thinking":
+        from . import thinking_speech
+
+        ok, detail = thinking_speech.default_setting(_bearer(h))
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/speech/default":
         # The level of a thread with none of its own (speak_priority.py).
         ok, detail = pins.speech_default(_bearer(h))
@@ -2663,6 +2668,11 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         body = _read_json(h) or {}
         ok, detail = pins.session_pocket(str(body.get("session") or ""),
                                          body.get("pocketed"), _bearer(h))
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/speech/thinking":
+        from . import thinking_speech
+
+        ok, detail = thinking_speech.default_setting(_bearer(h), body=_read_json(h) or {})
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/speech/default":
         # Settings' Default speech priority: every thread without its own.

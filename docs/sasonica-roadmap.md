@@ -284,6 +284,15 @@ own (`{level: "default"}`, rows' `speech_own`). Next's player section is
 it becomes the account's. agent-media `3f722af` `12bd56e`, android-next
 `006ccce9` `9e63029e`, chat-prototype `fa4aa8e3` `a2b7142b`.
 
+Read thinking aloud has a matching server-wide default in Settings (22 Oct
+2026), shared across devices. Conversations inherit it unless their speech
+card explicitly selects on or off; **Back to the default** clears that choice.
+The watcher includes headless conversations, starts from fresh baselines,
+and continues to follow speech priority and the usual playback rules.
+`GET/POST /speech/thinking` controls the default; null on
+`/session/thinking-speech` restores inheritance. Older enabled overrides stay
+enabled, and a new installation's global default remains off.
+
 Normal is called **When open** in the app (David, 26 Sep 2026): it plays
 while the thread is open, or when you next open it. The level stays
 `normal` on the wire and at the desk. A reply let through because its thread
