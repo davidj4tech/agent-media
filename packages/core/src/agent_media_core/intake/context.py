@@ -457,6 +457,18 @@ def _restart_note(hook: dict, d: Path) -> str:
     return RESTART_NOTE
 
 
+def told_to_end(sid: str, restart_id: str) -> bool:
+    """Whether sessiond session `sid` has been told (`RESTART_NOTE`) to end
+    its turn for the pending restart `restart_id`: sessiond then resumes it
+    after, since its work was cut short (sessiond.py `_drain_cut`)."""
+    if not sid or not restart_id:
+        return False
+    try:
+        return (state_dir() / f"{sid}.restart").read_text().strip() == restart_id
+    except OSError:
+        return False
+
+
 def restart_note_for(hook: dict) -> str:
     """`media-hook-context --restart` (Claude Code's PostToolUse): the
     restart note alone, as the hook JSON."""

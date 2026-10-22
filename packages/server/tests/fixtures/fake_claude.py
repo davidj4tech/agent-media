@@ -17,6 +17,11 @@ is chosen by the user message's words:
                    the turn, and an interrupt lands mid-tool; `background_tasks`
                    for it returns the call at once ("backgrounded")
   crash            exit 3 at once, as a process that died would
+  agent: ID WORDS  start a background agent (task ID, described WORDS) that
+                   runs until the session ends. An interrupt while a turn
+                   runs kills it (`task_updated` killed, `task_notification`
+                   stopped, before the receipt), as 2.1.308 does, unless the
+                   host's `initialize` declared `perTaskStopAffordance`
 
 While `$FAKE_CLAUDE_LIMIT_FILE` exists every turn is refused by the usage
 limit (a rejected `rate_limit_event` with the file's reset, the synthetic
@@ -108,6 +113,11 @@ class Fake:
         self.slow_tool = ""
         self.cancel_queued = False
         self.eof = threading.Event()
+        # `agent:` tasks still running (id → description); whether the
+        # host's `initialize` said an interrupt is to spare them.
+        self.agents: dict[str, str] = {}
+        self.turns = 0
+        self.spare = False
         # `--model` / `--permission-mode`, then whatever set_model and
         # set_permission_mode say; each turn's init reports them.
         argv = sys.argv[1:]
@@ -153,6 +163,13 @@ class Fake:
                                    "response": {"still_queued": [], "cancelled": []}}})
                 return
             self.cancel_queued = bool(req.get("cancel_queued"))
+            if not self.spare:
+                for aid in list(self.agents):
+                    emit({"type": "system", "subtype": "task_updated", "task_id": aid,
+                          "patch": {"status": "killed"}})
+                    emit({"type": "system", "subtype": "task_notification", "task_id": aid,
+                          "tool_use_id": "toolu_" + aid, "status": "stopped",
+                          "summary": self.agents.pop(aid)})
             ids = [m.get("uuid") for m in self.queued]
             if self.cancel_queued:
                 for m in self.queued:
@@ -192,6 +209,10 @@ class Fake:
                   "response": {"subtype": "success", "request_id": rid,
                                "response": {"backgrounded": True}}})
         elif sub == "initialize":
+            self.spare = bool(req.get("perTaskStopAffordance")) or self.spare
+            if os.environ.get("FAKE_CLAUDE_LOG"):
+                with open(os.environ["FAKE_CLAUDE_LOG"] + ".init", "a") as f:
+                    f.write(json.dumps({"request": req, "turns_before": self.turns}) + "\n")
             emit({"type": "control_response",
                   "response": {"subtype": "success", "request_id": rid,
                                "response": {"commands": [], "pid": os.getpid(),
@@ -264,6 +285,7 @@ class Fake:
 
     def turn(self, msg: dict, already_queued: bool = False) -> None:
         self.busy = True
+        self.turns += 1
         self.interrupted.clear()
         try:
             text = self.text_of(msg).strip()
@@ -300,6 +322,14 @@ class Fake:
                 self.tool_turn(text[5:].strip())
             elif text == "ask":
                 self.ask_turn()
+            elif text.startswith("agent:"):
+                aid, _, desc = text[6:].strip().partition(" ")
+                self.agents[aid] = desc
+                emit({"type": "system", "subtype": "task_started", "task_id": aid,
+                      "tool_use_id": "toolu_" + aid, "description": desc,
+                      "task_type": "local_agent", "is_backgrounded": True})
+                self.assistant([{"type": "text", "text": f"launched {aid}"}], stop="end_turn")
+                self.result(f"launched {aid}")
             elif text.startswith("slow:"):
                 self.slow_turn(float(text[5:].strip() or 1), msg)
                 return

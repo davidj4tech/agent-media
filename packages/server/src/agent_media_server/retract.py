@@ -9,7 +9,9 @@ here, the same way:
   `cancel_queued`; a pane's queue is taken back into the composer and
   cleared first, since Escape alone would run it next). Speech gets the
   stop's `after` cutoff: what the interrupted turn says after the press is
-  not worth hearing.
+  not worth hearing. The session's background agents go on: sessiond
+  declares `perTaskStopAffordance`, without which the interrupt would kill
+  them for good (sessiond.py `_initialize`).
 * not working → nothing to stop; the message is only marked.
 
 The message is **marked** (`retracted: true` on it in `/conversation/log` and

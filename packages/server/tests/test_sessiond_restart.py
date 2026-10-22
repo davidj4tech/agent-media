@@ -210,3 +210,79 @@ def test_threads_and_targets_show_the_pending_restart(host):
     rs.clear_pending()
     sessions.add_projects([row])
     assert "restart_pending" not in row
+
+
+# --- a session told to end its turn for the drain (23 Oct 2026) -----------------------
+
+def _told(sid, rid="r1"):
+    from agent_media_core.intake import context
+
+    (context.state_dir() / f"{sid}.restart").write_text(rid)
+
+
+def _drained(host, text="slow: 0.6"):
+    """A session whose turn the pending restart waits on, told to end it (the
+    context hook's marker), and then ending it: idle, but cut short."""
+    sid = start(host, text)
+    wait_for(lambda: state(host, sid) == "working")
+    _pend(waiting_on=[{"session": sid, "kind": "turn", "label": "s", "why": "is working"}])
+    _fresh(host.sup)
+    _told(sid)
+    wait_for(lambda: state(host, sid) == "waiting")
+    return sid
+
+
+def test_a_session_that_ended_its_turn_for_the_drain_is_resumed_after_the_restart(host):
+    sid = _drained(host)
+    cut = sessiond.read_record(sid)["cut_off"]
+    assert cut["why"] == "drain" and cut["due"] and cut["turn"] and cut["restart"] == "r1"
+    assert cut["last_text"] == "slow: 0.6"
+    assert host.sup.deliver_due() == []            # not while the drain holds
+    rs._update_pending(lambda r: {**r, "state": "firing"})
+    sessiond.stop(host.srv)
+    wait_for(lambda: not host.sup.sessions[sid].live)
+    assert sessiond.read_record(sid)["cut_off"]["why"] == "drain"   # the stop kept it
+    sup2 = sessiond.Supervisor()
+    sup2.load()
+    try:
+        cut = sup2.sessions[sid].cut_off
+        assert cut["due"] and cut["restarted"]
+        note = sessiond.resume_note(sup2.sessions[sid], cut)
+        assert note.startswith("[From the session host] You ended your last turn early "
+                               "because a restart of the session host was waiting; it has "
+                               "restarted. Carry on with what you were doing")
+        assert "“slow: 0.6”" in note and "already finished" in note
+        assert sup2.deliver_due() == [sid]
+        wait_for(lambda: _said(sup2, sid).startswith("ok: [From the session host] You ended"))
+        assert sup2.deliver_due() == []            # once
+    finally:
+        sup2.shutdown()
+
+
+def test_a_drained_session_is_resumed_when_the_drain_gives_up_too(host):
+    sid = _drained(host)
+    rs.clear_pending()
+    _fresh(host.sup)
+    assert host.sup.deliver_due() == [sid]
+    wait_for(lambda: "it is over. Carry on" in _said(host.sup, sid))
+    assert sessiond.read_record(sid)["cut_off"] is None
+
+
+def test_a_session_not_told_to_end_its_turn_is_not_resumed(host):
+    sid = start(host, "slow: 0.6")
+    wait_for(lambda: state(host, sid) == "working")
+    _pend(waiting_on=[{"session": sid, "kind": "turn", "label": "s", "why": "is working"}])
+    _fresh(host.sup)
+    _told(sid, rid="an-older-restart")
+    wait_for(lambda: state(host, sid) == "waiting")
+    assert sessiond.read_record(sid)["cut_off"] is None
+
+
+def test_a_drained_session_busy_again_at_the_stop_is_cut_off_mid_turn(host):
+    sid = _drained(host)
+    s = host.sup.sessions[sid]
+    with host.sup.lock:
+        s.set_state("working")                      # a task's result came in
+    host.sup.begin_stop()
+    cut = sessiond.read_record(sid)["cut_off"]
+    assert cut["why"] == "restart" and cut["drained"] and cut["turn"]

@@ -84,7 +84,16 @@ sends them, in order, once none is pending. A stop first notes on each live
 session what it was doing (`begin_stop` → `cut_off`; a crash leaves the
 record saying it), and the next start resumes each session cut off — mid-
 turn, a card up, background work — once, with `resume_note`. Idle ones are
-not woken.
+not woken, except one that ended its turn because the drain told it to
+(23 Oct 2026, `_drain_cut`: the context hook's marker names the restart):
+its work was cut short, so it is resumed too, told to carry on.
+
+**An interrupt spares background agents** (23 Oct 2026). Every Claude spawn
+first sends an `initialize` declaring `perTaskStopAffordance` (`_initialize`):
+without it Claude Code's interrupt (the app's Stop, a retracted message)
+kills every running background agent and marks it stopped by the user,
+which SendMessage cannot resume. Agents an interrupt kills anyway are named
+on the session's next message (`interrupt_killed_note`), to be relaunched.
 
 **The usage limit** (20 Oct 2026). Every Claude session shares one
 subscription; when its usage limit is reached a turn ends on a `result` with
@@ -119,7 +128,8 @@ MEDIA_SESSIOND_MIN_FREE_MB, MEDIA_SESSIOND_BACKGROUND_AFTER, MEDIA_SESSIOND_TASK
 MEDIA_SESSIOND_CLOSE_GRACE, MEDIA_SESSIOND_CLAUDE (the binary; default
 `harnesses.program("claude")`), MEDIA_HEADLESS_MODEL (`--model`),
 MEDIA_HEADLESS_PERMISSIONS (`strict` | `normal`, see permissions.py),
-MEDIA_HEADLESS_EXTRA_ARGS (more `claude` flags; debugging and smoke runs).
+MEDIA_HEADLESS_EXTRA_ARGS (more `claude` flags; debugging and smoke runs),
+MEDIA_SESSIOND_SPARE_AGENTS (`0`: no `perTaskStopAffordance` declaration).
 """
 
 from __future__ import annotations
@@ -416,6 +426,15 @@ class Session:
         #: The task count park_idle last logged holding this session for.
         self.park_held = 0
         self.background_rids: set[str] = set()
+        #: The `initialize` request at spawn (`_initialize`), its answer not ours.
+        self.init_rids: set[str] = set()
+        #: Background agents running when an interrupt went in (`interrupt`):
+        #: task_id → what it is, while the interrupt settles.
+        self.interrupt_watch: dict[str, dict] = {}
+        #: Background agents an interrupt stopped anyway (a CLI that did not
+        #: take `perTaskStopAffordance`): told on the next message
+        #: (`interrupt_killed_note`), then forgotten.
+        self.interrupt_killed: list[dict] = []
         self.background_timer: threading.Timer | None = None
         self.acked: set[str] = set()
         self.responses: dict[str, dict] = {}
@@ -490,7 +509,7 @@ class Session:
                 "turns": self.turns, "seq": self.seq, "last_result": self.last_result,
                 "tasks": self.active_tasks(), "task_list": self.task_list(),
                 "last_text": self.last_text, "held": self.held, "cut_off": self.cut_off,
-                "quota_resumed": self.quota_resumed}
+                "quota_resumed": self.quota_resumed, "interrupt_killed": self.interrupt_killed}
 
     def view(self) -> dict:
         return {**self.record(), "live": self.live}
@@ -519,6 +538,8 @@ class Session:
         s.last_text = str(rec.get("last_text") or "")
         s.held = [m for m in rec.get("held") or [] if isinstance(m, dict) and m.get("text")]
         s.cut_off = rec.get("cut_off") if isinstance(rec.get("cut_off"), dict) else None
+        s.interrupt_killed = [t for t in rec.get("interrupt_killed") or []
+                              if isinstance(t, dict) and t.get("id")]
         try:
             s.quota_resumed = float(rec.get("quota_resumed") or 0)
         except (TypeError, ValueError):
@@ -536,6 +557,12 @@ def _compact(obj: dict) -> dict:
         return {k: v for k, v in obj.items() if k not in _INIT_DROP}
     if obj.get("type") == "user" and "tool_use_result" in obj:
         return {k: v for k, v in obj.items() if k != "tool_use_result"}
+    resp = obj.get("response") if obj.get("type") == "control_response" else None
+    if isinstance(resp, dict) and str(resp.get("request_id") or "").startswith("req_init_"):
+        # The `initialize` answer (`_initialize`): every command, agent and
+        # model the CLI has, tens of kB on each spawn. Only that it came.
+        return {**obj, "response": {k: resp.get(k) for k in ("subtype", "request_id", "error")
+                                    if k in resp}}
     return obj
 
 
@@ -596,6 +623,35 @@ def _judge_cut_off(s: "Session", stopped_at: float | None) -> dict | None:
     return None
 
 
+def _subagents_where(session: str) -> str:
+    """` Their transcripts are in DIR.`, or "" when it is not known."""
+    try:
+        from . import agents
+
+        d = agents.subagents_dir(session)
+        return f" Their transcripts are in {d}." if d is not None else ""
+    except Exception:  # noqa: BLE001 — a path is a nicety
+        return ""
+
+
+def interrupt_killed_note(s: "Session", killed: list[dict]) -> str:
+    """What a session is told, before its next message, when stopping a turn
+    also stopped its background agents. Claude Code marks such an agent
+    stopped by the user, and SendMessage to it is then refused ("was stopped
+    by the user and won't be resumed"), so they are to be relaunched from
+    their saved work, not continued."""
+    rows = "; ".join(f"\u201c{t.get('description') or 'an agent'}\u201d \u2192 {t['id']}"
+                     for t in killed if t.get("id"))
+    one = len(killed) == 1
+    return ("[From the session host] Stopping your last turn also stopped "
+            + ("this background agent" if one else "these background agents")
+            + " part-way, and Claude Code won't let " + ("it" if one else "them")
+            + " be continued with SendMessage: " + rows + "." + _subagents_where(s.id)
+            + " If the work is still needed, launch a new agent for each, telling it to "
+            "pick up from what was already done (its worktree or branch, and its "
+            "transcript) rather than start over, and tell David you did.")
+
+
 def resume_note(s: "Session", cut: dict) -> str:
     """The message a session cut off by a restart is resumed with: what was
     running, and what to do about it."""
@@ -632,18 +688,23 @@ def resume_note(s: "Session", cut: dict) -> str:
         n = int(cut["queued"])
         what.append(f"{n} message{'s' if n != 1 else ''} sent to you mid-turn that may "
                     "not have reached you (check the thread's last messages)")
-    note = (tag + "The session host restarted while you were working: "
-            + "; ".join(what or ["work in progress"]) + ". Pick up where you left off.")
+    if cut.get("why") == "drain":
+        # Told to end its turn early for a drain (intake/context.py's
+        # RESTART_NOTE): its work is not done, whatever its last reply said.
+        last = " ".join(str(cut.get("last_text") or "").split())
+        if len(last) > 160:
+            last = last[:159] + "\u2026"
+        note = (tag + "You ended your last turn early because a restart of the session "
+                "host was waiting" + ("; it has restarted" if cut.get("restarted") else
+                                      "; it is over") + ". Carry on with what you were "
+                "doing" + (f" (the last message in was: \u201c{last}\u201d)" if last else "")
+                + ", from the step you stopped at. If that work was already finished, "
+                "say so in one sentence and stop.")
+    else:
+        note = (tag + "The session host restarted while you were working: "
+                + "; ".join(what or ["work in progress"]) + ". Pick up where you left off.")
     if agents_cut:
-        where = ""
-        try:
-            from . import agents
-
-            d = agents.subagents_dir(s.id)
-            if d is not None:
-                where = f" Their transcripts are in {d}."
-        except Exception:  # noqa: BLE001 — a path is a nicety
-            where = ""
+        where = _subagents_where(s.id)
         note += (" These background agents were stopped part-way; continue each with "
                  "SendMessage to its id (it resumes from its own transcript — don't start "
                  "a new one), then tell David you did: "
@@ -905,6 +966,8 @@ class Supervisor:
                                          "why": "crash"}
                     s.set_state("ended")
                 s.cut_off = _judge_cut_off(s, stopped_at)
+                if (s.cut_off or {}).get("why") == "drain":
+                    s.cut_off["restarted"] = True
                 try:
                     self._backfill_quota(s)
                 except Exception:  # noqa: BLE001 — an odd events file must not stop the load
@@ -977,10 +1040,17 @@ class Supervisor:
             first = not self.stopping
             self.stopping = True
             for s in self.sessions.values():
-                if s.agent in ("claude", "antigravity", "opencode") and s.live and s.cut_off is None:
+                if s.agent not in ("claude", "antigravity", "opencode") or not s.live:
+                    continue
+                drained = (s.cut_off or {}).get("why") == "drain"
+                if s.cut_off is None or drained:
                     w = s.work()
                     if w:
+                        # Busy again since it ended its turn for the drain:
+                        # cut off mid-turn, which the restart's note covers.
                         s.cut_off = {**w, "at": round(now, 3), "why": "restart"}
+                        if drained:
+                            s.cut_off["drained"] = True
                         self._save(s)
         if first:
             try:
@@ -988,6 +1058,33 @@ class Supervisor:
                                                        "pid": os.getpid()})
             except OSError as e:
                 log.warning("sessiond: could not write the stop mark (%s)", e)
+
+    def _drain_cut(self, s: Session, now: float) -> None:
+        """Under the lock, as a turn ends: a session that a drained restart
+        told to end its turn (intake/context.py's RESTART_NOTE, which leaves
+        a marker naming the restart) has stopped part-way, though it is now
+        idle and `begin_stop` would let it sleep. Its cut-off (why "drain",
+        due at once) has `resume_note` pick it up after the restart — or
+        after the drain gives up — with what it was doing."""
+        if s.agent != "claude" or (s.cut_off or {}).get("why") in ("quota", "drain"):
+            return
+        rec = self.draining()
+        if not rec:
+            return
+        try:
+            from agent_media_core.intake import context
+
+            told = context.told_to_end(s.id, str(rec.get("id") or ""))
+        except Exception:  # noqa: BLE001 — a missing marker is "not told"
+            told = False
+        if not told:
+            return
+        s.cut_off = {"state": s.state, "turn": True, "question": False,
+                     "tasks": s.task_list(now), "queued": len(s.queued),
+                     "last_text": s.last_text, "at": round(now, 3), "why": "drain",
+                     "restart": str(rec.get("id") or ""), "due": True}
+        log.info("sessiond: %s ended its turn for the pending restart; it will be "
+                 "resumed after", s.id[:8])
 
     def _take_stop_mark(self) -> float | None:
         """When the previous instance began stopping, once; None after a crash."""
@@ -1097,7 +1194,8 @@ class Supervisor:
                     s.quota_resumed = float(cut.get("at") or time.time())
                 self._save(s)
         if text:
-            why = "the usage limit" if cut.get("why") == "quota" else "the restart"
+            why = {"quota": "the usage limit", "drain": "the drain"}.get(
+                str(cut.get("why")), "the restart")
             try:
                 self.send(sid, text, _internal=True)
                 log.info("sessiond: %s resumed after %s", sid[:8], why)
@@ -1137,6 +1235,16 @@ class Supervisor:
         so the resume can say its result came while it was stopped."""
         if not key or s.agent != "claude":
             return
+        if key in s.interrupt_watch and status in ("killed", "stopped") \
+                and all(t.get("id") != key for t in s.interrupt_killed):
+            # An interrupt this host sent ended it: Claude Code calls that a
+            # user stop, and will not resume it (`interrupt_killed_note`).
+            info = s.interrupt_watch[key]
+            s.interrupt_killed.append({"id": key, "type": "local_agent",
+                                       "description": str(info.get("description") or "")[:200]})
+            log.warning("sessiond: %s: background agent %s stopped by an interrupt",
+                        s.id[:8], key)
+            self._save(s)
         cut = s.cut_off if (s.cut_off or {}).get("why") == "quota" else None
         info = dict(s.task_info.get(key) or {})
         if not info.get("type"):
@@ -1520,9 +1628,11 @@ class Supervisor:
         s.acked.clear()
         s.tasks.clear()
         s.task_info.clear()
-        if (s.cut_off or {}).get("why") != "quota":
+        s.interrupt_watch.clear()
+        if (s.cut_off or {}).get("why") not in ("quota", "drain"):
             # A usage limit's cut-off waits for its reset, however the
-            # session is woken meanwhile (the app opening the thread).
+            # session is woken meanwhile (the app opening the thread); a
+            # drain's for the restart (`deliver_due`).
             s.cut_off = None
         s.park_held = 0
         s.set_state("starting")
@@ -1534,11 +1644,34 @@ class Supervisor:
                          name=f"sessiond-err-{s.id[:8]}").start()
         log.info("sessiond: %s %s pid %d in %s", "resumed" if resume else "started",
                  s.id[:8], proc.pid, s.cwd)
+        if s.agent == "claude":
+            self._initialize(s)
         if s.agent == "antigravity":
             ready = self.cond.wait_for(lambda: s.agy_ready or not s.live, 20.0)
             if not ready or not s.agy_ready:
                 self._terminate(proc)
                 raise Refused("Antigravity did not become ready: " + "\n".join(s.stderr_tail)[-500:], "spawn_failed")
+
+    def _initialize(self, s: Session) -> None:
+        """The `initialize` control request, before any message: it declares
+        `perTaskStopAffordance` — this host stops one background agent at a
+        time (`stop_task`, the app's agents strip) — so that an interrupt
+        (the app's Stop, a retracted message) ends only the turn. Without it
+        the CLI's interrupt kills every running background agent and marks
+        each stopped by the user, which SendMessage can never resume
+        (measured 23 Oct 2026, 2.1.308: an agent running when an interrupt
+        went in was `killed` without the flag and completed with it). Not
+        waited for: a CLI that does not know the field ignores it."""
+        if os.environ.get("MEDIA_SESSIOND_SPARE_AGENTS", "1").strip() in ("0", "false", "no"):
+            return
+        rid = "req_init_" + uuid.uuid4().hex[:8]
+        s.init_rids.add(rid)
+        try:
+            self._write(s, {"type": "control_request", "request_id": rid,
+                            "request": {"subtype": "initialize",
+                                        "perTaskStopAffordance": True}})
+        except Refused:
+            s.init_rids.discard(rid)
 
     def _read_err(self, s: Session, proc: subprocess.Popen) -> None:
         for line in proc.stderr:
@@ -1678,7 +1811,12 @@ class Supervisor:
             elif t == "control_response":
                 resp = obj.get("response") or {}
                 rid = str(resp.get("request_id") or "")
-                if rid in s.background_rids:
+                if rid in s.init_rids:
+                    s.init_rids.discard(rid)
+                    if resp.get("subtype") == "error":
+                        log.warning("sessiond: %s initialize refused: %s",
+                                    s.id[:8], resp.get("error"))
+                elif rid in s.background_rids:
                     s.background_rids.discard(rid)
                     if resp.get("subtype") == "error":
                         log.warning("sessiond: %s background_tasks refused: %s",
@@ -1705,6 +1843,7 @@ class Supervisor:
                     self._quota_cut(s, obj, now)
                 s.last_result = _result_summary(obj)
                 s.set_state("approval" if s.pending else "waiting")
+                self._drain_cut(s, now)
                 if s.turns == 1 and not s.auto_titled and not obj.get("is_error"):
                     s.auto_titled = True
                     threading.Thread(target=self._auto_title, args=(s,), daemon=True,
@@ -2022,10 +2161,14 @@ class Supervisor:
                 s.queued = set(s.agy_queue[1:])
                 s.acked.add(uid)
                 s.set_state("working")
+            said = text
+            if s.interrupt_killed and s.agent == "claude":
+                said = interrupt_killed_note(s, s.interrupt_killed) + "\n\n" + text
             self._write(s, {"type": "user", "session_id": "", "uuid": uid,
                             "message": {"role": "user",
-                                        "content": [{"type": "text", "text": text}]},
+                                        "content": [{"type": "text", "text": said}]},
                             "parent_tool_use_id": None})
+            s.interrupt_killed = []
             s.turns += 1
             if not s.first_text:
                 s.first_text = " ".join(text.split())[:200]
@@ -2248,11 +2391,16 @@ class Supervisor:
             req: dict = {"subtype": "interrupt"}
             if cancel_queued:
                 req["cancel_queued"] = True
-            self._write(s, {"type": "control_request", "request_id": rid, "request": req})
-            self.cond.wait_for(lambda: rid in s.responses or not s.live, RECEIPT_S)
-            receipt = (s.responses.pop(rid, None) or {}).get("response")
-            self.cond.wait_for(lambda: s.state not in ("working", "starting") or not s.live,
-                               SETTLE_S)
+            s.interrupt_watch = {k: dict(s.task_info.get(k) or {}) for k in s.tasks
+                                 if (s.task_info.get(k) or {}).get("type") == "local_agent"}
+            try:
+                self._write(s, {"type": "control_request", "request_id": rid, "request": req})
+                self.cond.wait_for(lambda: rid in s.responses or not s.live, RECEIPT_S)
+                receipt = (s.responses.pop(rid, None) or {}).get("response")
+                self.cond.wait_for(lambda: s.state not in ("working", "starting")
+                                   or not s.live, SETTLE_S)
+            finally:
+                s.interrupt_watch = {}
             return {"session": session, "interrupted": True, "why": None,
                     "receipt": receipt, **self._brief(s)}
 

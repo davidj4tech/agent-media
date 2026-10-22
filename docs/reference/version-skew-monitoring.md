@@ -351,9 +351,39 @@ media restart-services [--only NAME …] [--after SECONDS] [--force] [--dry-run]
   records still say it. At start it resumes each session that was cut off
   mid-turn, with a card up, or with background work, once, with a message
   from `[From the session host]` naming what was running and saying to pick
-  up where it left off and restart any background agent or command it
-  still needs (subagent transcripts' folder named). Idle sessions are not
-  woken. Held messages are delivered after.
+  up where it left off: each background agent by name and id, to be
+  continued with SendMessage to its id (it resumes from its own transcript;
+  their folder is named), and each background command to re-run if still
+  needed. Idle sessions are not woken. Held messages are delivered after.
+- **A session that ended its turn for the drain** (23 Oct 2026) is idle
+  when the stop comes, but its work was cut short. When the context hook
+  tells a session to end its turn it leaves a marker naming the pending
+  restart (`<state>/context/<session>.restart`). If that session's turn
+  ends while the same restart is pending, sessiond records it as cut off
+  (`cut_off.why: "drain"`, due at once). After the restart, or once the
+  drain gives up, it is resumed with a note: it ended its last turn early
+  for a restart, the last message in, carry on from the step it stopped at
+  (or say in one sentence that the work was done). A session that is busy
+  again when the stop comes is recorded as cut off mid-turn instead
+  (`drained: true`). Only headless (sessiond) sessions are drained: a tmux
+  pane's session is not a sessiond child, is not told to end its turn and
+  is not stopped by the restart, so it carries on by itself.
+- **Background agents survive an interrupt** (23 Oct 2026). Claude Code
+  kills every running background agent when its turn is interrupted, unless
+  the host has declared `perTaskStopAffordance` in an `initialize` control
+  request. It also marks each one stopped by the user, so a later
+  SendMessage to it is refused ("was stopped by the user and won't be
+  resumed"). A retracted message (the app's Cancel or Edit) interrupts the
+  turn, so on 22 Oct 2026 it took two agents of session d6e3028e with it,
+  and the next resume could not continue them. sessiond now sends that
+  `initialize` at every spawn (`_initialize`; the app's agents strip stops
+  one agent at a time with `stop_task`, which the flag promises), so a Stop
+  or a retraction ends only the turn. Measured on 2.1.308: without the
+  flag an agent running at the interrupt was `killed`; with it the agent
+  ran to completion. If a CLI kills them anyway, the next message to the
+  session first names them and says to relaunch each from its worktree or
+  branch and transcript, since they cannot be continued.
+  `MEDIA_SESSIOND_SPARE_AGENTS=0` turns the declaration off.
 - **Health check:** every restarted service must be up within 20 s
   (`MEDIA_RESTART_HEALTH_S`), and a canvas must also answer HTTP. A timer's
   job is not checked. A failure raises the host alert
