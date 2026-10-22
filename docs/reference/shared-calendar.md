@@ -85,8 +85,11 @@ takes the `rye_booking` lock and changes the row only if it still starts
 when the mirror last saw it and is confirmed or pending; a resize re-prices
 it from the service's price list and refuses a length with no price; an
 overlap with another visit refuses. Unset, the alert offers only `keep` and
-says to change the booking at `/admin/content/bookings`. Not yet run against
-the real site.
+says to change the booking at `/admin/content/bookings`. Tested against the
+real site on 22 Oct 2026 with the Test One booking: a move went through, a
+move onto another visit and one from a stale start were refused, and Google
+followed on the next mirror run. An update to Google carries a SEQUENCE one
+above Google's own, which Google requires (it answers 409 otherwise).
 
 ### Texts to clients
 

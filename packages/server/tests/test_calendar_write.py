@@ -49,6 +49,22 @@ def test_conditional_create_readback_and_duplicate(monkeypatch):
         writer.write(event(title="Changed"), etag='"stale"')
 
 
+def test_update_carries_a_sequence_above_googles(monkeypatch):
+    _, old = writer._body(event())
+    old = old.replace(b"END:VEVENT", b"SEQUENCE:3\r\nEND:VEVENT")
+    sent = []
+    monkeypatch.setattr(writer, "_connection", lambda *_: ("test", "https://test/", "private"))
+    def request(url, auth, method="GET", body=None, headers=None):
+        if method == "PUT":
+            sent.append(body)
+            return 204, b"", '"2"'
+        return 200, (sent[-1] if sent else old), '"2"' if sent else '"1"'
+    monkeypatch.setattr(writer, "_request", request)
+    writer.write(event(start="2026-10-27T10:15:00+11:00", end="2026-10-27T14:15:00+11:00"),
+                 etag='"1"', sync=False)
+    assert Calendar.from_ical(sent[0]).walk("VEVENT")[0]["SEQUENCE"] == 4
+
+
 def test_unmanaged_event_not_modified(monkeypatch):
     _, data = writer._body(event())
     data = data.replace(b"X-SASONICA-MANAGED:1\r\n", b"")

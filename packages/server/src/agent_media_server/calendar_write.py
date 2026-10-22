@@ -198,6 +198,14 @@ def write(event: dict, calendar: str = "", etag: str = "", delete: bool = False,
                     "message": "Event already exists; supply its ETag to update"}
         if etag != current:
             raise CalendarWriteError("Calendar event changed; read it again before editing")
+        if not delete:
+            # Google answers 409 to an update whose SEQUENCE is below its own
+            # (it bumps it on a move there), so an update carries one more.
+            proposed = Calendar.from_ical(body)
+            vevent = proposed.walk("VEVENT")[0]
+            vevent.pop("SEQUENCE", None)
+            vevent.add("SEQUENCE", int(events[0].get("SEQUENCE", 0)) + 1)
+            body = proposed.to_ical()
     elif etag or delete:
         raise CalendarWriteError("Calendar event no longer exists")
     headers = {"If-Match": etag} if etag else {"If-None-Match": "*"}
