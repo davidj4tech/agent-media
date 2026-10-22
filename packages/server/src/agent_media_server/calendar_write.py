@@ -113,8 +113,13 @@ def _body(event: dict) -> tuple[str, bytes]:
     for key in ("description", "location"):
         if event.get(key):
             ev.add(key, str(event[key]))
+    if event.get("status"):
+        status = str(event["status"]).upper()
+        if status not in ("CONFIRMED", "TENTATIVE"):
+            raise ValueError("Invalid event status")
+        ev.add("status", status)
     if event.get("source"):
-        if event["source"] not in ("marlo", "phs-shift", "phs-treatment"):
+        if event["source"] not in ("marlo", "phs-shift", "phs-treatment", "rye-booking"):
             raise ValueError("Unknown managed shift source")
         ev.add("x-sasonica-source", event["source"])
     if event.get("rrule"):

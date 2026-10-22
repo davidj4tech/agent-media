@@ -21,6 +21,21 @@ existing MCP client to discover it. Harnesses without MCP use the CLI.
 The unauthenticated legacy HTTP MCP transport excludes this private tool.
 Configured feed URLs and filesystem paths are never returned in the response.
 
+Rye Remedial bookings are mirrored from the website's private ICS feed into
+the `ryeremedial@gmail.com` primary Google calendar. `calendar.rye.write_pair`
+names `cal_ryeremedial`; `calendar.rye.feed_url` stays in owner-only host config.
+`media calendar bookings-sync` verifies remote writes, preserves stable booking
+UIDs and pending/confirmed status, updates changed visits, and removes only
+its own future bookings absent from a complete fresh feed. Failed source reads
+leave Google entries intact. Client contact details and treatment notes are not
+copied. The existing ten-minute availability publication runs this mirror first,
+then syncs Google's copies locally. There is no separate direct-feed source in
+Sasonica, so bookings appear once. CLI jobs load the changed Python modules on
+each run; no shared service restart or app update is required.
+Availability publication excludes the site's own `rye-booking-<id>` event UIDs:
+Drupal already blocks these from its database, and echoing them back as
+external holds would create conflicts with themselves.
+
 Calendar writes use the host's existing CalDAV connection and the configured
 `calendar.write_pair` in agent-media's config. `media calendar put --event
 FILE.json` creates an event; repeat a stable UID to retrieve its current ETag.

@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 from pathlib import Path
+import re
 import subprocess
 import time
 import urllib.request
@@ -23,6 +24,10 @@ def snapshot(result: dict, now: int | None = None) -> dict:
     hi = int(dt.datetime.combine(last + dt.timedelta(days=1), dt.time(), zone).timestamp())
     busy, after = [], {}
     for event in result["events"]:
+        # The destination already blocks its own bookings from its database.
+        # Echoing their feed back as external busy time creates self-conflicts.
+        if re.fullmatch(r"rye-booking-\d+@ryeremedial\.com\.au", str(event.get("uid", ""))):
+            continue
         start = dt.datetime.fromisoformat(event["start_at"]).astimezone(zone)
         end = dt.datetime.fromisoformat(event["end_at"]).astimezone(zone)
         if end <= start:
@@ -50,6 +55,10 @@ def publish(path: str) -> dict:
     endpoint = config["endpoint"]
     if not endpoint.startswith("https://"):
         raise ValueError("Availability publishing requires HTTPS")
+    from agent_media_core import config as media_config
+    if media_config.load().get("calendar", {}).get("rye", {}).get("write_pair"):
+        from . import booking_calendar
+        booking_calendar.sync(sync_local=False)
     # A fresh remote sync must succeed before the site receives new data.
     done = subprocess.run(["vdirsyncer", "sync"], stdout=subprocess.DEVNULL,
                           stderr=subprocess.DEVNULL, timeout=180)
