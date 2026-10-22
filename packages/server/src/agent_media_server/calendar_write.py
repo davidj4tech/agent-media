@@ -144,7 +144,25 @@ def inspect_event(uid: str, calendar: str = "") -> dict:
     events = Calendar.from_ical(body).walk("VEVENT")
     if len(events) != 1 or str(events[0].get("UID")) != uid or str(events[0].get("X-SASONICA-MANAGED")) != "1":
         raise CalendarWriteError("Refusing to inspect an event not managed by Sasonica")
-    return {"uid": uid, "exists": True, "etag": etag}
+    return {"uid": uid, "exists": True, "etag": etag, **_span(events[0])}
+
+
+def _span(ev) -> dict:
+    """The event's start and end as the calendar holds them now (ISO; a date
+    for an all-day event), for telling an edit in Google from our own write."""
+    def iso(value):
+        return value.isoformat() if isinstance(value, (dt.date, dt.datetime)) else ""
+    try:
+        start = ev.decoded("DTSTART")
+        if ev.get("DTEND") is not None:
+            end = ev.decoded("DTEND")
+        elif ev.get("DURATION") is not None:
+            end = start + ev.decoded("DURATION")
+        else:
+            end = None
+    except Exception:
+        return {"start": "", "end": ""}
+    return {"start": iso(start), "end": iso(end)}
 
 
 def write(event: dict, calendar: str = "", etag: str = "", delete: bool = False, *, sync: bool = True) -> dict:

@@ -8682,6 +8682,13 @@ def cmd_calendar(a) -> int:
             if adapter is None:
                 return 1
             result = adapter.sync()
+        elif a.action == "bookings-decide":
+            adapter = _server_module("booking_calendar")
+            if adapter is None:
+                return 1
+            if not a.booking or a.decision not in ("apply", "cancel", "keep"):
+                raise ValueError("--booking N and --decision apply|cancel|keep required")
+            result = adapter.decide(a.booking, a.decision)
         elif a.action == "roster-sync":
             adapter = _server_module("roster_calendar")
             if adapter is None:
@@ -9716,7 +9723,10 @@ def _build_parser() -> argparse.ArgumentParser:
     st.set_defaults(func=cmd_speech_target)
 
     calendar = sub.add_parser("calendar", help="read the owner's shared calendars (JSON)")
-    calendar.add_argument("action", nargs="?", choices=("events", "put", "delete", "publish", "treatments-sync", "roster-sync", "bookings-sync"), default="events")
+    calendar.add_argument("action", nargs="?", choices=("events", "put", "delete", "publish", "treatments-sync", "roster-sync", "bookings-sync", "bookings-decide"), default="events")
+    calendar.add_argument("--booking", default="", help="bookings-decide: the Rye booking number waiting on you")
+    calendar.add_argument("--decision", default="", help="bookings-decide: apply (Google's move onto the website), "
+                                                         "cancel (Google's delete onto the website) or keep (the website's back in Google)")
     calendar.add_argument("--publish-config", default="", help="private HTTPS publishing configuration")
     calendar.add_argument("--event", default="", help="event JSON file, or - for stdin (writes)")
     calendar.add_argument("--calendar", default="", help="vdirsyncer pair (default configured write_pair)")

@@ -241,6 +241,22 @@ def test_list_and_ack_take_the_app_gate(server, signed_in, monkeypatch):
     assert res.status == 404
 
 
+def test_an_alert_action_takes_the_gate_and_runs_its_handler(server, signed_in, monkeypatch):
+    from agent_media_server import booking_calendar
+
+    monkeypatch.setattr(booking_calendar, "alert_action",
+                        lambda aid, action: (True, {"booking": 18, "decision": action}))
+    alerts.report({"id": "calendar.rye.booking.18", "level": "warn", "title": "moved",
+                   "actions": [{"id": "apply", "label": "Change the website"}]})
+    res, d = call(server, "GET", "/alerts?open=1", headers=AUTH)
+    assert d["alerts"][0]["actions"] == [{"id": "apply", "label": "Change the website"}]
+    body = {"id": "calendar.rye.booking.18", "action": "apply"}
+    res, d = call(server, "POST", "/alerts/action", body, AUTH)
+    assert res.status == 200 and d["decision"] == "apply"
+    res, d = call(server, "POST", "/alerts/action", {**body, "action": "nope"}, AUTH)
+    assert res.status == 409
+
+
 def test_every_digest_is_kept_to_browse_and_read(monkeypatch):
     monkeypatch.setattr(alerts, "_render_held", lambda *a: None)
     body = "## Worth stealing\n\n" + "x" * 10000

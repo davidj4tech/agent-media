@@ -44,11 +44,20 @@ notifies is also a **notice** (`notices`): `alert_log`'s rowid is the cursor,
 and `/sessions/events?alerts=<n>` streams the ones after it as `alerts`
 frames, which Sasonica posts as phone notifications — the way an alert still
 reaches a phone whose ringer holds its speech (David, 27 Sep 2026).
+
+**Actions** (22 Oct 2026). A status alert may carry `actions`, up to three
+`{"id", "label"}` buttons, when its producer can act on the answer itself —
+the Rye booking mirror's "Change the website" / "Keep the website's time".
+`POST /alerts/action {"id", "action"}` (`act`) runs the handler registered for
+the alert id's prefix (`ACTION_HANDLERS`), which settles the alert. A clear
+drops them; an id with no handler is refused.
 """
 
 from __future__ import annotations
 
 import hashlib
+import importlib
+import json
 import os
 import re
 import shutil
@@ -81,6 +90,15 @@ DIGEST_KEEP_S = 365 * 86400
 DIGEST_KEEP_FOREVER = ("digest.landscape",)
 
 _LOCK = threading.Lock()
+
+ACTION_ID_RE = re.compile(r"[a-z][a-z0-9-]{0,31}")
+ACTION_MAX = 3
+ACTION_LABEL_MAX = 40
+#: The alert-id prefixes whose actions this host can run, and what runs them:
+#: `module:function(alert_id, action) -> (ok, detail)`.
+ACTION_HANDLERS = {
+    "calendar.rye.booking.": "agent_media_server.booking_calendar:alert_action",
+}
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS alerts (
@@ -140,6 +158,9 @@ def _connect() -> sqlite3.Connection:
     if "speech_key" not in cols:
         # Added 25 Sep 2026: the held read-out of a digest (`spoken`).
         con.execute("ALTER TABLE alerts ADD COLUMN speech_key TEXT")
+    if "actions" not in cols:
+        # Added 22 Oct 2026: buttons a producer answers itself (`act`).
+        con.execute("ALTER TABLE alerts ADD COLUMN actions TEXT")
     if con.execute("SELECT 1 FROM digest_log LIMIT 1").fetchone() is None:
         # digest_log is 25 Sep 2026's: seed it with the digests kept before.
         with con:
@@ -162,13 +183,33 @@ def _int(v, lo: int, hi: int, default: int | None) -> int | None:
     return max(lo, min(hi, n))
 
 
+def _actions(raw) -> list[dict]:
+    """A report's `actions`, kept to what is well formed (≤ ACTION_MAX)."""
+    out = []
+    for a in raw if isinstance(raw, list) else []:
+        if not isinstance(a, dict):
+            continue
+        aid, label = str(a.get("id") or ""), str(a.get("label") or "").strip()
+        if ACTION_ID_RE.fullmatch(aid) and label and aid not in {x["id"] for x in out}:
+            out.append({"id": aid, "label": label[:ACTION_LABEL_MAX]})
+    return out[:ACTION_MAX]
+
+
+def _row_actions(r: dict) -> list[dict]:
+    try:
+        return _actions(json.loads(r.get("actions") or "[]"))
+    except (TypeError, ValueError):
+        return []
+
+
 def _public(row: sqlite3.Row | dict) -> dict:
     r = dict(row)
+    open_ = r.get("kind") == "status" and RANK.get(r.get("level"), 0) >= WARN
     return {k: r.get(k) for k in ("id", "kind", "level", "peak", "step", "title", "detail",
                                   "fix", "host", "every_s", "first_seen", "last_seen",
                                   "changed_at", "cleared_at", "acked_at")} | {
-        "open": r.get("kind") == "status" and RANK.get(r.get("level"), 0) >= WARN,
-        "speech": _speech(r.get("speech_key"))}
+        "open": open_, "speech": _speech(r.get("speech_key")),
+        "actions": _row_actions(r) if open_ else []}
 
 
 def _speech(key: str | None) -> dict | None:
@@ -259,6 +300,12 @@ def report(body: dict, *, now: float | None = None) -> tuple[bool, dict]:
                         "INSERT INTO digest_log (at, id, level, title, detail, speech_key, view)"
                         " VALUES (?,?,?,?,?,?,?)",
                         (now, aid, level, row["title"], row["detail"], key, view)).lastrowid
+                if kind == "status":
+                    # A producer's buttons are its latest word, like the title;
+                    # below warn there is nothing to answer.
+                    acts = _actions(body.get("actions")) if RANK[row["level"]] >= WARN else []
+                    row["actions"] = json.dumps(acts) if acts else None
+                    con.execute("UPDATE alerts SET actions=? WHERE id=?", (row["actions"], aid))
                 silent = _sweep(con, now)
         finally:
             con.close()
@@ -557,6 +604,35 @@ def ack(aid: str, *, now: float | None = None) -> tuple[bool, dict]:
         finally:
             con.close()
     return True, {"alert": _public(row)}
+
+
+def act(aid: str, action: str) -> tuple[bool, dict]:
+    """Run one of an open alert's `actions` (POST /alerts/action). The handler
+    registered for the id's prefix does the work and settles the alert; its
+    answer is passed on. 404 unknown, 409 not open or not one of its actions,
+    501 no handler here, 502 the handler failed (its message, no traceback)."""
+    with _LOCK:
+        con = _connect()
+        try:
+            row = con.execute("SELECT * FROM alerts WHERE id=?", (aid,)).fetchone()
+        finally:
+            con.close()
+    if row is None:
+        return False, {"error": "no such alert", "status": 404}
+    pub = _public(row)
+    if not pub["open"] or action not in {a["id"] for a in pub["actions"]}:
+        return False, {"error": "not an action this alert offers now", "status": 409}
+    target = next((v for k, v in ACTION_HANDLERS.items() if aid.startswith(k)), None)
+    if target is None:
+        return False, {"error": "no handler for this alert here", "status": 501}
+    mod, _, fn = target.partition(":")
+    try:
+        ok, detail = getattr(importlib.import_module(mod), fn)(aid, action)
+    except Exception as e:  # noqa: BLE001 — the producer's word, not a 500
+        return False, {"error": str(e)[:300] or type(e).__name__, "status": 502}
+    if not ok:
+        detail = {"status": 502, **detail}
+    return ok, detail
 
 
 # --- the inbox record ------------------------------------------------------------

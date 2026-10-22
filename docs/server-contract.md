@@ -3726,12 +3726,18 @@ proposal `docs/proposals/2026-09-24-alerts-and-digests.md`. Pinned by
   appends `Cleared` and marks a routine one (never acked, never `needs`) DONE.
   `MEDIA_ALERTS_INBOX` points elsewhere, `0` turns it off.
 
+- `actions` (status only, 22 Oct 2026): up to three `{"id":
+  "[a-z][a-z0-9-]{0,31}", "label": ≤40 chars}` buttons, for a producer that
+  can act on the answer itself (malformed ones are dropped). The latest
+  report's word, like the title; a report below warn drops them.
+
 #### `GET /alerts[?open=1]` — gated
 
 `{"alerts": [...], "at"}`: open ones first (worst, then newest); without
 `open=1`, then digests and clears from the last 14 days. Each row: `id, kind,
 level, peak, step, title, detail, fix, host, every_s, first_seen, last_seen,
-changed_at, cleared_at, acked_at, open, speech`. `speech` is null with no
+changed_at, cleared_at, acked_at, open, speech, actions` (`actions` `[]` when
+none or not open; `/dashboard`'s `alerts` rows carry it too). `speech` is null with no
 read-out; else `{"id", "heard"}`, `id` null while it renders (or if it never
 did), otherwise the history row `POST /speech/ctl {"action": "replay-id",
 "arg": id}` plays — which marks it heard.
@@ -3759,6 +3765,19 @@ opening their heading — and the rest as no longer on it.
 
 Seen it: kept open, not re-notified; a clear leaves its TODO open. 404 for an
 unknown id. The next raise forgets the ack.
+
+#### `POST /alerts/action {"id", "action"}` — gated (`auth.may_admin`; 22 Oct 2026)
+
+Runs one of an open alert's `actions` through the handler registered for its
+id's prefix (`alerts.ACTION_HANDLERS`), which does the work and settles the
+alert. → `{"ok": true, …the handler's answer}`. 404 unknown id; 409 not open,
+or not one of its actions now (already answered); 501 no handler on this
+host; 502 the handler refused or failed, with its `error` (a sentence to
+show). Today: `calendar.rye.booking.<n>` (the Rye booking mirror,
+`booking_calendar.alert_action`; docs/reference/shared-calendar.md) with
+`apply` | `cancel` | `keep`. The app does not render the buttons yet: until
+it does, Fix it opens a chat with the alert, whose `fix` names the matching
+`media calendar bookings-decide` commands.
 
 The `alerts` frame on `/sessions/events` (§6.13, 27 Sep 2026) carries the
 notifying changes to the phone; Home's Alerts section (27 Sep 2026) reads

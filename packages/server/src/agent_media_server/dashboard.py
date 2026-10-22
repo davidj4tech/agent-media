@@ -535,7 +535,7 @@ def _alerts() -> list[dict]:
         print(f"dashboard: alerts: {e}", file=sys.stderr)
         return []
     return [{k: r.get(k) for k in ("id", "level", "title", "fix", "host", "first_seen",
-                                   "changed_at", "acked_at")}
+                                   "changed_at", "acked_at", "actions")}
             | {"detail": str(r.get("detail") or "")[:600]}
             # A shell sign-in has its own card (signins), with Approve.
             for r in rows if not str(r.get("id") or "").startswith("shell.signin.")][:20]

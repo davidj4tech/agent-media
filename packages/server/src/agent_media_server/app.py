@@ -252,6 +252,7 @@ device gets its token):
                   or a paired device
   GET  /alerts[?open=1] → open alerts, then recent digests and clears
   POST /alerts/ack {"id"} → seen it: no re-notify, nothing cleared
+  POST /alerts/action {"id", "action"} → run one of an open alert's actions
   POST /mic/ask   {"session"?} → a TV with no mic asks the phones to speak
                   for it; POST /mic/cancel {"id"} → the ask is gone; POST
                   /mic/answer {"id", "session"?} → a phone took it (and the
@@ -363,7 +364,8 @@ ORG_PATHS = frozenset({"/org", "/org/view", "/org/read", "/org/search",
 CORS_PATHS = CORS_PATHS | ORG_PATHS
 
 # What the watchers report (alerts.py, §6.17). The same arrangement.
-ALERT_PATHS = frozenset({"/alerts", "/alerts/ack", "/alerts/digests", "/alerts/digest"})
+ALERT_PATHS = frozenset({"/alerts", "/alerts/ack", "/alerts/action", "/alerts/digests",
+                         "/alerts/digest"})
 CORS_PATHS = CORS_PATHS | ALERT_PATHS
 
 # Can David be spoken to now (core free.py, §6.22). The same arrangement.
@@ -2864,6 +2866,15 @@ def _alerts(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
     elif method == "POST" and path == "/alerts/ack":
         body = _read_json(h) or {}
         ok, detail = alerts.ack(str(body.get("id") or ""))
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif method == "POST" and path == "/alerts/action":
+        # Acting changes something outside this server (a booking on a
+        # website): the admin gate, which is the owner's today.
+        if not auth.may_admin(bearer)[0]:
+            _json(h, 403, {"ok": False, "error": "not allowed"})
+            return True
+        body = _read_json(h) or {}
+        ok, detail = alerts.act(str(body.get("id") or ""), str(body.get("action") or ""))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif method == "GET" and path == "/alerts/digests":
         q = parse_qs(h.path.partition("?")[2])

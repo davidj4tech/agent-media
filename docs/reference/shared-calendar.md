@@ -32,6 +32,49 @@ copied. The existing ten-minute availability publication runs this mirror first,
 then syncs Google's copies locally. There is no separate direct-feed source in
 Sasonica, so bookings appear once. CLI jobs load the changed Python modules on
 each run; no shared service restart or app update is required.
+
+**Ask, don't overwrite** (David, 22 Oct 2026). The mirror records what it last
+wrote per booking in `$XDG_STATE_HOME/agent-media/rye-bookings.json`
+(owner-only: times and the first name the event title already shows), which
+is how a website edit is told from a Google one:
+
+- Moved or resized on the website: Google follows.
+- Moved or resized in Google while the website still has the old time:
+  Google is kept as David left it and the alert `calendar.rye.booking.<n>`
+  asks, once ("You moved Nicole to 7:30–8:30pm Fri 23 Oct in Google. Change
+  the booking on the website?"); moved again, it asks again.
+- Deleted in Google: never cancelled on the website by itself. The same
+  alert asks ("Cancel it on the website?"); Google stays without it until he
+  decides.
+- Changed in both: the website wins, Google gets its time, and the alert
+  `calendar.rye.told.<n>` says so (cleared after a day).
+- `STATUS:CANCELLED` in the feed: skipped, and its Google copy removed. An
+  entry that cannot be read is skipped with its Google copy left alone; an
+  entry with no booking UID turns off removing absent bookings for that run.
+  One booking's failure never stops the rest or the availability publication;
+  failures and skipped entries raise `calendar.rye.mirror`.
+
+He answers with the alert's actions (`POST /alerts/action`, server-contract
+§6.17), or `media calendar bookings-decide --booking <n> --decision
+apply|cancel|keep` (the alert's Fix it text names both): `apply` puts a Google
+move onto the website, `cancel` cancels a Google-deleted booking there (the
+client is emailed and a credit refunded, as the website's own Cancel does),
+`keep` puts the website's booking back in Google. A move applied on the
+website does not email the client. While a Google move waits, the website's
+other changes to that booking (status, title) wait with it.
+
+Changing the website needs `calendar.rye.site_command`: an argv that runs the
+site's drush with a PHP script on stdin, e.g. `["ssh", "red4", "podman exec
+-i --user www-data ryeremedial vendor/bin/drush php:eval
+'eval(stream_get_contents(STDIN));' --uri=https://ryeremedial.com.au"]`,
+the way bookings were added by hand. The script (`booking_calendar._MOVE`)
+takes the `rye_booking` lock and changes the row only if it still starts
+when the mirror last saw it and is confirmed or pending; a resize re-prices
+it from the service's price list and refuses a length with no price; an
+overlap with another visit refuses. Unset, the alert offers only `keep` and
+says to change the booking at `/admin/content/bookings`. Not yet run against
+the real site.
+
 Availability publication excludes the site's own `rye-booking-<id>` event UIDs:
 Drupal already blocks these from its database, and echoing them back as
 external holds would create conflicts with themselves.
