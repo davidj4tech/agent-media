@@ -1,6 +1,6 @@
 """Earcons: short non-speech tones around the speech lane.
 
-Three, and each says one thing the voice cannot say without words:
+Four, and each says one thing the voice cannot say without words:
 
 - **cut** — a soft tick when a reply is ended on purpose before its natural
   end (a per-session stop, a question answered, the listener replying, a
@@ -12,6 +12,12 @@ Three, and each says one thing the voice cannot say without words:
   otherwise reads as the first one glitching.
 - **held** — two falling notes when a reply is held behind the desk toast /
   a Play. The toast is visual; nobody away from the screen sees it.
+- **think** — a soft, low two-note blip just before each thinking readout
+  (``metadata["thinking"]``, from the server's thinking_speech.py). The
+  readout is in the reply voice, so without it a thought and an answer sound
+  the same (David, 23 Oct 2026: "maybe a little sound effect to indicate
+  thinking"). Quieter than the others: it comes before every readout, so it
+  must stay out of the way. Never before a reply.
 
 Synthesised here, stdlib only (``wave`` + ``math`` + ``array``): the repo has
 no audio assets and a binary blob would be one more thing a fresh install has
@@ -27,8 +33,8 @@ index IS its sentence index — the highlight, the follow-along clock and
 next/previous all read it — and a tone at index 0 would shift every one.
 
 Switches: ``MEDIA_EARCONS=0`` turns them all off, and ``MEDIA_EARCON_CUT`` /
-``MEDIA_EARCON_INTERRUPT`` / ``MEDIA_EARCON_HELD`` = 0 one at a time. On by
-default.
+``MEDIA_EARCON_INTERRUPT`` / ``MEDIA_EARCON_HELD`` / ``MEDIA_EARCON_THINK`` = 0
+one at a time. On by default.
 
 Nothing here raises. A tone is a courtesy; a reply that fails because its
 courtesy did is a bug with no upside.
@@ -52,10 +58,12 @@ RATE = 48000
 #: Peak level, dBFS. Speech sits near full scale; these sit well under it so
 #: they read as punctuation, not as a second voice.
 PEAK_DBFS = -12.0
+#: Tones that sit lower still: `think` comes before every thinking readout.
+_PEAK_DBFS = {"think": -20.0}
 #: Bumped whenever a tone's recipe changes, so an old file is never reused.
 VERSION = 1
 
-NAMES = ("cut", "interrupt", "held")
+NAMES = ("cut", "interrupt", "held", "think")
 
 
 # ---- switches ---------------------------------------------------------------
@@ -121,16 +129,25 @@ def _recipe(name: str) -> list[float]:
         body = (_note(880.0, 0.11, attack_s=0.015, release_s=0.03)
                 + _silence(0.02)
                 + _note(659.25, 0.14, attack_s=0.015, release_s=0.06))
+    elif name == "think":
+        # A soft, low blip-blip a step apart, C5 -> D5: "mulling it over".
+        # Lower and rounder than the others (slower attack, gentle decay, no
+        # fourth) and quieter (_PEAK_DBFS), so it marks a thought without
+        # reading as an alert.
+        body = (_note(523.25, 0.07, attack_s=0.012, release_s=0.03, decay=9.0)
+                + _silence(0.04)
+                + _note(587.33, 0.09, attack_s=0.012, release_s=0.045, decay=9.0))
     else:
         raise ValueError(f"no earcon called {name!r}")
     return pad + body + pad
 
 
 def synth(name: str) -> bytes:
-    """The tone as 16-bit mono PCM frames at RATE, peaking at PEAK_DBFS."""
+    """The tone as 16-bit mono PCM frames at RATE, peaking at PEAK_DBFS
+    (or the tone's own, lower, _PEAK_DBFS)."""
     samples = _recipe(name)
     peak = max((abs(s) for s in samples), default=0.0) or 1.0
-    scale = (10 ** (PEAK_DBFS / 20.0)) * 32767 / peak
+    scale = (10 ** (_PEAK_DBFS.get(name, PEAK_DBFS) / 20.0)) * 32767 / peak
     pcm = array.array("h", (int(round(s * scale)) for s in samples))
     if sys.byteorder != "little":
         pcm.byteswap()          # WAV is little-endian
