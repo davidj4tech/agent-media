@@ -5,9 +5,13 @@ David, 22 Oct 2026, after [delegated authority](2026-10-22-delegated-authority.m
 "probably better as an add-on rather than a core feature", including
 **personas and some of its many features**.
 
-Status: **proposal**, not implemented. Settles the direction (add-on, never a
-dependency of core or of delegated sessions) and sorts OpenClaw's features
-into what to bridge, what to borrow and what to leave.
+Status: **add-on shelved, ideas kept** (David, 22 Oct 2026: "I'm not sure
+that it's worth the effort at the moment. It's a lot of work and adds a lot
+of overhead for probably not much gain. We could take some of the ideas from
+it though."). OpenClaw is never a dependency of core or of delegated
+sessions; the `intake-openclaw` add-on below is written down so it need not
+be worked out again, not because it is planned. What carries forward is the
+"Borrow the idea" rows of the feature table.
 
 ## What there is
 
@@ -106,22 +110,35 @@ adapter, as Claude, pi, Hermes and SillyTavern already are:
 
 ## Order of work
 
-0. **Nothing until wanted.** The gateway stays off. This proposal only stops
-   OpenClaw from drifting into core.
-1. **Clean the old workspaces.** Move or remove plaintext credentials; check
-   nothing in `bel` or `soni` exists only there and not in agent-personas.
-2. **Speech hook** (`intake-openclaw`, step 1 above). Small, and useful the
-   day the gateway is back on.
-3. **Rows and reply** (step 2 above).
-4. **Persona render target** checked against the current
-   `adapters/openclaw`, with persona scope applied.
-5. **Native designs** for the borrowed ideas, each its own proposal:
-   scheduled turns, commitments to Org, persona memory.
+The add-on is not planned. The gateway stays off.
+
+**Worth doing anyway (housekeeping):** move or remove the plaintext
+credentials in the old `~/.openclaw/workspace-*` directories, and check that
+nothing in `bel` or `soni` exists only there and not in agent-personas.
+
+**The ideas, each its own native proposal when wanted** (none depends on
+OpenClaw):
+
+1. **Scheduled turns** (from heartbeat and cron): a session can be woken on a
+   timer or a schedule with a standing instruction, run headless in
+   sessiond, and reply into its own thread. Most likely first: it is small
+   and useful on its own.
+2. **Commitments to Org** (from inferred follow-ups): a promise or task
+   spotted in a thread is offered as an Org capture with `:SESSION:`, never
+   filed silently.
+3. **Persona memory** (from `MEMORY.md` and dreams): what a persona keeps
+   between sessions, and a periodic consolidation pass, built on the
+   existing memory helpers.
+4. **A container per member chat** (from sandboxes): already
+   [Roles](2026-10-18-roles.md) option (c); OpenClaw's setup is a reference
+   when that is built.
+
+**Only if OpenClaw comes back:** the speech hook, then rows and reply, then
+the persona render target checked against `adapters/openclaw`, as described
+under "The add-on".
 
 ## Open questions
 
-- Is there an OpenClaw feature you actually miss since August, or is this
-  only "keep the door open"?
 - Should Bel and Soni run anywhere other than OpenClaw now that agent-personas
   renders them for Claude, pi and Hermes?
 - Persona memory: per persona, per person, or per persona-and-person? It
