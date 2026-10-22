@@ -1154,6 +1154,19 @@ anything hard to undo. It is context, not text: the message and transcript
 are unchanged. A reply without `voice` clears the mark; a `!` command leaves
 it as it was.
 
+While marked, a Claude thread talks on a faster model (David, 22 Oct 2026;
+`agent_media_server.voice_model`): the first `voice` reply that finds it
+between turns switches it to `sonnet` before the words go in (a pane is typed
+`/model sonnet`, a headless thread gets sessiond's `set_model`), and the
+note adds a line asking it to pass `model: "opus"` to the background agents
+it starts. A reply without `voice`, or the reaper's pass once the mark has
+gone stale, puts back the model it had, again only between turns; a model
+changed by hand meanwhile stands. The user's default for new sessions
+(Claude Code saves a typed `/model` as one) is put back as it was. Nothing
+in the request or the answer changes. `MEDIA_VOICE_MODEL=0` turns it off;
+`MEDIA_VOICE_MODEL_CLAUDE` / `MEDIA_VOICE_SUBAGENT_MODEL_CLAUDE` name other
+models. Other harnesses keep their model for now.
+
 `nudge` (David, 22 Oct 2026) is the loop hearing nothing after a reply: the
 app sends `{"session", "text": "", "voice": true, "nudge": true}` once per
 reply, in place of ending the loop, and listens again for the answer. `text`

@@ -657,6 +657,14 @@ def run(mode: str | None = None, *, as_json: bool = False, write_log: bool = Tru
     # Sealing a private thread does not wait on MEDIA_REAP_MODE: privacy is
     # not something a host opts into by letting the reaper close panes.
     lines += seal_private(now, apply=(os.environ.get("MEDIA_PRIVATE_SEAL", "1").strip() != "0"))
+    # A voice-mode model switch whose loop went stale goes back here too
+    # (voice_model.py): nothing else may come along to undo it.
+    try:
+        from . import voice_model
+
+        voice_model.sweep()
+    except Exception as e:  # noqa: BLE001 — the reaper's own work is done
+        print(f"reap: voice-model sweep failed ({e})", file=sys.stderr)
     if write_log:
         _append_log(lines)
     if as_json:

@@ -1186,7 +1186,12 @@ def reply(item: str, text: str, bearer: str, *, quote: str = "",
         if nudge or not shell.command_of(text):
             from agent_media_core import voice_mode
 
+            from . import voice_model
+
             voice_mode.mark(session, voice)
+            # The loop's quick model in, or the thread's own back (voice_model.py),
+            # before the words go in so their turn runs on it.
+            voice_model.on_reply(session, voice)
 
     if mode == "branch" and driver.owned_headless(session):
         # A branch runs where the thread it came from ran (proposal §8): a
