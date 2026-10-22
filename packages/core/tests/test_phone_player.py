@@ -30,6 +30,19 @@ def test_app_server_falls_back_to_the_bridge_env(tmp_path, monkeypatch):
     assert phone_player.app_server() == ("http://a", "b")
 
 
+def test_app_server_without_a_second_server_is_the_bridges_own(tmp_path, monkeypatch):
+    env = tmp_path / "abs-bridge.env"
+    env.write_text("ABS_URL=http://127.0.0.1:13378\nABS_TOKEN='tok0'\n"
+                   "#ABS_SERVERS=http://red5:13379|tok1\n")
+    monkeypatch.delenv("MEDIA_PHONE_PLAYER_ABS", raising=False)
+    monkeypatch.delenv("MEDIA_AUDIOBOOKSHELF_URL", raising=False)
+    monkeypatch.delenv("MEDIA_AUDIOBOOKSHELF_TOKEN", raising=False)
+    monkeypatch.setenv("MEDIA_ABS_BRIDGE_ENV", str(env))
+    assert phone_player.app_server() == ("http://127.0.0.1:13378", "tok0")
+    env.write_text("#ABS_SERVERS=x\n")
+    assert phone_player.app_server() == ("", "")
+
+
 def test_local_target_never_reaches_for_a_phone(monkeypatch):
     monkeypatch.setenv("MEDIA_PHONE_PLAYER_SSH_PHONE", "p8a")
     assert phone_player.reachable(Target(name="local")) is False

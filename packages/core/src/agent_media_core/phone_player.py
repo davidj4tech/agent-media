@@ -81,22 +81,31 @@ def reachable(target: Target) -> bool:
 def app_server() -> tuple[str, str]:
     """``(url, token)`` of the Audiobookshelf the app is logged into.
 
-    Item ids are per server, so the lookup has to hit the app's own — which on
-    this fleet is the second instance (13379), not the one the bridge syncs.
+    Item ids are per server, so the lookup has to hit the app's own.
     ``MEDIA_PHONE_PLAYER_ABS=url|token`` names it; failing that, the first
-    entry of ``ABS_SERVERS`` in abs-bridge.env, which is that instance already.
+    entry of ``ABS_SERVERS`` in abs-bridge.env; failing that, the bridge's own
+    server (``ABS_URL``/``ABS_TOKEN``). The app was on a second instance
+    (13379) until it was retired on 17 Sep 2026 and ``ABS_SERVERS`` commented
+    out; with no fallback every lookup missed and the app never took a book.
     """
     raw = os.environ.get("MEDIA_PHONE_PLAYER_ABS", "")
     if not raw:
         env = Path(os.environ.get("MEDIA_ABS_BRIDGE_ENV",
                                   "~/.config/agent-media/abs-bridge.env")).expanduser()
+        primary = {"ABS_URL": os.environ.get("MEDIA_AUDIOBOOKSHELF_URL", ""),
+                   "ABS_TOKEN": os.environ.get("MEDIA_AUDIOBOOKSHELF_TOKEN", "")}
         try:
             for line in env.read_text().splitlines():
                 if line.startswith("ABS_SERVERS="):
                     raw = line.split("=", 1)[1].strip().split(",")[0]
                     break
+                k, _, v = line.partition("=")
+                if k in primary and not primary[k]:
+                    primary[k] = v.strip().strip('"').strip("'")
         except OSError:
-            return "", ""
+            pass
+        if not raw and primary["ABS_URL"] and primary["ABS_TOKEN"]:
+            raw = f"{primary['ABS_URL']}|{primary['ABS_TOKEN']}"
     if "|" not in raw:
         return "", ""
     url, token = raw.split("|", 1)
