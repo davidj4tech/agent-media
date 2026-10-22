@@ -75,6 +75,15 @@ def test_each_option_is_spoken_with_its_description():
     assert H._format_ask_question(recommended) == "Q? Option 1: Keep it (Recommended). No change."
 
 
+def test_spoken_option_numbers_are_the_cards():
+    # The card numbers options by place (asks.py `n`) and hands-free picks by
+    # the number heard: an option with no label is not read, but the ones
+    # after it keep their place's number.
+    gap = {"questions": [{"question": "Q?", "options": [{"label": "A"}, {"label": "  "},
+                                                        {"label": "C"}]}]}
+    assert H._format_ask_question(gap) == "Q? Option 1: A. Option 3: C."
+
+
 def test_the_spoken_question_carries_the_structure(monkeypatch):
     seen = {}
     monkeypatch.setattr(H, "_emit_ask",

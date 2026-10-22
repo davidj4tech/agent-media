@@ -489,7 +489,10 @@ def _format_ask_question(tool_input: dict, part: Optional[int] = None) -> str:
         else:
             lead = f"Question {i}. " if multi else ""
         spoken_opts = []
-        for o in q.get("options") or []:
+        # Each option keeps its place's number even when one between has no
+        # label: the card numbers them by place (asks.py `n`), and in
+        # hands-free "option three" picks the card's third (David, 22 Oct 2026).
+        for n, o in enumerate(q.get("options") or [], 1):
             label = (o.get("label") or "").strip()
             if not label:
                 continue
@@ -498,8 +501,8 @@ def _format_ask_question(tool_input: dict, part: Optional[int] = None) -> str:
             # a label ending "(Recommended)" a colon was read with no pause
             # at all (David, 19 Oct 2026).
             label = label.rstrip(".:")
-            spoken_opts.append(f"{label}. {desc[:1].upper()}{desc[1:]}" if desc else label)
-        choice = "".join(f" Option {n}: {s}." for n, s in enumerate(spoken_opts, 1))
+            spoken_opts.append((n, f"{label}. {desc[:1].upper()}{desc[1:]}" if desc else label))
+        choice = "".join(f" Option {n}: {s}." for n, s in spoken_opts)
         tail = " You can pick more than one." if q.get("multiSelect") else ""
         blocks.append(f"{lead}{qtext}{choice}{tail}")
     return " ".join(blocks)
