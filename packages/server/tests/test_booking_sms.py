@@ -106,16 +106,16 @@ SPAN = ["2026-10-23T08:00:00+00:00", "2026-10-23T09:00:00+00:00"]
 def test_the_four_texts():
     assert sms.text("confirmed", "Nicole", SPAN) == (
         "Hi Nicole, your Rye Remedial booking is confirmed for Friday 23 October, 7:00–8:00pm. "
-        "Reply here if anything changes. – David")
+        "Reply here if anything changes.\nDavid")
     assert sms.text("moved", "Nicole", SPAN) == (
         "Hi Nicole, your Rye Remedial booking has moved to Friday 23 October, 7:00–8:00pm. "
-        "Reply here if anything changes. – David")
+        "Reply here if anything changes.\nDavid")
     assert sms.text("reminder", "Nicole", SPAN, "treatment") == (
         "Hi Nicole, a reminder of your treatment tomorrow, Friday 23 October at 7:00pm. "
-        "Reply here if anything changes. – David")
+        "Reply here if anything changes.\nDavid")
     assert sms.text("cancelled", "Nicole", SPAN) == (
         "Hi Nicole, your Rye Remedial booking on Friday 23 October, 7:00–8:00pm has been cancelled. "
-        "Reply here to book another time. – David")
+        "Reply here to book another time.\nDavid")
     across_noon = ["2026-10-23T00:30:00+00:00", "2026-10-23T01:30:00+00:00"]
     assert "11:30am–12:30pm" in sms.text("moved", "Nicole", across_noon)
 

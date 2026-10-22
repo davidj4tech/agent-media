@@ -65,7 +65,8 @@ class SmsError(RuntimeError):
 
 #: The service, as a client would say it ("a reminder of your treatment"; David, 22 Oct 2026: "instead of massage treatment").
 WHAT = {"Massage therapy": "treatment", "Yoga": "yoga session"}
-SIGN = " – David"
+#: The sign-off on a line of its own, no dash (David, 22 Oct 2026).
+SIGN = "\nDavid"
 
 
 def _local(iso: str) -> dt.datetime:
