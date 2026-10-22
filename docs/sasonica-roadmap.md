@@ -954,15 +954,25 @@ ahead.
    speaking; and a reply the other server sent in the moment before it
    heard the phone was busy (a race: its frames are not applied, and that
    reply is lost rather than held).
+   **One voice, and a thread's Speech sheet** (David, 22 Oct 2026; built on
+   `multi-base-11`, its own commit): the voice chosen in Settings is set on
+   every paired server that has it; one without it (or unreachable) keeps
+   its own, and Settings says so quietly ("hpo doesn't have William; it
+   uses its own voice"); the voice no longer follows the Settings picker and
+   sits above it. A thread's sheet is Speech — Priority, its voice (the
+   optional per-thread override that came with 757d6b5, starting at
+   Default) and reading thinking aloud (ab67aa4) — with the badge's title
+   and the list's Show heading Speech, in all eight languages; its voice
+   and thinking calls go to the thread's own server (by session, as built,
+   now tested).
    **What is left of the first step** (20 Oct 2026; everything above is the
    app talking to each base itself, no base-to-base link):
    - *Smaller*: the notifier's loop for a moved server follows only once
      the app has learnt the new address (it asks no lookup itself); the
      several-servers proposal's roles split (You on <server>, the admin
      section) can follow on the picker.
-   - *Speech from every server*: the listening tests above; a per-server or
-     per-thread voice override if David wants one. Notes and the widgets
-     stay the current server's.
+   - *Speech from every server*: the listening tests above. Notes and the
+     widgets stay the current server's.
    - *Smaller*: search's terms highlight from the current server only; a
      thread shown once when two servers list it is an assumption, untested
      (no fixture shares a session).
