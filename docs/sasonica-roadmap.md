@@ -874,8 +874,8 @@ ahead.
    every server, answered to the server that asked; (2) catch-ups and the
    busy card from every server, labelled; (3) Home's hosts, digests and
    sign-ins merged and labelled; (4) speech played here from any server, one
-   reply at a time. **(1)–(3) built 20 Oct 2026** (sasonica-app branch
-   `multi-base-10`, not merged, three commits): each other server's notifier
+   reply at a time. **(1)–(3) done 20 Oct 2026** (sasonica-app, merged,
+   three commits): each other server's notifier
    loop also asks for `&mic=1&phone=<kinds>&catchup=1&free=1`, its asks,
    catch-ups and busy card posted with the server's name, tagged apart by
    its key, Allow/Deny, the photo's upload, the location answer and the busy
@@ -886,8 +886,8 @@ ahead.
    (read, paged and replayed on their server) and sign-ins (Approve and Deny
    to their server) are every server's, labelled, and follow Home's strip.
    Notes stay the current server's.
-   **(4) Speech played here from any server — design, not built** (20 Oct
-   2026). *Today:* the phone's reply player (`MpvServer` under
+   **(4) Speech played here from any server** (designed 20 Oct 2026, built
+   22 Oct 2026 as below). *Today:* the phone's reply player (`MpvServer` under
    `SpeechService`) is driven by one server: that server's speech broker
    (`sinks/speech.py`, `claim_and_play`) sends mpv ops as frames down the
    phone's one full stream (`speech_frames.py`: load, clear, stop, pos,
@@ -919,27 +919,50 @@ ahead.
    server's history only); Stop also releases the others. (g) Heard marks
    stay each server's own: the owner marks what its player finished from the
    reports it gets, as now, and a held reply is marked when it is spoken.
-   *Why not built:* it changes the server's broker and busy rules
-   (agent-media), the phone's frame handling and the page's follow-along at
-   once, and it can only be proved by listening on a phone, which these
-   slices may not do. *Decisions for David:* (i) one owner at a time with
-   the others held (above), or a reply marked Interrupt on another server
-   cutting in; (ii) whether a held reply is spoken as soon as the phone is
-   free, or waits as a catch-up as after a meeting; (iii) whether "speech
-   played here" and the voice are one phone setting for every server, or
-   per server in the Settings picker; (iv) whether previous on the rail
-   should step back into another server's last reply; (v) whether music and
-   the book player should also come from every server (one owner too), or
-   stay the current server's.
+   *David's decisions (20 Oct 2026):* one owner at a time, and a reply
+   marked Interrupt on another server cuts in, everything else waits; a held
+   reply is spoken straight away when the phone is free, next in line, not
+   kept for a catch-up; one voice and one "speech played here" for every
+   server, a phone setting (a per-server or per-thread voice may come later
+   as an optional override, not built); music and books stay this phone's
+   server's. *Assumed (the coordinator's call):* previous stays within the
+   owning server's replies.
+   **Built 22 Oct 2026** (agent-media and sasonica-app branches
+   `multi-base-11`, not merged). Not through the busy signal after all (a
+   busy hold is a catch-up, which (ii) rules out), but through the claim the
+   broker already waits on for another host (`_wait_and_claim_broker`): the
+   phone's reports to a server whose speech is not playing carry
+   `elsewhere: {owner, deadline}` (pushed out every 2 s heartbeat), which
+   `speech_frames.py` holds as someone else's claim (`elsewhere:<owner>`),
+   so that server's reply waits and speaks next once the phone sends
+   `elsewhere: null`; a claim marked `interrupt` (submit's HIGH and above,
+   `_with_interrupt`, sinks/speech `_claim_of`) takes it anyway, and its
+   frame starts with a `take` op. On the phone, `SpeechOwner` keeps the
+   owner: the first server to load, until the player has been idle 3 s (a
+   reply's next sentence may come a moment after the last); a non-owner's
+   frames are not applied over it (their `seq` kept), its reports are an
+   idle player with `elsewhere`; a `take` stops the owner's speech first.
+   Each other server's notifier loop asks for `speech=frames` and feeds its
+   own channel (`SpeechFrames.speechFor`). The page asks the owning server
+   what is speaking and sends it the bar's controls (`SpeechStatus.owner`,
+   api/servers.ts `setSpeechOwner`). Heard marks stay each server's own.
+   *Needs a listening test on the phone* (never run here): two servers'
+   replies in a row (the second waits, then follows within a few seconds);
+   an Interrupt from the other server cutting in; a reply with slow
+   sentences (the 3 s grace) not losing the player mid-reply; the speech
+   bar's stop, pause, next and previous reaching the server that is
+   speaking; and a reply the other server sent in the moment before it
+   heard the phone was busy (a race: its frames are not applied, and that
+   reply is lost rather than held).
    **What is left of the first step** (20 Oct 2026; everything above is the
    app talking to each base itself, no base-to-base link):
    - *Smaller*: the notifier's loop for a moved server follows only once
      the app has learnt the new address (it asks no lookup itself); the
      several-servers proposal's roles split (You on <server>, the admin
      section) can follow on the picker.
-   - *Speech played here from every server*: the design above, once David
-     has settled its decisions. Notes and the widgets stay the current
-     server's.
+   - *Speech from every server*: the listening tests above; a per-server or
+     per-thread voice override if David wants one. Notes and the widgets
+     stay the current server's.
    - *Smaller*: search's terms highlight from the current server only; a
      thread shown once when two servers list it is an assumption, untested
      (no fixture shares a session).
