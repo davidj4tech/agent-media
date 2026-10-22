@@ -243,7 +243,14 @@ function Invoke-Pairing {
     }
   }
   Write-Host 'Scan this with Sasonica (Pair a server), or paste the link into its pairing screen:'
-  & $exe pair --device $env:COMPUTERNAME | Out-Host
+  # The QR is UTF-8 block characters; piped, PowerShell decodes the output in
+  # the console's code page (437 or 850 on most PCs) and the QR comes out as
+  # mojibake. Read it as UTF-8 for this one call.
+  # Without a console (some CI runners) the setter throws; pair anyway.
+  $enc = [Console]::OutputEncoding
+  try { [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false) } catch { }
+  try { & $exe pair --device $env:COMPUTERNAME | Out-Host }
+  finally { try { [Console]::OutputEncoding = $enc } catch { } }
 }
 Invoke-Pairing
 
