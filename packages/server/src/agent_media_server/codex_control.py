@@ -85,6 +85,19 @@ def state(session: str) -> dict | None:
         return None
 
 
+def working(session: str) -> bool | None:
+    """Codex's own activity; never resume a thread to inspect it."""
+    try:
+        with connect(session) as client:
+            thread = client.call("thread/read", {"threadId": session, "includeTurns": False}).get("thread") or {}
+        status = thread.get("status") or {}
+        if status.get("type") not in {"active", "idle"}:
+            return None
+        return status["type"] == "active" and not status.get("activeFlags")
+    except Exception:
+        return None
+
+
 def configure(session: str, *, model: str | None, mode: str | None) -> tuple[bool, dict]:
     try:
         with connect(session) as client:

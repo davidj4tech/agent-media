@@ -88,6 +88,13 @@ def _eligible(session: str) -> bool:
 def _working(session: str) -> bool:
     # A transcript's `turn.running` means an outstanding tool, not whether
     # Codex/pi are still thinking. Use the same authority as the app/reaper.
+    harness, _ = transcript.transcript_of(session)
+    if harness == "codex":
+        from . import codex_control
+
+        working = codex_control.working(session)
+        if working is not None:
+            return working
     pane = sessions.live_sessions().get(session, "")
     return sessions.activity_of(session, pane).get("state") == "working"
 

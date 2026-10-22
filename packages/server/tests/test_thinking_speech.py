@@ -344,3 +344,32 @@ def test_progress_does_not_read_old_updates_or_replay_after_turn_finishes(env):
     env.working[0] = True
     settle(env)
     assert env.calls == []
+
+
+@pytest.mark.parametrize("native, pane, expected", [(True, False, True), (False, True, False), (None, True, True)])
+def test_codex_activity_uses_native_status_before_a_stale_pane(env, monkeypatch, native, pane, expected):
+    from agent_media_server import codex_control
+    monkeypatch.setattr(transcript, "transcript_of", lambda s: ("codex", str(env.path)))
+    monkeypatch.setattr(codex_control, "working", lambda s: native)
+    env.working[0] = pane
+    assert T._working(SID) is expected
+
+
+@pytest.mark.parametrize("status, expected", [({"type": "active", "activeFlags": []}, True),
+    ({"type": "idle"}, False), ({"type": "notLoaded"}, None),
+    ({"type": "active", "activeFlags": ["waitingOnUserInput"]}, False),
+    ({"type": "active", "activeFlags": ["waitingOnApproval"]}, False)])
+def test_codex_activity_reads_without_resuming(env, monkeypatch, status, expected):
+    from contextlib import contextmanager
+    from agent_media_server import codex_control
+    calls = []
+    class Client:
+        def call(self, method, params):
+            calls.append((method, params))
+            return {"thread": {"status": status}}
+    @contextmanager
+    def connect(session):
+        yield Client()
+    monkeypatch.setattr(codex_control, "connect", connect)
+    assert codex_control.working(SID) is expected
+    assert calls == [("thread/read", {"threadId": SID, "includeTurns": False})]
