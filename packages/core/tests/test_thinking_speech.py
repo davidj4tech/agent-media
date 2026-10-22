@@ -137,3 +137,65 @@ def test_live_thinking_is_not_synthesized_as_an_assistant_reply():
                           extras={"source_session": "thinking-test", "thinking": True,
                                   "text": "A thought"})
     assert book_tracks._live_turn("thinking-test") is None
+
+
+class CueSink(Sink):
+    """Records earcons (play_cue) and clips in the order the player got them."""
+
+    def play_cue(self, uri, target):
+        self.played.append(("cue", Path(uri).name))
+        return True
+
+    def play_playlist(self, uris, target, **kw):
+        self.played.extend(uris)
+        return True
+
+
+@pytest.fixture
+def tones_on(monkeypatch):
+    monkeypatch.delenv("MEDIA_EARCONS", raising=False)
+    monkeypatch.setattr(S, "ringer_quiet", lambda *a: None)
+
+
+def test_thinking_readout_opens_with_the_think_earcon(tones_on):
+    from agent_media_core import earcons
+    sink = CueSink()
+    say(sink)
+    assert sink.played[0] == ("cue", earcons.path("think").name)
+    # Once, before the first clip; the sentences follow as before.
+    assert [p for p in sink.played if isinstance(p, tuple)] == [sink.played[0]]
+    assert len(sink.played) == 3
+
+
+def test_think_earcon_has_its_own_switch(tones_on, monkeypatch):
+    monkeypatch.setenv("MEDIA_EARCON_THINK", "0")
+    sink = CueSink()
+    say(sink)
+    assert not any(isinstance(p, tuple) for p in sink.played)
+    assert len(sink.played) == 2
+
+
+class ReplyCoord(Coord):
+    def pre_pause_remote(self): pass     # a reply may; thinking may not
+
+
+def test_reply_does_not_open_with_the_think_earcon(tones_on, monkeypatch):
+    monkeypatch.setattr(S, "_remote_playlist", lambda *a: False)
+    sink = CueSink()
+    S.submit_event(
+        Event("A reply is long enough to be its own sentence. And a second one.",
+              Source.CLAUDE_CODE, Priority.NORMAL, target=Target("local"),
+              metadata={"session": "reply-test"}),
+        state=StateStore(), sink=sink, coordinator=ReplyCoord())
+    assert sink.played
+    assert not any(isinstance(p, tuple) and "think" in p[1] for p in sink.played)
+
+
+def test_think_earcon_is_short_and_quieter_than_the_cut_tick():
+    import array
+    from agent_media_core import earcons
+    assert earcons.duration_s("think") < 0.4
+
+    def peak(name):
+        return max(abs(s) for s in array.array("h", earcons.synth(name)))
+    assert peak("think") < peak("cut")

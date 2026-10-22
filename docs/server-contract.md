@@ -1590,7 +1590,9 @@ The server keeps session overrides in `<state_dir>/thinking-speech.json`
 watches independently of app connections. Enabling, restarting the server,
 replacing or truncating a transcript establishes a baseline: old thinking
 is never replayed. New readable reasoning parts are spoken after their
-writes settle, through the configured voice/player. They follow the thread's
+writes settle, through the configured voice/player, each opened by the soft
+`think` earcon (agent_media_core/earcons.py; `MEDIA_EARCON_THINK=0` turns it
+off) so it is not taken for a reply. They follow the thread's
 speech level, mute, gate and holds. Busy/unheard thinking is discarded;
 questions and replies take precedence at a sentence boundary. Disabling
 finishes the current sentence and drops the rest. The legacy remote-say
