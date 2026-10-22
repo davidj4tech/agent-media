@@ -1803,13 +1803,28 @@ def display_text(text: str) -> str:
 def strip_markers(msgs: list[dict]) -> None:
     """Every assistant text part through `display_text`, in place. After the
     speech join, which keys on the raw words (a `[[reveal:]]` reply is keyed
-    by its halves)."""
+    by its halves). A part that is only voice_mode.QUIET goes, and with it a
+    message left with nothing in it."""
+    from agent_media_core import voice_mode
+
+    quiet = False
     for m in msgs:
         if m.get("role") != "assistant":
             continue
         for p in m.get("parts") or []:
             if p.get("type") == "text" and "[[" in (p.get("text") or ""):
+                if voice_mode.is_quiet(p["text"]):
+                    # The answer to a hands-free nudge with nothing to ask
+                    # (voice_mode.QUIET): not a word for anyone.
+                    p["text"] = ""
+                    quiet = True
+                    continue
                 p["text"] = display_text(p["text"])
+        if quiet:
+            m["parts"] = [p for p in m.get("parts") or []
+                          if not (p.get("type") == "text" and not p.get("text"))]
+    if quiet:
+        msgs[:] = [m for m in msgs if m.get("role") != "assistant" or m.get("parts")]
 
 
 def live_of(msgs: list[dict]) -> dict | None:

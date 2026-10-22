@@ -1050,6 +1050,12 @@ def _record_turn(session: str, text: str, pane: str = "") -> None:
         end_session_speech_cut(session)
     except Exception as e:  # noqa: BLE001 — the words reached the session
         print(f"reply: could not end the speech cutoff ({e})", file=sys.stderr)
+    from agent_media_core.intake._text import strip_system_blocks
+
+    if not strip_system_blocks(text):
+        # Nobody said it: a hands-free nudge (voice_mode.py) is the app's
+        # note, and the conversation shows only the agent's answer to it.
+        return
     where = {}
     if pane:
         at = panes.where(pane)
@@ -1083,7 +1089,8 @@ def _record_turn(session: str, text: str, pane: str = "") -> None:
 
 def reply(item: str, text: str, bearer: str, *, quote: str = "",
           mode: str = "continue", session: str = "",
-          keep_reading: bool = False, voice: bool = False) -> tuple[bool, dict]:
+          keep_reading: bool = False, voice: bool = False,
+          nudge: bool = False) -> tuple[bool, dict]:
     """Put `text` into `session`, or into the session behind ABS item `item`.
 
     `session` is the v1 form (server-contract.md §10) and wins when both are
@@ -1103,7 +1110,19 @@ def reply(item: str, text: str, bearer: str, *, quote: str = "",
     prompt hook they set off finds the choice already made. `voice` is the
     app's hands-free loop: the session is marked (voice_mode.py) and the hook
     asks for a short spoken answer; a reply without it clears the mark.
+
+    `nudge` is the loop hearing nothing after a reply (voice_mode.py): no
+    words of the listener's, so `text` is ignored; the session gets the
+    nudge's note in a tag nothing shows or shelves, and is asked again —
+    or offers a next step. Not a reply to the speech: nothing is cut, and a
+    note owed for a message taken back waits for real words.
     """
+    if nudge:
+        if mode == "branch":
+            return False, {"error": "a nudge cannot branch", "status": 400}
+        from agent_media_core import voice_mode as _vm
+
+        text, quote, voice = _vm.nudge_text(), "", True
     text = (text or "").strip()
     if not text:
         return False, {"error": "empty reply"}
@@ -1125,6 +1144,8 @@ def reply(item: str, text: str, bearer: str, *, quote: str = "",
             # speech, no branch; a quote rides in front as Markdown.
             if mode == "branch":
                 return False, {"error": "a Matrix room cannot be branched", "status": 409}
+            if nudge:
+                return False, {"error": "a Matrix room cannot be nudged", "status": 409}
             body = f"> {quote.strip()}\n\n{text}" if quote.strip() else text
             return room.send(body)
         # A session id nothing knows — not running, no transcript — is the
@@ -1140,7 +1161,9 @@ def reply(item: str, text: str, bearer: str, *, quote: str = "",
             return False, {"error": err, "status": 404}
     from . import shell
 
-    if mode != "branch" and shell.command_of(text):
+    if nudge:
+        pass
+    elif mode != "branch" and shell.command_of(text):
         # `!` is a shell command (shell.py): it has to stay first, so no quote
         # goes in front of it, and a note owed for a message taken back waits
         # for the next words.
@@ -1158,8 +1181,9 @@ def reply(item: str, text: str, bearer: str, *, quote: str = "",
     if mode != "branch":
         from . import speech
 
-        speech.reply_read(session, keep=keep_reading)
-        if not shell.command_of(text):
+        if not nudge:
+            speech.reply_read(session, keep=keep_reading)
+        if nudge or not shell.command_of(text):
             from agent_media_core import voice_mode
 
             voice_mode.mark(session, voice)

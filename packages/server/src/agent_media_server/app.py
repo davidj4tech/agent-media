@@ -36,7 +36,8 @@ device gets its token):
                   conversation); see abs_item.py
   GET  /commands?item=|session=|project=|cwd=   → the slash menu
   POST /reply     {"session"|"item", "text": "...", "quote": "...",
-                   "mode": "continue"|"branch", "refs"?} → type into that session (or
+                   "mode": "continue"|"branch", "refs"?, "voice"?, "nudge"?}
+                  → type into that session (or
                   the one behind that item), reviving it in a background tmux
                   window if it has ended
   POST /ask       {"text", "target"?, "player_session"?|"player_item"?, "sticky"?,
@@ -2369,7 +2370,8 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
             mode=str(body.get("mode") or "continue"),
             session=str(body.get("session") or ""),
             keep_reading=bool(body.get("keep_reading")),
-                           voice=bool(body.get("voice")))
+            voice=bool(body.get("voice")),
+            nudge=body.get("nudge") is True)
         status = detail.pop("status", 400)
         if not ok:
             # Which thread too: a refusal that names only the reason

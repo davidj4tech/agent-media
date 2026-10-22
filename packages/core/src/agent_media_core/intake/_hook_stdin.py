@@ -47,6 +47,11 @@ def run(source: Source, env_prefix: str, *, text: str | None = None,
     cleaned = strip_markdown(raw)
     if not cleaned:
         return 0
+    from .. import voice_mode
+
+    if voice_mode.is_quiet(raw) or voice_mode.is_quiet(cleaned):
+        # A hands-free nudge with nothing to ask (voice_mode.QUIET).
+        return 0
 
     # A source-specific engine is an explicit event choice. The generic
     # MEDIA_RENDER_ENGINE is only the fallback policy in submit.py: copying it

@@ -758,6 +758,62 @@ def test_a_voice_reply_marks_the_thread_for_short_answers(server, shelf, signed_
     assert heard.voice_note({"session_id": SID, "prompt": "x"}) == ""
 
 
+def test_a_nudge_asks_the_session_again_without_a_turn_of_the_listeners(server, shelf, signed_in, typed, monkeypatch, tmp_path):
+    """The loop heard nothing after a reply: `nudge` puts the app's note into
+    the session in a tag nothing shows or shelves, keeps voice mode on, and
+    leaves the reply's speech alone (no `reply_read`)."""
+    from agent_media_core import voice_mode
+    from agent_media_core.intake._text import strip_system_blocks
+    from agent_media_server import speech
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    read = []
+    monkeypatch.setattr(speech, "reply_read", lambda s, keep=False: read.append(s))
+    monkeypatch.setattr(sessions, "live_sessions", lambda: {SID: "%42"})
+    res, obj = call(server, "POST", "/reply", {"session": SID, "text": "", "voice": True,
+                                               "nudge": True}, AUTH)
+    assert res.status == 200 and obj["ok"] is True
+    sent = [a for name, a in typed if name == "_send_to_pane"]
+    assert sent and sent[-1][1].startswith("<voice-nudge>")
+    assert "did not answer" in sent[-1][1] and voice_mode.QUIET in sent[-1][1]
+    assert strip_system_blocks(sent[-1][1]) == ""
+    assert read == []
+    assert voice_mode.active(SID)
+
+
+def test_a_nudge_is_never_a_branch(server, shelf, signed_in, typed, monkeypatch):
+    monkeypatch.setattr(sessions, "live_sessions", lambda: {SID: "%42"})
+    res, obj = call(server, "POST", "/reply", {"session": SID, "text": "", "nudge": True,
+                                               "mode": "branch"}, AUTH)
+    assert res.status == 400 and "nudge" in obj["error"]
+    assert not [a for name, a in typed if name in ("_send_to_pane", "open_window")]
+
+
+def test_a_nudge_is_not_shelved_as_the_listeners_turn(monkeypatch):
+    """send._record_turn drops text nobody said (the nudge's tag)."""
+    from agent_media_core import book_tracks, voice_mode
+    from agent_media_core.intake import submit
+
+    recorded = []
+    monkeypatch.setattr(book_tracks, "record_listener_turn",
+                        lambda *a, **k: recorded.append(a))
+    monkeypatch.setattr(submit, "end_session_speech_cut", lambda s: None)
+    started = []
+    monkeypatch.setattr(send.threading, "Thread",
+                        lambda target, daemon=True: type("T", (), {"start": lambda self: started.append(target)})())
+    send._record_turn(SID, voice_mode.nudge_text())
+    assert started == [] and recorded == []
+
+
+def test_a_quiet_answer_to_a_nudge_is_not_shown():
+    from agent_media_server import transcript
+
+    msgs = [{"id": "a", "role": "assistant", "parts": [{"type": "text", "text": "Want tea?"}]},
+            {"id": "b", "role": "assistant", "parts": [{"type": "text", "text": " [[quiet]] "}]}]
+    transcript.strip_markers(msgs)
+    assert [m["id"] for m in msgs] == ["a"]
+
+
 def test_voice_mode_goes_stale(tmp_path, monkeypatch):
     from agent_media_core import voice_mode
 

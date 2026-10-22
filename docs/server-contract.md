@@ -1144,7 +1144,7 @@ Clients: S (`ReplyBox.vue`), POST debounced 800 ms.
 
 Type into the session behind a conversation, reviving it if it has ended.
 
-Request: `{"session": "<session>" | "item": "<item>", "text": "…", "quote"?: "…", "mode"?: "continue" | "branch", "refs"?: {"<title>": "<session>"}, "keep_reading"?: bool, "voice"?: bool}`
+Request: `{"session": "<session>" | "item": "<item>", "text": "…", "quote"?: "…", "mode"?: "continue" | "branch", "refs"?: {"<title>": "<session>"}, "keep_reading"?: bool, "voice"?: bool, "nudge"?: bool}`
 
 `voice` is the app's hands-free loop (David, 29 Sep 2026): the session is
 marked for 15 minutes (`agent_media_core.voice_mode`) and the prompt hook the
@@ -1153,6 +1153,23 @@ spoken sentences, a decision as one closing question, and a spoken yes before
 anything hard to undo. It is context, not text: the message and transcript
 are unchanged. A reply without `voice` clears the mark; a `!` command leaves
 it as it was.
+
+`nudge` (David, 22 Oct 2026) is the loop hearing nothing after a reply: the
+app sends `{"session", "text": "", "voice": true, "nudge": true}` once per
+reply, in place of ending the loop, and listens again for the answer. `text`
+is ignored. The session gets a note in a `<voice-nudge>` tag
+(`voice_mode.nudge_text`), which the shelf, the transcript and the prompt
+hook drop like a system reminder, so no listener turn appears: only the
+agent's answer. The note asks it, if its last reply ended with a question,
+to ask it again in one short, simpler sentence (ideally yes/no), and
+otherwise to offer the one most useful next step as a short yes/no question
+— or to answer exactly `[[quiet]]` when there is none. A `[[quiet]]` reply
+is never spoken (the Stop hooks) and never shown (`strip_markers` drops the
+message). The answer is spoken through the normal path, so the speech gate
+(`MEDIA_SPEECH_GATE_CMD`) and the thread's level apply. A nudge does not end
+the read-out, keeps the voice mark on, takes no owed retract note, and is
+refused with `mode: "branch"` (400) or for a Matrix room (409). Whether to
+nudge, and only once, is the app's call.
 
 - **A reply ends the read-out** (25 Sep 2026). Replying means the thread's
   last reply was read, so its speech is cut as `read`: queued replies of the
