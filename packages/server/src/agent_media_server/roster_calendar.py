@@ -8,7 +8,7 @@ import re
 import subprocess
 from zoneinfo import ZoneInfo
 
-from . import calendar_access, calendar_write, phs_calendar
+from . import calendar_access, calendar_write, phs_calendar, roster_mail
 
 ZONE = ZoneInfo("Australia/Melbourne")
 
@@ -42,22 +42,32 @@ def shift_events(data: dict, first: dt.date, last: dt.date, refined: bool) -> li
     return list(result.values())
 
 
+def _browser_roster(reader: Path, node: Path, first: dt.date, last: dt.date) -> dict:
+    """The Employment Hero browser reader (a saved portal session)."""
+    done = subprocess.run([str(node), str(reader), "--start", first.isoformat(), "--end", last.isoformat()],
+                          capture_output=True, text=True, timeout=90)
+    if done.returncode:
+        raise ValueError()
+    return json.loads(done.stdout)
+
+
 def sync() -> dict:
     from agent_media_core import config
     settings = config.load().get("calendar", {}).get("phs", {})
     pair = str(settings.get("write_pair") or "")
+    source = str(settings.get("roster_source") or "browser")
     reader = Path(str(settings.get("roster_command") or "")).expanduser()
     node = Path(str(settings.get("node") or "")).expanduser()
-    if not pair or not reader.is_file() or not node.is_file():
+    if not pair or source not in ("browser", "mail") or (
+            source == "browser" and not (reader.is_file() and node.is_file())):
         raise ValueError("Published roster reader is not configured")
     now = dt.datetime.now(ZONE)
     first, last = now.date(), now.date() + dt.timedelta(days=14)
     try:
-        done = subprocess.run([str(node), str(reader), "--start", first.isoformat(), "--end", last.isoformat()],
-                              capture_output=True, text=True, timeout=90)
-        if done.returncode:
-            raise ValueError()
-        data = json.loads(done.stdout)
+        if source == "mail":
+            data = roster_mail.read(first, last, str(settings.get("roster_mail_query") or roster_mail.QUERY))
+        else:
+            data = _browser_roster(reader, node, first, last)
         events = shift_events(data, first, last, refined=False)
     except Exception:
         raise RuntimeError("Published roster unavailable; previous calendar entries retained") from None
@@ -87,8 +97,17 @@ def sync() -> dict:
         elif current.get("created"):
             changed += 1
     # Only this source's future shifts in the verified full range can disappear.
+    # Switching to mail ids replaces the browser reader's entries (uid
+    # phs-shift-<EH id>) once; a legacy entry already under way goes only
+    # when a mail shift with the same start replaces it, so none shows twice.
+    starts = {dt.datetime.fromisoformat(e["start"]) for e in events}
     for event in old:
-        if event["uid"] in keep or dt.datetime.fromisoformat(event["start_at"]) <= now:
+        if event["uid"] in keep:
+            continue
+        start = dt.datetime.fromisoformat(event["start_at"])
+        legacy = source == "mail" and not event["uid"].startswith("phs-shift-mail-")
+        if start <= now and not (legacy and start in starts and
+                                 dt.datetime.fromisoformat(event.get("end_at") or event["start_at"]) > now):
             continue
         current = calendar_write.inspect_event(event["uid"], calendar=pair)
         if current.get("exists"):
@@ -98,5 +117,10 @@ def sync() -> dict:
                           stderr=subprocess.DEVNULL, timeout=120)
     if done.returncode:
         raise RuntimeError("Roster updated remotely but local calendar sync failed")
-    return {"ok": True, "roster_shifts": len(events), "treatments": treatment_count,
-            "treatment_sync_ok": treatment_ok, "changed": changed}
+    result = {"ok": True, "roster_source": source, "roster_shifts": len(events),
+              "treatments": treatment_count, "treatment_sync_ok": treatment_ok, "changed": changed}
+    if source == "mail":
+        # Counts only: never names, addresses or bodies.
+        result |= {"roster_mail_skipped": data.get("skipped", 0),
+                   "roster_mail_notices": data.get("notices", 0)}
+    return result

@@ -235,3 +235,47 @@ still attempts the independent treatment sync and reports failure. Subsequent
 login expiry can still require David to provide a new session. No MFA codes
 or authenticator setup secrets are retained. Rye uses the real designated end
 plus 75 minutes, including when the shift context is marked free.
+
+### The roster from payroll mail (live since 23 October 2026)
+
+The browser reader's saved Employment Hero session died within the hour and
+sign-in has a robot check, so the hourly sync failed from 22 October; it is
+not automated around. With `calendar.phs.roster_source = "mail"`, `media
+calendar roster-sync` reads the payroll roster notices instead
+(`agent_media_server/roster_mail.py`): `notmuch show --format=json` over
+`from:payroll@peninsulahotsprings.com` (override with
+`calendar.phs.roster_mail_query`). The default, `"browser"`, still runs the
+Node reader above. Three notices count, told apart by their body text: shifts
+assigned ("You have been assigned the following shifts"), a shift changed
+("Old shift:" then "New shift:" blocks) and shifts removed ("You are no
+longer rostered"). Each block's `Day/date` (dd/mm/yyyy, checked against its
+weekday) and `Time` (Melbourne local; an end at or before the start is the
+next day) make one shift; breaks, location and role are ignored. Replayed
+oldest-first by Date header, they give the current set.
+
+The mail carries no shift ids. A shift's id is its first-seen date, start and
+length (`mail-20261105T1430-225`, uid `phs-shift-mail-…@sasonica`); a change
+finds the shift by its old times and keeps the id, so a moved shift is
+updated in place. A change or removal that matches nothing (its assignment
+was never mailed) is counted, and a change still lands. Every notice read
+once is kept, as its Message-ID and shift times only, in `$XDG_STATE_HOME/agent-media/calendar/roster-mail.json`:
+mbsync syncs INBOX only, so archiving a notice in Gmail removes it from
+notmuch, and without the copy its shift would vanish from the calendar.
+
+Completeness is the mail's: a notice never received is a shift the calendar
+does not have. The old rules stand: a failed read retains every entry, and an
+empty result with shifts present raises. A roster notice that cannot be read
+is skipped, not fatal; the count of those received in the last 45 days comes
+back as `roster_mail_skipped` and turns `calendar.treatment-sync` to warn
+("PHS roster emails need a look"). Nothing about a notice's content (names,
+addresses, bodies) is logged, alerted or stored.
+
+The first mail run replaced the browser entries: in mail mode an entry whose
+uid is not `phs-shift-mail-…` is removed when it is in the window and not yet
+started, or under way with a mail shift of the same start. Finished ones stay
+as history. Mail reaches notmuch through `mail-sync.timer` (`mbsync -a`, which
+includes the `davidj4phs` account, then `notmuch new`) every 10 minutes; it
+raises no alert of its own when it fails. The first run (23 October) read 72
+roster notices, none skipped, and its shifts for 22 October–5 November matched
+the browser reader's seven exactly. The `calendar.employmenthero-login`
+heartbeat (reported by hand, no timer) was retired with it.
