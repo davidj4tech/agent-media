@@ -268,3 +268,17 @@ def test_hermes_still_answers_from_its_spoken_lines():
     """It keeps conversations in a database, so there is no file to read."""
     assert T.transcript_of("20260921_102508_f74b02") == ("", "")
     assert T.messages("20260921_102508_f74b02") is None
+
+
+def test_codex_preserves_only_explicit_public_progress_channel():
+    builder = T.CodexBuilder()
+    for channel in ("commentary", "final", None):
+        payload = {"type": "message", "id": "part-" + str(channel), "role": "assistant",
+                   "content": [{"type": "output_text", "text": "Public message"}]}
+        if channel:
+            payload["channel"] = channel
+        builder.feed({"type": "response_item", "timestamp": iso(1790000000), "payload": payload})
+    parts = builder.messages[0]["parts"]
+    assert parts[0]["channel"] == "commentary"
+    assert "channel" not in parts[1]
+    assert "channel" not in parts[2]

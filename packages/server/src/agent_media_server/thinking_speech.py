@@ -1,4 +1,4 @@
-"""Optional, live read-out of a conversation's exposed reasoning parts.
+"""Optional, live read-out of exposed reasoning and public progress updates.
 
 One server-owned watcher, independent of SSE subscribers. Old parts are a
 baseline, never a playback backlog. Speech is disposable and uses core's
@@ -72,7 +72,8 @@ def _parts(messages: list[dict]) -> dict[tuple[str, int], str]:
     return {(m["id"], i): str(p.get("text") or "").strip()
             for m in messages if m.get("role") == "assistant"
             for i, p in enumerate(m.get("parts") or [])
-            if p.get("type") == "reasoning" and not p.get("redacted")
+            if ((p.get("type") == "reasoning" and not p.get("redacted"))
+                or (p.get("type") == "text" and p.get("channel") == "commentary"))
             and str(p.get("text") or "").strip()}
 
 

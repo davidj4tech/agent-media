@@ -317,3 +317,30 @@ def test_real_transcript_readers_supply_new_thinking(env, monkeypatch, harness):
     assert T._parts(parsed), parsed
     settle(env)
     assert [c[-1] for c in env.calls] == ["Readable thinking"]
+
+
+def test_public_progress_is_read_but_final_and_unlabelled_text_are_not(env):
+    enable()
+    env.messages[0]["parts"].extend([
+        {"type": "reasoning", "redacted": True, "text": ""},
+        {"type": "text", "channel": "commentary", "text": "I’m checking the microphone route."},
+        {"type": "text", "channel": "final", "text": "The final answer."},
+        {"type": "text", "text": "An unlabelled answer."},
+    ])
+    settle(env)
+    assert [c[-1] for c in env.calls] == ["I’m checking the microphone route."]
+    settle(env)
+    assert len(env.calls) == 1
+
+
+def test_progress_does_not_read_old_updates_or_replay_after_turn_finishes(env):
+    env.messages[0]["parts"].append({"type": "text", "channel": "commentary", "text": "Old progress"})
+    enable()
+    settle(env)
+    assert env.calls == []
+    env.messages[0]["parts"].append({"type": "text", "channel": "commentary", "text": "New progress"})
+    env.working[0] = False
+    settle(env)
+    env.working[0] = True
+    settle(env)
+    assert env.calls == []
