@@ -130,6 +130,12 @@ def default_level() -> str:
     return _level(_read(state_dir() / DEFAULT_NAME)) or "normal"
 
 
+def default_is_set() -> bool:
+    """Whether a default was ever chosen (set_default), rather than normal by
+    default."""
+    return _level(_read(state_dir() / DEFAULT_NAME)) is not None
+
+
 def levels() -> dict[str, str]:
     """Every conversation with a level of its own."""
     out = {k: _level(v) for k, v in _read().items()}

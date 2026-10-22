@@ -403,9 +403,16 @@ def _role() -> str:
     return ",".join(sorted(roles)) if roles else ""
 
 
-def _peer_names() -> list[str]:
+#: The peer listed when MEDIA_DASHBOARD_PEERS is unset, and only when the
+#: tailnet knows it: a server with no such machine lists none (a first-time
+#: user was shown "hpo, peer", 23 Oct 2026).
+DEFAULT_PEER = "hpo"
+
+
+def _peer_names(ts: dict | None = None) -> list[str]:
     raw = os.environ.get("MEDIA_DASHBOARD_PEERS")
-    raw = "hpo" if raw is None else raw
+    if raw is None:
+        return [DEFAULT_PEER] if ts and DEFAULT_PEER in ts else []
     return [n.strip() for n in raw.replace(",", " ").split() if n.strip()]
 
 
@@ -424,7 +431,7 @@ def _machines() -> tuple[list[dict], list[dict]]:
     local["sessiond"]["active"] = _is_active(local["sessiond"]["service"])
     ts = tailscale_peers()
     peers = []
-    for name in _peer_names():
+    for name in _peer_names(ts):
         seen = (ts or {}).get(name.lower())
         peers.append({"name": name, "role": "peer", "local": False,
                       "online": seen["online"] if seen else None,

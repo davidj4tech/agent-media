@@ -1703,9 +1703,10 @@ Pinned by `packages/server/tests/test_session_settings.py` and
 
 #### `GET` / `POST /speech/default` — gated (25 Sep 2026)
 
-`GET` → `{"ok": true, "level"}`; `POST {"level"}` → the same, after
+`GET` → `{"ok": true, "level", "set"}`; `POST {"level"}` → the same, after
 setting it. The level (as `/session/priority`) of every thread with none of
-its own: normal until set. It is the server's, so it applies to every
+its own: normal until set. `set` (23 Oct 2026) is whether one was ever
+chosen, so the app's header chip names only a default picked on purpose. It is the server's, so it applies to every
 device paired with it (the app's Settings says so). Kept in
 `<state_dir>/speak-priority-default.json`. 400 as `/session/priority`; in
 `CORS_PATHS`. With accounts, it would be the account's.
@@ -3186,8 +3187,8 @@ machines are. Code: `agent_media_server/dashboard.py`. Pinned by
   first — `[{"id", "title", "level", "changed_at", "speech": {"id", "heard"}, "n"}]`.
   Home shows each as a Play row; nothing is read out until it is pressed.
   `n` opens it to read (`GET /alerts/digest`).
-- `hosts`: this host first, then `MEDIA_DASHBOARD_PEERS` (default `hpo`;
-  empty for none). Local: `role` is its roles (`config.host_roles`), comma
+- `hosts`: this host first, then `MEDIA_DASHBOARD_PEERS` (unset: `hpo`,
+  and only when the tailnet knows it, 23 Oct 2026; empty for none). Local: `role` is its roles (`config.host_roles`), comma
   joined, `""` when none are declared; memory from `/proc/meminfo`
   (`mem_used_mb` = total − available), `sessions` and `sessions_mem_mb` from
   the `/sessions/state` sweep, `tight` the idle reaper's rule (§6.1
@@ -3211,6 +3212,32 @@ recaps and transcript lookups), warm 0.084 s, 0.28 s when the state sweep's
 3 s cache has lapsed.
 
 Clients: the chat app's Home, polled every ~5 s while visible.
+
+### 6.11a Which optional parts this server has — gated (built 23 Oct 2026)
+
+#### `GET /features` — gated (`auth.may_control_speech`, like `/dashboard`)
+
+`{"ok": true, "org", "music", "contacts", "bridges", "personas"}`, each a
+boolean: whether this server has that optional part. The app shows the
+Organiser (and Home's Agenda), the Media tab (and Home's Listening while
+nothing is said), and Settings' Contacts, Bridges and Personas only where it
+is true, so a plain install is not shown another setup's extras; Advanced
+(per device) shows them all, to set one up. An older server answers 404 and
+the app shows everything, as before. Code: `features.py`; each check is a
+local look, never a network call:
+
+| key | true when |
+|---|---|
+| `org` | the notes tree's capture file exists (`/org/setup`'s `org` row is ok) |
+| `music` | `MEDIA_DUCK_ROOMS_STREAM` is set, or the play history has a music row |
+| `contacts` | the contacts store (`contacts.db`) or a Google client file exists |
+| `bridges` | a Matrix bridge config is found (`MATRIX_BRIDGES`, §6.26) |
+| `personas` | the personas repo is there (`MEDIA_PERSONAS_DIR`, default `~/agent-personas`) |
+
+A check that fails answers false. In `CORS_PATHS`. Pinned by
+`packages/server/tests/test_features.py`.
+
+---
 
 ### 6.12 Background agents — gated (built 22 Sep 2026)
 
