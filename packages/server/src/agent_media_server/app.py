@@ -154,6 +154,10 @@ device gets its token):
                   that session's question card before `part` has an answer
                   picked: speak part `part` (0-based), once; `spoken`, else
                   `why` (ask_follow.py)
+  POST /voice/check {"text", "session"?, "context"?, "confidence"?, "say"?} →
+                  hands-free's check of heard words before they send: `sure`,
+                  a one-sentence `gist`; with `say`, an unsure one is asked
+                  aloud in the thread (voice_check.py)
   POST /session/move/cancel {"session"} → drop the move waiting on that
                   session, and any failure it left (§6.15)
   POST /session/answer {"session", "choice", "key"} → answer the dialog that
@@ -323,7 +327,7 @@ CORS_PATHS = frozenset({
     "/session/answer", "/session/archive", "/session/seal", "/session/pin", "/session/priority", "/session/pocket",
     "/session/stop", "/session/thinking-speech", "/session/voice",
     "/session/retract", "/session/move", "/session/move/cancel", "/session/settings",
-    "/session/ask/part",
+    "/session/ask/part", "/voice/check",
     "/speech/now", "/speech/ctl", "/speech/sentences", "/speech/clip", "/speech/default", "/speech/thinking", "/speech/balance", "/speech/voice",
     "/settings/language",
     "/sessions/state", "/commands", "/rename",
@@ -2633,6 +2637,12 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         from . import ask_follow
 
         ok, detail = ask_follow.post(_read_json(h) or {}, _bearer(h))
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/voice/check":
+        # Hands-free: were the heard words what was meant (voice_check.py)?
+        from . import voice_check
+
+        ok, detail = voice_check.post(_read_json(h) or {}, _bearer(h))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/follow/trace":
         # The app's bold, move by move, beside the row (follow_trace.py).
