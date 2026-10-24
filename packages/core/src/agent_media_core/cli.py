@@ -8606,6 +8606,43 @@ def _ago(seconds: float) -> str:
     return f"{int(seconds // 86400)}d"
 
 
+def cmd_attach(a) -> int:
+    """Copy files where the app can show them in a reply (§6.18).
+
+    The app draws a `Shared file: <path>` line in a reply as a chip (a photo
+    as its thumbnail, tapped full size), and fetches it through `GET /upload`,
+    which serves only the upload root. So each file is copied into today's
+    folder there (MEDIA_UPLOAD_DIR, else ~/shared), never over another, and
+    the line to put in the reply is printed; speech skips the line.
+    """
+    from pathlib import Path
+
+    root = Path(os.path.expanduser(os.environ.get("MEDIA_UPLOAD_DIR") or "~/shared"))
+    folder = root / datetime.date.today().isoformat()
+    rc = 0
+    for src in a.files:
+        p = Path(src).expanduser()
+        if not p.is_file():
+            print(f"media attach: not a file: {src}", file=sys.stderr)
+            rc = 2
+            continue
+        try:
+            inside = p.resolve().is_relative_to(root.resolve())
+        except OSError:
+            inside = False
+        if inside:
+            dest = p.resolve()
+        else:
+            folder.mkdir(parents=True, exist_ok=True)
+            stem, ext = p.stem.lstrip(".") or "shared", p.suffix
+            dest, n = folder / f"{stem}{ext}", 2
+            while dest.exists():
+                dest, n = folder / f"{stem}-{n}{ext}", n + 1
+            shutil.copy2(p, dest)
+        print(f"Shared file: {dest}")
+    return rc
+
+
 def cmd_share(a) -> int:
     """Play a shared link on whichever channel suits it.
 
@@ -10037,6 +10074,12 @@ def _build_parser() -> argparse.ArgumentParser:
     sh.add_argument("--json", action="store_true",
                     help="emit the verdict as JSON")
     sh.set_defaults(func=cmd_share)
+
+    at = sub.add_parser("attach",
+                        help="copy files where the app shows them in a reply; "
+                             "prints the `Shared file:` line for each")
+    at.add_argument("files", nargs="+", help="the files")
+    at.set_defaults(func=cmd_attach)
 
     return p
 

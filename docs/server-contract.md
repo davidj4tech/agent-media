@@ -4024,6 +4024,11 @@ Authorization: Bearer <device token>
 - What the app's file chips draw a photo from, in the reply box and in the
   thread: the `Shared file:` lines stay in the words, and the app shows each
   as a chip (a thumbnail, or the file's name) instead of the line.
+- A reply can carry them too (25 Oct 2026): an agent runs `media attach
+  <file>`, which copies it into today's folder under the upload root (a file
+  already there is left where it is) and prints the line; the app draws the
+  reply's lines as chips the same way, and speech skips them
+  (`intake/_text.py` `strip_markdown`).
 - Only a file under the upload root: the path is resolved, symlinks included,
   before it is checked. Outside it, a folder, a `.part` still being written
   or a file that is not there is the same 404. 401/403 as `/reply`.

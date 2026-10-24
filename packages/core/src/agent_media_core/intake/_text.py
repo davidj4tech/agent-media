@@ -51,6 +51,9 @@ def strip_system_blocks(text: str) -> str:
 
 
 _FENCE_RE = re.compile(r"```[a-zA-Z0-9_-]*")
+# A file shown in the reply as a chip (`media attach`, the app's
+# lib/sharedFiles.ts): the screen has it, the voice need not read the path.
+_SHARED_FILE_RE = re.compile(r"^Shared file: \S.*$\n?", flags=re.MULTILINE)
 # Bold spans may cross lines and contain single-* emphasis (`**a *b* c**`) —
 # hence DOTALL + a lazy any-char body, not [^*]+ (which broke the pairing and
 # left literal ** markers to be read aloud).
@@ -442,7 +445,8 @@ def strip_markdown(text: str, describe: bool = False, paragraphs: bool = True) -
     """
     if not text:
         return ""
-    out = suppress_code_blocks(text, describe, paragraphs)
+    out = _SHARED_FILE_RE.sub("", text) if "Shared file: " in text else text
+    out = suppress_code_blocks(out, describe, paragraphs)
     out = suppress_tables(out, describe, paragraphs)
     if paragraphs:
         out = _isolate_headings(out)
