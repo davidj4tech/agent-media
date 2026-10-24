@@ -195,6 +195,19 @@ def test_no_tailscale_and_no_systemctl_is_null_not_an_error(server, shelf, signe
     assert (hpo["name"], hpo["online"], pn["name"], pn["online"]) == ("hpo", None, "pn", None)
 
 
+def test_the_default_peer_only_when_the_tailnet_knows_it(server, shelf, signed_in, machine,
+                                                         monkeypatch):
+    # A first-time user's server lists no "hpo" it has never heard of.
+    monkeypatch.setattr(dashboard, "tailscale_peers", lambda: {"red4": {"online": True, "last_seen": None}})
+    dashboard._reset_for_tests()
+    _, obj = call(server, "GET", "/dashboard", headers=AUTH)
+    assert [h["name"] for h in obj["hosts"]] == [obj["hosts"][0]["name"]]
+    monkeypatch.setattr(dashboard, "tailscale_peers", lambda: None)
+    dashboard._reset_for_tests()
+    _, obj = call(server, "GET", "/dashboard", headers=AUTH)
+    assert len(obj["hosts"]) == 1
+
+
 def test_peers_can_be_none(server, shelf, signed_in, machine, monkeypatch):
     monkeypatch.setenv("MEDIA_DASHBOARD_PEERS", "")
     _, obj = call(server, "GET", "/dashboard", headers=AUTH)

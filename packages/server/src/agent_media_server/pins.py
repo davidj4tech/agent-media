@@ -147,7 +147,10 @@ def speech_default(bearer: str, level=None) -> tuple[bool, dict]:
             speak_priority.set_default(level)
         except OSError as e:
             return False, {"error": f"could not save the default ({e})", "status": 500}
-    return True, {"level": speak_priority.default_level()}
+    # `set`: whether anyone chose it, so the app can tell the server's own
+    # "normal until set" from a level picked on purpose.
+    return True, {"level": speak_priority.default_level(),
+                  "set": speak_priority.default_is_set()}
 
 
 def speech_balance(bearer: str, balance=None) -> tuple[bool, dict]:

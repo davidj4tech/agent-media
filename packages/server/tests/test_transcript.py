@@ -144,9 +144,10 @@ def test_a_turn_with_every_record_type(script):
     bash, sub = agent["parts"][2], agent["parts"][3]
     assert bash == {"type": "tool", "name": "Bash", "title": "List the work dir",
                     "input_summary": "ls -la /w", "status": "done", "result_summary": "a\nb",
-                    "tool_use_id": "t1"}
+                    "tool_use_id": "t1", "description": "List the work dir"}
     # A subagent is one tool part; its own turns (the sidechain) are not messages.
     assert sub["name"] == "Agent" and sub["input_summary"] == "Map the clients (Explore)"
+    assert sub["description"] == "Map the clients"
     assert sub["result_summary"] == "The report."
     assert "SIDECHAIN" not in json.dumps(out)
     assert agent["turn"] == {"running": False} and agent["spoken"] is None

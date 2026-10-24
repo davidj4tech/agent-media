@@ -995,7 +995,10 @@ written, with its steps and narration. Messages are read from the same file.
   Read's path and line range, Edit's path and `−old +new` line counts,
   Write's path and line count, Grep/Glob's pattern, WebFetch's URL, Agent's
   description; other tools their input as compact JSON; all cut at 300
-  chars; `status` `running` | `done` | `error` (an interrupted turn's
+  chars; `description` (Claude only, 23 Oct 2026; absent when empty) — the
+  call's own plain-words step name, one line, cut at 120 chars, for Bash,
+  PowerShell, Agent/Task and Monitor only (another tool's `description`,
+  such as a calendar event's, is content and is never copied here); `status` `running` | `done` | `error` (an interrupted turn's
   unanswered tools are `error`, "interrupted"); `result_summary` — the
   first 300 chars of the result, except Read, which says `"N lines"`.
   **File contents are never shipped**: `toolUseResult` (which holds whole
@@ -1663,6 +1666,18 @@ questions and replies take precedence at a sentence boundary. Disabling
 finishes the current sentence and drops the rest. The legacy remote-say
 command bridge has no cancellable playback and skips thinking speech.
 
+A Claude thread's **step names** are read as thinking too (23 Oct 2026),
+because Claude Code stores almost all of its thinking signature-only: a new
+`tool` part with a `description` (below) is spoken as a thinking readout,
+with the same earcon, gates, tags and cancellation; `thinking_part` is the
+tool part's index. Only the description is read, never the command, path,
+input or result. Real thinking text goes first (a step waits while a
+thought is settling or speaking); a burst of steps keeps only the newest;
+a step is read at most once per 15 s per thread (since that thread's last
+readout of either kind), is dropped after waiting 15 s, and is never
+started while a reply is speaking or speech is held (the mic listening).
+Other harnesses read only their reasoning and progress as before.
+
 Thinking playback is tagged `thinking: true`, `thinking_message` (the source
 transcript message id) and `thinking_part` (its zero-based part index) on the
 live speech row. It adds no speech-history reply or shelf/feed entry; the
@@ -1753,9 +1768,10 @@ Pinned by `packages/server/tests/test_session_settings.py` and
 
 #### `GET` / `POST /speech/default` — gated (25 Sep 2026)
 
-`GET` → `{"ok": true, "level"}`; `POST {"level"}` → the same, after
+`GET` → `{"ok": true, "level", "set"}`; `POST {"level"}` → the same, after
 setting it. The level (as `/session/priority`) of every thread with none of
-its own: normal until set. It is the server's, so it applies to every
+its own: normal until set. `set` (23 Oct 2026) is whether one was ever
+chosen, so the app's header chip names only a default picked on purpose. It is the server's, so it applies to every
 device paired with it (the app's Settings says so). Kept in
 `<state_dir>/speak-priority-default.json`. 400 as `/session/priority`; in
 `CORS_PATHS`. With accounts, it would be the account's.
@@ -3247,8 +3263,8 @@ machines are. Code: `agent_media_server/dashboard.py`. Pinned by
   first — `[{"id", "title", "level", "changed_at", "speech": {"id", "heard"}, "n"}]`.
   Home shows each as a Play row; nothing is read out until it is pressed.
   `n` opens it to read (`GET /alerts/digest`).
-- `hosts`: this host first, then `MEDIA_DASHBOARD_PEERS` (default `hpo`;
-  empty for none). Local: `role` is its roles (`config.host_roles`), comma
+- `hosts`: this host first, then `MEDIA_DASHBOARD_PEERS` (unset: `hpo`,
+  and only when the tailnet knows it, 23 Oct 2026; empty for none). Local: `role` is its roles (`config.host_roles`), comma
   joined, `""` when none are declared; memory from `/proc/meminfo`
   (`mem_used_mb` = total − available), `sessions` and `sessions_mem_mb` from
   the `/sessions/state` sweep, `tight` the idle reaper's rule (§6.1
@@ -3272,6 +3288,32 @@ recaps and transcript lookups), warm 0.084 s, 0.28 s when the state sweep's
 3 s cache has lapsed.
 
 Clients: the chat app's Home, polled every ~5 s while visible.
+
+### 6.11a Which optional parts this server has — gated (built 23 Oct 2026)
+
+#### `GET /features` — gated (`auth.may_control_speech`, like `/dashboard`)
+
+`{"ok": true, "org", "music", "contacts", "bridges", "personas"}`, each a
+boolean: whether this server has that optional part. The app shows the
+Organiser (and Home's Agenda), the Media tab (and Home's Listening while
+nothing is said), and Settings' Contacts, Bridges and Personas only where it
+is true, so a plain install is not shown another setup's extras; Advanced
+(per device) shows them all, to set one up. An older server answers 404 and
+the app shows everything, as before. Code: `features.py`; each check is a
+local look, never a network call:
+
+| key | true when |
+|---|---|
+| `org` | the notes tree's capture file exists (`/org/setup`'s `org` row is ok) |
+| `music` | `MEDIA_DUCK_ROOMS_STREAM` is set, or the play history has a music row |
+| `contacts` | the contacts store (`contacts.db`) or a Google client file exists |
+| `bridges` | a Matrix bridge config is found (`MATRIX_BRIDGES`, §6.26) |
+| `personas` | the personas repo is there (`MEDIA_PERSONAS_DIR`, default `~/agent-personas`) |
+
+A check that fails answers false. In `CORS_PATHS`. Pinned by
+`packages/server/tests/test_features.py`.
+
+---
 
 ### 6.12 Background agents — gated (built 22 Sep 2026)
 

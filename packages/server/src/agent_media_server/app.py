@@ -196,6 +196,9 @@ device gets its token):
                   working, what is being said, recent threads with recaps,
                   places and agents for a quick start, and the machines
                   (dashboard.py, §6.11)
+  GET  /features → which optional parts this server has (org, music,
+                  contacts, bridges, personas), so the app shows only those
+                  (features.py, §6.11a)
   GET  /search?q=[&limit=&before=&tools=1&memory=0&session=] → every thread's messages,
                   titles, recaps and projects, and long-term memory when this
                   host has agent-memory (search.py, §6.14)
@@ -337,7 +340,7 @@ CORS_PATHS = frozenset({
     "/presets", "/presets/remove", "/personas/scope",
     "/projects/roots", "/projects/roots/remove", "/projects/roots/default", "/projects/roots/recreate",
     "/setup", "/setup/run", "/services/restart", "/shell", "/shell/signins", "/shell/signin", "/enrol", "/me", "/me/signout", "/me/account",
-    "/share", "/upload", "/dashboard",
+    "/share", "/upload", "/dashboard", "/features",
     "/sessions/events", "/search", "/contacts",
     "/contacts/google", "/contacts/google/login", "/contacts/google/finish",
     "/contacts/google/signout", "/contacts/labels", "/contacts/suggestions",
@@ -1530,6 +1533,13 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
 
         ok, detail = dashboard.dashboard(_bearer(h))
         _json_z(h, 200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
+    elif path == "/features":
+        # Which optional parts this server has, for the app to show only
+        # those (features.py).
+        from . import features
+
+        ok, detail = features.features(_bearer(h))
+        _json(h, 200 if ok else detail.pop("status", 403), {"ok": ok, **detail})
     elif path == "/personas/scope":
         # Where each persona is offered, layered (persona_scope.py, §6.24).
         from . import persona_scope, personas

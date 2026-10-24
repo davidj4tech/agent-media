@@ -293,6 +293,14 @@ and continues to follow speech priority and the usual playback rules.
 `/session/thinking-speech` restores inheritance. Older enabled overrides stay
 enabled, and a new installation's global default remains off.
 
+A Claude thread reads its step names too (23 Oct 2026): Claude Code keeps
+almost none of its thinking as text (1 of 22 blocks had any), so with thinking
+read aloud on, a Bash, Agent or Monitor call's own plain-words `description`
+("Run the server tests") is read as a thinking readout, with the `think`
+earcon. Never a command, path, file or output. Real thinking text wins; a
+burst reads only its newest step, at most one per 15 s per thread, and never
+over speech or a listening mic. Other harnesses are unchanged (David).
+
 Normal is called **When open** in the app (David, 26 Sep 2026): it plays
 while the thread is open, or when you next open it. The level stays
 `normal` on the wire and at the desk. A reply let through because its thread

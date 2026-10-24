@@ -722,10 +722,10 @@ def test_speech_default_is_every_thread_without_its_own(server, shelf, signed_in
     from agent_media_core import speak_priority
 
     res, obj = call(server, "GET", "/speech/default", headers=AUTH)
-    assert res.status == 200 and obj == {"ok": True, "level": "normal"}
+    assert res.status == 200 and obj == {"ok": True, "level": "normal", "set": False}
     call(server, "POST", "/session/priority", {"session": SID2, "level": "interrupt"}, AUTH)
     res, obj = call(server, "POST", "/speech/default", {"level": "quiet"}, AUTH)
-    assert res.status == 200 and obj == {"ok": True, "level": "quiet"}
+    assert res.status == 200 and obj == {"ok": True, "level": "quiet", "set": True}
     _, targets = call(server, "GET", "/targets", headers=AUTH)
     by = {r["session"]: r["speech"] for r in targets["sessions"]}
     assert by[SID] == "quiet" and by[SID2] == "interrupt"      # its own stays
