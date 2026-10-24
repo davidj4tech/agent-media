@@ -100,6 +100,9 @@ def drive(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_DRIVE_LOG", str(tmp_path / "rclone.log"))
     monkeypatch.setenv("MEDIA_CONTACTS_DRIVE_REMOTE", "fake:")
     monkeypatch.setenv("MEDIA_CONTACTS_DRIVE_DIR", "Meta exports")
+    # The spare-space check reads the real disk: a host with under 2 GB free
+    # in its temp dir (red5's /tmp is a 3.8 GB tmpfs) skipped every file.
+    monkeypatch.setattr(contacts_exports, "_free", lambda folder: 100 * 1024 ** 3)
     return folder / "Meta exports"
 
 
