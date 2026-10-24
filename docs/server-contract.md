@@ -1395,6 +1395,39 @@ the picker. After a fresh send, poll `/conversation?session=` for the item.
 
 Clients: S (`pages/ask.vue`), W (`NewChat.tsx`).
 
+#### `POST /voice/check` — gated (24 Oct 2026)
+
+Hands-free, before heard words send: did the phone hear what was meant?
+With the screen off and an earbud in, nobody reads the box during the
+countdown (David, 24 Oct 2026). Request:
+`{"text": "<heard words>", "session"?: "<session>", "context"?: "<what the
+words answer: the last reply, or the question card>", "confidence"?: <the
+recogniser's 0–1, omitted or ≤ 0 when unknown>, "say"?: "Did you mean:
+{gist}?"}` → `{"ok": true, "sure": bool, "gist": "<one short sentence of what
+they meant>", "spoken": bool, "why"?: "…"}`.
+
+A fast model (`MEDIA_VOICE_CHECK_MODEL`, else `MEDIA_FOLLOWUP_MODEL`, on the
+summary gateway, `MEDIA_SUMMARY_*`) reads the words with `context` (the last
+1500 characters) and answers `sure: false` when they look garbled, misheard,
+cut off or easily taken the wrong way; a recogniser `confidence` under
+`MEDIA_VOICE_CHECK_MIN_CONFIDENCE` (0.5) makes it unsure on its own. `gist`
+is in the words' language, phrased as the request itself. Anything that goes
+wrong answers `sure: true, gist: ""` with a `why` — `no_answer` (no gateway,
+an unusable answer, or none within `MEDIA_VOICE_CHECK_TIMEOUT`, 2.5 s, a
+hard deadline), `no_gist`, `no_words`, `off` (`MEDIA_VOICE_CHECK=0`) — so the
+loop sends as it would have; `low_confidence` marks an unsure answer the
+model alone would have passed.
+
+`say`, the app's own words in its language with `{gist}` in them, has an
+unsure answer asked aloud in `session` (`spoken: true`) the way a question
+card's next part is read: the thread's voice and place, the speech gate and
+its level, and never kept in speech history (`private`). The app waits for
+it to play, then listens for yes or no. Nothing is sent to the session;
+which words go, and when, is the app's call. 400 without `text`, or for a
+`session` that is not a session id. `voice_check.py`.
+
+Clients: W (`hooks/useHandsFree.ts`).
+
 ### 6.4 Managing a thread
 
 #### `POST /rename` — gated
