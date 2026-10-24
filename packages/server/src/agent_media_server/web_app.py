@@ -17,6 +17,13 @@ a new bundle is picked up on the next load. A missing `assets/` file is a 404
 rather than index.html, which a browser would only fail to run as a script.
 Text is gzipped when the caller takes it (the largest chunk is ~490 KB).
 
+`/app/dl/` is served from its own folder, not the bundle: a one-off app
+download (an APK link handed to the user) put inside the bundle went with the
+next build, which replaces the bundle's whole folder (David, 25 Oct 2026: "that
+download link gave me a 404"). MEDIA_WEB_DL_DIR, else `app-dl` in the state
+dir. A file there is itself; anything else under `/app/dl/` is a 404, never
+index.html, so a gone link says so instead of opening the app.
+
 Open on every listener, the public one too (contract §19): it is the same
 static files app.sasonica.com will host, carries no credential, and a server
 reached through its tunnel then has a web app at `<tunnel>/app/` as well.
@@ -39,6 +46,7 @@ _TYPES = {
     ".png": "image/png", ".ico": "image/x-icon", ".woff2": "font/woff2",
     ".woff": "font/woff", ".map": "application/json", ".txt": "text/plain; charset=utf-8",
     ".webmanifest": "application/manifest+json", ".webp": "image/webp",
+    ".apk": "application/vnd.android.package-archive",
 }
 _GZIP = (".html", ".js", ".mjs", ".css", ".json", ".svg", ".map", ".webmanifest", ".txt")
 _IMMUTABLE = "public, max-age=31536000, immutable"
@@ -54,6 +62,27 @@ def bundle_dir() -> Path | None:
     env = os.environ.get("MEDIA_WEB_APP_DIR", "").strip()
     d = Path(env).expanduser() if env else Path(__file__).with_name("web_app")
     return d if (d / "index.html").is_file() else None
+
+
+def dl_dir() -> Path:
+    """Where `/app/dl/` files live: outside the bundle, so a build keeps them."""
+    env = os.environ.get("MEDIA_WEB_DL_DIR", "").strip()
+    if env:
+        return Path(env).expanduser()
+    from agent_media_core._paths import state_dir
+    return state_dir() / "app-dl"
+
+
+def _dl(h: BaseHTTPRequestHandler, rel: str) -> None:
+    root = dl_dir().resolve()
+    try:
+        p = (root / rel).resolve()
+    except (OSError, ValueError):
+        p = root
+    if p != root and root in p.parents and p.is_file():
+        _file(h, p, "no-store")
+    else:
+        _send(h, 404, b"not found\n", {"Content-Type": "text/plain", "Cache-Control": "no-store"})
 
 
 def serving() -> bool:
@@ -108,6 +137,9 @@ def serve(h: BaseHTTPRequestHandler, path: str) -> bool:
                             "Cache-Control": "no-cache"})
         return True
     rel = unquote(path[len(PREFIX) + 1:])
+    if rel.startswith("dl/"):
+        _dl(h, rel[3:])
+        return True
     root = root.resolve()
     try:
         p = (root / rel).resolve()

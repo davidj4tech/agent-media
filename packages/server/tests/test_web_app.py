@@ -128,3 +128,23 @@ def test_the_report_names_this_servers_own_app(bundle, tmp_path, monkeypatch):
     # A web app configured elsewhere wins.
     monkeypatch.setenv("MEDIA_WEB_APP_URL", "https://app.sasonica.com/")
     assert servers_report.addresses()["web"] == "https://app.sasonica.com"
+
+
+def test_dl_is_its_own_folder_and_a_gone_file_is_404(bundle, server, tmp_path, monkeypatch):
+    """APK links live outside the bundle, so a new build keeps them; a missing
+    one is a 404, not the app's page (David, 25 Oct 2026)."""
+    dl = tmp_path / "dl"
+    (dl / "tok").mkdir(parents=True)
+    (dl / "tok" / "sasonica-1.apk").write_bytes(b"PK apk")
+    monkeypatch.setenv("MEDIA_WEB_DL_DIR", str(dl))
+    res, body = _get(server, "/app/dl/tok/sasonica-1.apk")
+    assert res.status == 200 and body == b"PK apk"
+    assert res.getheader("Content-Type") == "application/vnd.android.package-archive"
+    for gone in ("/app/dl/tok/other.apk", "/app/dl/nope/", "/app/dl/../secret.txt", "/app/dl/%2e%2e/bundle/index.html"):
+        res, _ = _get(server, gone)
+        assert res.status == 404, gone
+    # A copy left in the bundle is not what answers.
+    (bundle / "dl" / "tok").mkdir(parents=True)
+    (bundle / "dl" / "tok" / "old.apk").write_bytes(b"old")
+    res, _ = _get(server, "/app/dl/tok/old.apk")
+    assert res.status == 404
