@@ -4236,6 +4236,11 @@ outbound (sasonica-app `lib/listenLog.ts`). Code: `listen_log.py`; tests in
   else a minute after the first; a failed post keeps them for the next.
 - Appended to `<state>/listen-log.jsonl`, one JSON line each with `received`
   and `device`; the newest 5000 kept.
+- Read it with `python -m agent_media_server.listen_summary [--hours N]
+  [--at handsfree] [--json]` (`listen_summary.py`): for the `empty` listens,
+  how many never opened the mic (`openMs` -1), opened slowly, heard no
+  speech, heard speech but no words, were quiet (`rmsPeak`), began under a
+  playing voice or were an interlude, and the recogniser's error codes.
 
 ### 6.21a Restarting the phone's services — down the connection it opens (built 18 Oct 2026)
 
