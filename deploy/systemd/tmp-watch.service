@@ -1,0 +1,6 @@
+[Unit]
+Description=/tmp filling up, and who holds it (agent-alert tmp-full)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/projects/agent-media/packages/core/src/agent_media_core/entrypoints/tmp_watch.py
