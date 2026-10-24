@@ -1420,6 +1420,8 @@ def sessions_index(*, days: float = STORE_DAYS) -> list[dict]:
     is kept open against the reaper (`pins`), and `speech`, its speech level
     (`agent_media_core.speak_priority`) — `priority` says it is interrupt or
     auto.
+
+    And `tags`, the thread's own tags from its org-roam node (`tags`).
     """
     from . import archive, pins, rest
 
@@ -1495,8 +1497,11 @@ def sessions_index(*, days: float = STORE_DAYS) -> list[dict]:
         out = [r for r in out if r.get("session") not in gone and r.get("session") not in locked]
     # A sealed thread is listed with nothing of its content: where it was and
     # when it was sealed, so the app can offer to unseal it (seal.py).
-    return add_projects(out) + [seal_row(sid, rec, sid in flags, sid in pinned)
-                                for sid, rec in locked.items() if sid not in gone]
+    # And `tags`: the thread's own tags, read from its org-roam node (tags.py).
+    from . import tags
+
+    return tags.add_tags(add_projects(out) + [seal_row(sid, rec, sid in flags, sid in pinned)
+                                              for sid, rec in locked.items() if sid not in gone])
 
 
 def seal_row(session: str, rec: dict, archived: bool = False, pinned: bool = False) -> dict:

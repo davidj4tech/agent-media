@@ -44,6 +44,8 @@ def _clean_media_env(monkeypatch, tmp_path, request):
     monkeypatch.setenv("MEDIA_CONTACTS_ADB", str(tmp_path / "no-such-adb") + " shell")
     # Private-thread markers (agent_media_core.private): never red5's own.
     monkeypatch.setenv("AGENT_PRIVATE_DIR", str(tmp_path / "private.d"))
+    # The thread tags live in the real ~/org (tags.py): never read or edit it.
+    monkeypatch.setenv("MEDIA_THREAD_TAGS_DIR", str(tmp_path / "org-sessions"))
     # The alert store files TODOs in ~/org/inbox.org: never David's here.
     monkeypatch.setenv("MEDIA_ALERTS_INBOX", "0")
     # No ~/agent-personas: a host without the repo, unless a test makes one.

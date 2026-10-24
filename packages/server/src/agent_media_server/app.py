@@ -127,6 +127,9 @@ device gets its token):
                   session first; a sealed thread's content answers 423
   POST /session/pin {"session", "pinned": true|false} → keep that session
                   open against the idle reaper (pins.py, reap.py)
+  POST /session/tags {"session", "add"?, "remove"?, "tags"?} → the
+                  thread's own tags, kept in its org-roam node's #+filetags
+                  (tags.py); GET /tags lists every tag in use with its count
   POST /session/priority {"session", "level"} → that thread's speech
                   level: interrupt | auto | pocket | normal | quiet
                   (agent_media_core/speak_priority.py, pins.py)
@@ -317,7 +320,7 @@ from . import app_links, web_app
 CORS_PATHS = frozenset({
     "/conversation", "/conversation/log", "/conversations", "/targets", "/item",
     "/reply", "/ask", "/focus", "/session/resume", "/session/close", "/draft",
-    "/session/answer", "/session/archive", "/session/seal", "/session/pin", "/session/priority", "/session/pocket",
+    "/session/answer", "/session/archive", "/session/seal", "/session/pin", "/session/tags", "/tags", "/session/priority", "/session/pocket",
     "/session/stop", "/session/thinking-speech", "/session/voice",
     "/session/retract", "/session/move", "/session/move/cancel", "/session/settings",
     "/session/ask/part",
@@ -1601,6 +1604,12 @@ def _get(h: BaseHTTPRequestHandler, path: str) -> bool:
         # The install or sign-in window, as the desk sees it.
         ok, detail = harnesses.screen((parse_qs(query).get("pane") or [""])[0], _bearer(h))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/tags":
+        # Every thread tag in use, with its count (tags.py).
+        from . import tags
+
+        ok, detail = tags.tags_list(_bearer(h))
+        _json(h, 200 if ok else detail.pop("status", 401), {"ok": ok, **detail})
     elif path == "/conversations":
         # What the assistant button can be pointed at: live sessions and
         # recent conversations, by title. Gated like /conversation.
@@ -2636,6 +2645,14 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
         body = _read_json(h) or {}
         ok, detail = pins.session_pin(str(body.get("session") or ""),
                                       body.get("pinned"), _bearer(h))
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/session/tags":
+        # The thread's own tags, in its org-roam node (tags.py). Gated like
+        # /session/pin.
+        from . import tags
+
+        body = _read_json(h) or {}
+        ok, detail = tags.session_tags(str(body.get("session") or ""), body, _bearer(h))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/session/settings":
         # A chip pressed: `{session, model?, plan?}` (session_settings.py).

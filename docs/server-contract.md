@@ -300,6 +300,9 @@ Everything a message can be pointed at.
   `/session/close` is never rested.
 - `pinned` (every row, 22 Sep 2026): kept open against the idle reaper, set
   with `POST /session/pin` (§6.4). A pin affects the reaper only.
+- `tags` (every row, 24 Oct 2026): the thread's own tags, in file order,
+  from its org-roam node's `#+filetags` (`POST /session/tags`, §6.4); `[]`
+  when it has none or no node, and on a sealed row.
 - `speech` (every row, 24 Sep 2026): the thread's speech level —
   `"interrupt"`, `"auto"`, `"normal"` or `"quiet"` — set with
   `POST /session/priority` (§6.4) or `media priority`; a thread with none
@@ -1507,6 +1510,35 @@ the book-tracks manifests, and only reads from ABS.
 - In `CORS_PATHS`.
 
 Pinned by `packages/server/tests/test_reap.py`.
+
+#### `POST /session/tags`, `GET /tags` — gated (24 Oct 2026)
+
+`{"session", "add"?: [tag], "remove"?: [tag], "tags"?: [tag]}` →
+`{"ok": true, "session", "tags"}`, the thread's tags after the change.
+
+- Kept in the thread's org-roam node, not here: the file agent-sessions
+  exports for it under `MEDIA_THREAD_TAGS_DIR` (default
+  `~/org/roam/sessions`), found by `:AGENT_SID:`. The edit changes its
+  `#+filetags:` line and nothing else; the exporter keeps that line once the
+  file exists, and moves the tags into the Denote file name on its next pass.
+  A tag added in Emacs shows on the next `/targets`.
+- The exporter's own tags in that line — the harness, `inbox`,
+  `autonomous`, the project hub's key and name from the `- Project ::` link,
+  the directory (whole and its last part) and any path tag `home_…` — are
+  not the thread's: rows leave them out and an edit keeps them, first. So a
+  tag cannot start with `home_` (400).
+- `tags` replaces the set; `add` then `remove` change it (a string is a list
+  of one). A tag is made an org tag: a leading `#` dropped, spaces and dashes
+  `_`; then letters, digits, `_@#%`, at most 40 characters, else 400 `"not a
+  tag: …"`. At most 20 per thread. None of the three: 400.
+- 409 `"this thread is not in your org files yet; try again in a few
+  minutes"` when no node has the session (newer than the last export); 423
+  on a sealed thread; 400 `"not a session id"`.
+- `GET /tags` → `{"ok": true, "tags": [{"tag", "count"}]}`: every thread tag
+  in use, most used first, for a filter and for suggestions.
+- Both in `CORS_PATHS`.
+
+Pinned by `packages/server/tests/test_thread_tags.py`.
 
 #### `POST /session/priority` — gated (24 Sep 2026)
 
