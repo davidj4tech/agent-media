@@ -6,32 +6,21 @@ import subprocess
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--config", default="")
-parser.add_argument("--treatments", action="store_true")
 args = parser.parse_args()
 ok = False
 conflicts = 0
-partial = False
-skipped = 0
 try:
-    command = ["media", "calendar", "roster-sync"] if args.treatments else ["media", "calendar", "publish", "--publish-config", args.config]
-    done = subprocess.run(command,
+    done = subprocess.run(["media", "calendar", "publish", "--publish-config", args.config],
                           text=True, capture_output=True, timeout=260)
     result = json.loads(done.stdout) if done.returncode == 0 else {}
     ok = result.get("ok") is True
     conflicts = int(result.get("booking_conflicts", 0))
-    partial = result.get("treatment_sync_ok") is False
-    # Roster emails that could not be read: a count only, never their content.
-    skipped = int(result.get("roster_mail_skipped", 0))
-    if args.treatments and not ok:
-        # A roster source failure must not stop the independent booking source.
-        subprocess.run(["media", "calendar", "treatments-sync"], capture_output=True, timeout=180)
 except Exception:
     pass
-label = "Treatment calendar" if args.treatments else "Booking calendar"
-subprocess.run(["agent-alert", "report", "calendar.treatment-sync" if args.treatments else "calendar.availability-sync", "--level", "warn" if ok and (conflicts or partial or skipped) else "ok" if ok else "needs",
-                "--title", "Calendar conflicts need review" if ok and conflicts else "PHS roster emails need a look" if ok and skipped else "PHS treatments need refresh" if ok and partial else label + " sync healthy" if ok else label + " sync failed",
-                "--detail", f"{conflicts} existing bookings conflict with calendar holds; no bookings moved." if ok and conflicts else f"{skipped} recent PHS roster email(s) could not be read; their shifts may be missing from the PHS calendar." if ok and skipped else "Published shifts updated; treatment source unavailable, so designated shifts remain busy." if ok and partial else "Published PHS shifts and treatment windows updated." if ok and args.treatments else "Timing-only availability published." if ok else
+subprocess.run(["agent-alert", "report", "calendar.availability-sync", "--level", "warn" if ok and conflicts else "ok" if ok else "needs",
+                "--title", "Calendar conflicts need review" if ok and conflicts else "Booking calendar sync healthy" if ok else "Booking calendar sync failed",
+                "--detail", f"{conflicts} existing bookings conflict with calendar holds; no bookings moved." if ok and conflicts else "Timing-only availability published." if ok else
                 "Last verified snapshot retained. New slots close if the snapshot is older than two hours.",
-                "--every", "3600" if args.treatments else "600"], timeout=20, check=False)
+                "--every", "600"], timeout=20, check=False)
 print("Calendar availability published" if ok else "Calendar availability sync failed")
 raise SystemExit(0 if ok else 1)

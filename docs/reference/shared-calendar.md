@@ -180,23 +180,28 @@ Melbourne. Its first permissible Rye start is 15:00, subject to normal booking
 notice, location, travel and other busy events. Confirmed shift openings
 replace that day's static evening opening; unknown days retain the fallback.
 
-`calendar-treatment-sync.timer` reads today and tomorrow's PHS staff timetable
-hourly, using the existing encrypted staff login in a temporary private
-session directory. `calendar.phs.write_pair` selects the dedicated PHS calendar,
-separately from the primary `calendar.write_pair`. Five previously created
-treatment entries were moved to `davidj4phs@gmail.com`, each destination verified
-before its personal-calendar copy was removed. It writes only David's treatment times. It never fetches
-consultation forms, and only cancels its own future events after complete
-source reads. These intervals do not establish the designated shift finish.
+### Managed sources: `media calendar reconcile`
 
-Employment Hero roster access is verified using the phone-exported browser
-session. The first cookie import stopped authenticating; a fresh export after
-David completed login passed roster reads across three separate browser
-launches. Refreshed cookies are encrypted and saved atomically after verified
-reads. Seven assigned shifts were synced into the dedicated PHS calendar for
-22 October–5 November. No shift hours are inferred from treatment times.
-Today and tomorrow's shifts become free work-hours context only after a
-successful treatment sync; their actual appointment intervals remain busy.
+Readers this repo should not know about (a roster, a staff timetable, any
+feed) keep their own events in a calendar with `media calendar reconcile
+--source NAME --calendar PAIR --start D --end D`, the complete list for that
+range on stdin as `{"events": [...]}` (or a bare list; `--event FILE` reads a
+file). Each event is a `put` event (`uid`, `title`, `start`, `end`, optional
+`description`, `location`, `busy`). New ones are created, changed ones updated
+under their ETag, finished ones left as they were. Entries tagged with the same
+source, inside the range and not yet started, that the list no longer has are
+removed; nothing else can be. `--refuse-empty` fails, removing nothing, on an
+empty list when entries exist; `--no-sync` skips the closing vdirsyncer sync.
+A reader that fails must not call it. Source names are lowercase letters,
+digits and dashes (`calendar_write` tags them `X-SASONICA-SOURCE`).
+
+David's Peninsula Hot Springs shifts (`phs-shift`) and treatments
+(`phs-treatment`) are such a reader: `agent-config/bin/phs-calendar-sync` on
+`phs-calendar-sync.timer`, hourly (moved out of agent-media 25 October 2026,
+replacing `calendar-treatment-sync.timer` and `media calendar roster-sync` /
+`treatments-sync`). Its notes live with it. Today and tomorrow's shifts become
+free work-hours context only after a successful treatment read; the
+treatments then carry the busy time.
 
 David shared `davidj4marlospa@gmail.com` with the primary account. CalDAV read
 and write privileges are verified. It is now synced as `cal_davidj4marlospa`,
@@ -224,58 +229,5 @@ It preserves any verified `browser.env` and the phone export until server
 verification succeeds. Never paste cookie values into chat. Six synthetic
 tests cover formats, scope, redaction, paths and ciphertext-only storage.
 
-The `employmenthero-roster` reader emits only assigned shift IDs and
-StartTime/EndTime from the employee schedule endpoint. The API's `allDay` flag
-is a display convention; `Biddable` shifts are excluded. `media calendar
-roster-sync` has regression coverage for local time, cancellation ownership and
-failed sources. `calendar.phs.roster_command` and `calendar.phs.node` configure
-the reader and a stable absolute Node path. The hourly treatment job now runs
-roster-sync, which includes treatment refinement; if the roster login fails it
-still attempts the independent treatment sync and reports failure. Subsequent
-login expiry can still require David to provide a new session. No MFA codes
-or authenticator setup secrets are retained. Rye uses the real designated end
-plus 75 minutes, including when the shift context is marked free.
-
-### The roster from payroll mail (live since 23 October 2026)
-
-The browser reader's saved Employment Hero session died within the hour and
-sign-in has a robot check, so the hourly sync failed from 22 October; it is
-not automated around. With `calendar.phs.roster_source = "mail"`, `media
-calendar roster-sync` reads the payroll roster notices instead
-(`agent_media_server/roster_mail.py`): `notmuch show --format=json` over
-`from:payroll@peninsulahotsprings.com` (override with
-`calendar.phs.roster_mail_query`). The default, `"browser"`, still runs the
-Node reader above. Three notices count, told apart by their body text: shifts
-assigned ("You have been assigned the following shifts"), a shift changed
-("Old shift:" then "New shift:" blocks) and shifts removed ("You are no
-longer rostered"). Each block's `Day/date` (dd/mm/yyyy, checked against its
-weekday) and `Time` (Melbourne local; an end at or before the start is the
-next day) make one shift; breaks, location and role are ignored. Replayed
-oldest-first by Date header, they give the current set.
-
-The mail carries no shift ids. A shift's id is its first-seen date, start and
-length (`mail-20261105T1430-225`, uid `phs-shift-mail-…@sasonica`); a change
-finds the shift by its old times and keeps the id, so a moved shift is
-updated in place. A change or removal that matches nothing (its assignment
-was never mailed) is counted, and a change still lands. Every notice read
-once is kept, as its Message-ID and shift times only, in `$XDG_STATE_HOME/agent-media/calendar/roster-mail.json`:
-mbsync syncs INBOX only, so archiving a notice in Gmail removes it from
-notmuch, and without the copy its shift would vanish from the calendar.
-
-Completeness is the mail's: a notice never received is a shift the calendar
-does not have. The old rules stand: a failed read retains every entry, and an
-empty result with shifts present raises. A roster notice that cannot be read
-is skipped, not fatal; the count of those received in the last 45 days comes
-back as `roster_mail_skipped` and turns `calendar.treatment-sync` to warn
-("PHS roster emails need a look"). Nothing about a notice's content (names,
-addresses, bodies) is logged, alerted or stored.
-
-The first mail run replaced the browser entries: in mail mode an entry whose
-uid is not `phs-shift-mail-…` is removed when it is in the window and not yet
-started, or under way with a mail shift of the same start. Finished ones stay
-as history. Mail reaches notmuch through `mail-sync.timer` (`mbsync -a`, which
-includes the `davidj4phs` account, then `notmuch new`) every 10 minutes; it
-raises no alert of its own when it fails. The first run (23 October) read 72
-roster notices, none skipped, and its shifts for 22 October–5 November matched
-the browser reader's seven exactly. The `calendar.employmenthero-login`
-heartbeat (reported by hand, no timer) was retired with it.
+Rye uses the real designated end plus 75 minutes, including when the shift
+context is marked free.

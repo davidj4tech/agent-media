@@ -119,8 +119,8 @@ def _body(event: dict) -> tuple[str, bytes]:
             raise ValueError("Invalid event status")
         ev.add("status", status)
     if event.get("source"):
-        if event["source"] not in ("marlo", "phs-shift", "phs-treatment", "rye-booking"):
-            raise ValueError("Unknown managed shift source")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", str(event["source"])):
+            raise ValueError("Managed source: lowercase letters, digits and dashes")
         ev.add("x-sasonica-source", event["source"])
     if event.get("rrule"):
         from icalendar import vRecur

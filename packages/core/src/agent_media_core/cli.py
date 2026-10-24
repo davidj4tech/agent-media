@@ -8696,16 +8696,18 @@ def cmd_calendar(a) -> int:
             if not a.to or a.kind not in texts.KINDS:
                 raise ValueError("--to NUMBER and --kind confirmed|moved|reminder|cancelled required")
             result = texts.trial(a.to, a.kind)
-        elif a.action == "roster-sync":
-            adapter = _server_module("roster_calendar")
+        elif a.action == "reconcile":
+            adapter = _server_module("calendar_reconcile")
             if adapter is None:
                 return 1
-            result = adapter.sync()
-        elif a.action == "treatments-sync":
-            adapter = _server_module("phs_calendar")
-            if adapter is None:
-                return 1
-            result = adapter.sync()
+            if not (a.source and a.calendar and a.start and a.end):
+                raise ValueError("--source, --calendar, --start and --end required")
+            data = json.load(sys.stdin) if a.event in ("", "-") else json.loads(Path(a.event).read_text())
+            events = data.get("events") if isinstance(data, dict) else data
+            if not isinstance(events, list):
+                raise ValueError("Expected a JSON list of events, or {\"events\": [...]}")
+            result = adapter.reconcile(events, source=a.source, calendar=a.calendar, start=a.start,
+                                       end=a.end, refuse_empty=a.refuse_empty, sync=not a.no_sync)
         elif a.action == "publish":
             publisher = _server_module("calendar_publish")
             if publisher is None:
@@ -9730,7 +9732,7 @@ def _build_parser() -> argparse.ArgumentParser:
     st.set_defaults(func=cmd_speech_target)
 
     calendar = sub.add_parser("calendar", help="read the owner's shared calendars (JSON)")
-    calendar.add_argument("action", nargs="?", choices=("events", "put", "delete", "publish", "treatments-sync", "roster-sync", "bookings-sync", "bookings-decide", "bookings-sms-test"), default="events")
+    calendar.add_argument("action", nargs="?", choices=("events", "put", "delete", "publish", "reconcile", "bookings-sync", "bookings-decide", "bookings-sms-test"), default="events")
     calendar.add_argument("--booking", default="", help="bookings-decide: the Rye booking number waiting on you")
     calendar.add_argument("--decision", default="", help="bookings-decide: apply (Google's move onto the website; "
                                                          "emails the client past 15 minutes), apply-quiet (the same, no email), "
@@ -9745,6 +9747,10 @@ def _build_parser() -> argparse.ArgumentParser:
     calendar.add_argument("--start", default="", help="first date, YYYY-MM-DD (default today)")
     calendar.add_argument("--end", default="", help="last date, inclusive (default seven days)")
     calendar.add_argument("--search", default="", help="match event title or location")
+    calendar.add_argument("--source", default="", help="reconcile: the managed source the events belong to")
+    calendar.add_argument("--refuse-empty", action="store_true",
+                          help="reconcile: fail, removing nothing, on an empty list when entries exist")
+    calendar.add_argument("--no-sync", action="store_true", help="reconcile: skip the closing vdirsyncer sync")
     calendar.set_defaults(func=cmd_calendar)
 
     contacts = sub.add_parser(
