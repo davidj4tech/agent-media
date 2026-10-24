@@ -4224,7 +4224,8 @@ outbound (sasonica-app `lib/listenLog.ts`). Code: `listen_log.py`; tests in
 `test_listen_log.py`.
 
 - `POST /device/listen-log {lines: [{t, at, outcome, text?, partial?, error?,
-  confidence?, voiceNear?, session?}]}` — a paired device only (401
+  confidence?, voiceNear?, session?, recError?, openMs?, speechMs?, ranMs?,
+  chime?, rmsPeak?, playingAtStart?, interlude?}]}` — a paired device only (401
   otherwise); 400 without a `lines` list. `at`: `handsfree`, `countdown`,
   `confirm` or `dictation`. `outcome`: `taken`, `command`, `echo` (dropped as
   the reply's own voice; `voiceNear` says a voice was playing), `error`,
@@ -4232,6 +4233,19 @@ outbound (sasonica-app `lib/listenLog.ts`). Code: `listen_log.py`; tests in
   listen ended on an error or empty, and its last partial was taken as the
   words). Unknown fields are dropped, strings cut to 400 characters, 200
   lines a post. → `{ok: true, kept}`.
+- How the listen went, on hands-free, countdown and confirm lines from the
+  phone (David, 25 Oct 2026: "usually the recogniser hears nothing"):
+  `recError` the recogniser's error code (0 results, 6 speech timeout, 7 no
+  match, 5 client, 8 busy, 11 server disconnected…), `openMs` and `speechMs`
+  ms from the listen's start to the mic opening (onReadyForSpeech) and to
+  speech beginning (onBeginningOfSpeech), -1 for never, `ranMs` how long it
+  ran, `chime` whether the ready chime played, `rmsPeak` the loudest the mic
+  heard (onRmsChanged, dB; -100 for nothing), `playingAtStart` a voice was
+  sounding as it began (the phone's player, else the thread's speech on the
+  server), `interlude` hands-free opened it between spoken updates with the
+  turn still running. `empty` lines carry `voiceNear` too, and a countdown or
+  confirm listen that hears nothing is logged as `empty` (one cut short by the
+  countdown's send is not logged).
 - Sent in batches: soon (5 s) after a line that dropped words, at 20 lines,
   else a minute after the first; a failed post keeps them for the next.
 - Appended to `<state>/listen-log.jsonl`, one JSON line each with `received`

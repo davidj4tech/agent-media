@@ -8,7 +8,9 @@ network. So the app sends its lines here, outbound, in batches
 (sasonica-app lib/listenLog.ts): one per listen — where (`at`), what came back
 (`text`, `partial`, `error`, `confidence`) and what the app did with it
 (`outcome`: taken, command, echo, error, empty, stale, rescued; `voiceNear`
-when a voice was playing). A paired device only.
+when a voice was playing), and how the recogniser went (`recError`, `openMs`,
+`speechMs`, `ranMs`, `chime`, `rmsPeak`, `playingAtStart`, `interlude`). A
+paired device only.
 
 One JSON line per listen in `<state>/listen-log.jsonl`, with the device's
 name and the time it arrived; the newest KEEP_LINES are kept. Read it with
@@ -30,7 +32,15 @@ KEEP_LINES = 5000
 MAX_LINES = 200
 MAX_CHARS = 400
 _FIELDS = {"t": (int, float), "at": str, "outcome": str, "text": str, "partial": str,
-           "error": str, "confidence": (int, float), "voiceNear": bool, "session": str}
+           "error": str, "confidence": (int, float), "voiceNear": bool, "session": str,
+           # How the recogniser went (David, 25 Oct 2026: "usually the
+           # recogniser hears nothing"): its error code (0 results), ms to the
+           # mic opening and to speech beginning (-1 never), ms it ran, the
+           # chime, the loudest the mic heard (dB); a voice sounding as it
+           # began; a hands-free opening between spoken updates.
+           "recError": int, "openMs": (int, float), "speechMs": (int, float),
+           "ranMs": (int, float), "chime": bool, "rmsPeak": (int, float),
+           "playingAtStart": bool, "interlude": bool}
 _LOCK = threading.Lock()
 
 

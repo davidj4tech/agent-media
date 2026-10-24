@@ -50,6 +50,20 @@ def test_a_batch_is_appended_with_the_device(server, pixel):
     assert got[1]["error"] == "error_11" and got[1]["received"] > 0
 
 
+def test_how_the_listen_went_is_kept(server, pixel):
+    """The recogniser's diagnostics (David, 25 Oct 2026: "usually the recogniser hears nothing")."""
+    diag = {"recError": 7, "openMs": 1480, "speechMs": -1, "ranMs": 5230, "chime": False,
+            "rmsPeak": -2.0, "playingAtStart": False, "interlude": True, "voiceNear": False}
+    batch = {"lines": [{"t": 1.0, "at": "handsfree", "outcome": "empty", **diag},
+                       {"t": 2.0, "at": "confirm", "outcome": "empty", "recError": "7", "chime": 1}]}
+    res, body = call(server, "POST", "/device/listen-log", batch, pixel)
+    assert res.status == 200 and body["kept"] == 2, body
+    got = _lines()
+    assert {k: got[0][k] for k in diag} == diag
+    # Wrong types are dropped, not coerced.
+    assert "recError" not in got[1] and "chime" not in got[1]
+
+
 def test_a_paired_device_only(server):
     lines = {"lines": [{"outcome": "taken"}]}
     assert call(server, "POST", "/device/listen-log", lines, {})[0].status == 401
