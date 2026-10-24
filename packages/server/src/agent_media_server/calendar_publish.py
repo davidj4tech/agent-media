@@ -1,4 +1,17 @@
-"""Push timing-only calendar availability to an authenticated booking site."""
+"""Push timing-only calendar availability to an authenticated booking site.
+
+The owner-only JSON config (`media calendar publish --publish-config FILE`):
+`endpoint` (HTTPS) and `token`, and optionally
+- `zone`: the site's time zone (default the host's);
+- `days`: how far ahead (default 40);
+- `shift_sources`: `{"<managed source>": <minutes>}`: a shift from that
+  source opens the day `<minutes>` after its end (`open_after`), even where a
+  finer source refines its busy time;
+- `own_uids`: a regex for the site's own bookings mirrored into the calendar,
+  left out so they are not echoed back as outside conflicts;
+- `before`: an argv run first (a booking mirror, say); a failure stops the
+  publication so the site keeps its last snapshot.
+"""
 from __future__ import annotations
 
 import datetime as dt
@@ -14,11 +27,23 @@ from . import calendar_access
 from .calendar_write import _NoRedirect
 
 
-def snapshot(result: dict, now: int | None = None) -> dict:
+def _zone(name: str = ""):
+    if name:
+        return ZoneInfo(name)
+    try:
+        return ZoneInfo.from_file(open("/etc/localtime", "rb"))
+    except OSError:
+        return ZoneInfo("UTC")
+
+
+def snapshot(result: dict, now: int | None = None, *, zone=None, shift_sources: dict | None = None,
+             own_uids: str = "") -> dict:
     now = int(time.time()) if now is None else now
     if not result["sources"] or not all(s.get("ok") for s in result["sources"]):
         raise ValueError("Calendar sources unavailable; keeping the last published availability")
-    zone = ZoneInfo("Australia/Melbourne")
+    zone = zone or _zone()
+    shifts = {str(k): int(v) for k, v in (shift_sources or {}).items()}
+    own = re.compile(own_uids) if own_uids else None
     first, last = dt.date.fromisoformat(result["start"]), dt.date.fromisoformat(result["end"])
     lo = int(dt.datetime.combine(first, dt.time(), zone).timestamp())
     hi = int(dt.datetime.combine(last + dt.timedelta(days=1), dt.time(), zone).timestamp())
@@ -26,7 +51,7 @@ def snapshot(result: dict, now: int | None = None) -> dict:
     for event in result["events"]:
         # The destination already blocks its own bookings from its database.
         # Echoing their feed back as external busy time creates self-conflicts.
-        if re.fullmatch(r"rye-booking-\d+@ryeremedial\.com\.au", str(event.get("uid", ""))):
+        if own and own.fullmatch(str(event.get("uid", ""))):
             continue
         start = dt.datetime.fromisoformat(event["start_at"]).astimezone(zone)
         end = dt.datetime.fromisoformat(event["end_at"]).astimezone(zone)
@@ -34,9 +59,9 @@ def snapshot(result: dict, now: int | None = None) -> dict:
             continue
         if event.get("busy", True):
             busy.append([max(lo, int(start.timestamp())), min(hi, int(end.timestamp()))])
-        if event.get("managed") and event.get("shift_source") in ("marlo", "phs-shift"):
+        if event.get("managed") and event.get("shift_source") in shifts:
             # Keep the designated finish even when treatments refine busy time.
-            opens = int(end.timestamp()) + 75 * 60
+            opens = int(end.timestamp()) + shifts[event["shift_source"]] * 60
             day = max(start.date(), first)
             while day <= min(end.date(), last):
                 key = day.isoformat()
@@ -55,18 +80,25 @@ def publish(path: str) -> dict:
     endpoint = config["endpoint"]
     if not endpoint.startswith("https://"):
         raise ValueError("Availability publishing requires HTTPS")
-    from agent_media_core import config as media_config
-    if media_config.load().get("calendar", {}).get("rye", {}).get("write_pair"):
-        from . import booking_calendar
-        booking_calendar.sync(sync_local=False)
+    if config.get("before"):
+        argv = [str(Path(str(config["before"][0])).expanduser()), *map(str, config["before"][1:])]
+        try:
+            done = subprocess.run(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=200)
+        except (OSError, subprocess.TimeoutExpired):
+            done = None
+        if done is None or done.returncode:
+            raise RuntimeError("The before command failed; last published availability retained")
     # A fresh remote sync must succeed before the site receives new data.
     done = subprocess.run(["vdirsyncer", "sync"], stdout=subprocess.DEVNULL,
                           stderr=subprocess.DEVNULL, timeout=180)
     if done.returncode:
         raise RuntimeError("Calendar sync failed; last published availability retained")
-    first = dt.datetime.now(ZoneInfo("Australia/Melbourne")).date()
-    result = calendar_access.query(first.isoformat(), (first + dt.timedelta(days=40)).isoformat())
-    data = snapshot(result)
+    zone = _zone(str(config.get("zone") or ""))
+    first = dt.datetime.now(zone).date()
+    days = int(config.get("days") or 40)
+    result = calendar_access.query(first.isoformat(), (first + dt.timedelta(days=days)).isoformat())
+    data = snapshot(result, zone=zone, shift_sources=config.get("shift_sources") or {},
+                    own_uids=str(config.get("own_uids") or ""))
     req = urllib.request.Request(endpoint, data=json.dumps(data).encode(), method="POST",
         headers={"Authorization": "Bearer " + config["token"], "Content-Type": "application/json",
                  "User-Agent": "Sasonica-Calendar/1.0"})

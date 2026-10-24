@@ -6,6 +6,8 @@ throwaway inbox.org; the routes over real HTTP to an in-process canvas.
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from agent_media_server import alerts
@@ -241,20 +243,35 @@ def test_list_and_ack_take_the_app_gate(server, signed_in, monkeypatch):
     assert res.status == 404
 
 
-def test_an_alert_action_takes_the_gate_and_runs_its_handler(server, signed_in, monkeypatch):
-    from agent_media_server import booking_calendar
-
-    monkeypatch.setattr(booking_calendar, "alert_action",
-                        lambda aid, action: (True, {"booking": 18, "decision": action}))
-    alerts.report({"id": "calendar.rye.booking.18", "level": "warn", "title": "moved",
+def test_an_alert_action_takes_the_gate_and_runs_its_command(server, signed_in, monkeypatch, tmp_path):
+    from agent_media_core import config
+    handler = tmp_path / "handler"
+    handler.write_text("#!/bin/sh\necho noise\nprintf '{\"ok\": true, \"booking\": 18, \"got\": \"%s %s\"}\\n' \"$1\" \"$2\"\n")
+    handler.chmod(0o700)
+    monkeypatch.setattr(config, "load", lambda: {"alerts": {"actions": {"site.booking.": [str(handler)]}}})
+    alerts.report({"id": "site.booking.18", "level": "warn", "title": "moved",
                    "actions": [{"id": "apply", "label": "Change the website"}]})
     res, d = call(server, "GET", "/alerts?open=1", headers=AUTH)
     assert d["alerts"][0]["actions"] == [{"id": "apply", "label": "Change the website"}]
-    body = {"id": "calendar.rye.booking.18", "action": "apply"}
+    body = {"id": "site.booking.18", "action": "apply"}
     res, d = call(server, "POST", "/alerts/action", body, AUTH)
-    assert res.status == 200 and d["decision"] == "apply"
+    assert res.status == 200 and d["got"] == "site.booking.18 apply"
     res, d = call(server, "POST", "/alerts/action", {**body, "action": "nope"}, AUTH)
     assert res.status == 409
+
+
+def test_an_action_command_that_refuses_is_a_502_with_its_word(monkeypatch, tmp_path):
+    from agent_media_core import config
+    handler = tmp_path / "handler"
+    handler.write_text("#!/bin/sh\necho '{\"ok\": false, \"error\": \"changed meanwhile\"}'\nexit 1\n")
+    handler.chmod(0o700)
+    monkeypatch.setattr(config, "load", lambda: {"alerts": {"actions": {"site.booking.": [str(handler)]}}})
+    alerts.report({"id": "site.booking.19", "level": "warn", "title": "moved",
+                   "actions": [{"id": "apply", "label": "Change"}]})
+    ok, detail = alerts.act("site.booking.19", "apply")
+    assert not ok and detail == {"status": 502, "error": "changed meanwhile"}
+    alerts.report({"id": "other.thing", "level": "warn", "title": "x", "actions": [{"id": "go", "label": "Go"}]})
+    assert alerts.act("other.thing", "go")[1]["status"] == 501
 
 
 def test_every_digest_is_kept_to_browse_and_read(monkeypatch):
@@ -362,3 +379,28 @@ def test_a_cursor_past_the_head_is_reset_to_it():
     rep(1, level="warn", title="t", step=90)
     head = alerts.last_seq()
     assert alerts.notices(head + 50, now=2) == {"last": head, "notices": []}
+
+
+def test_alert_actions_are_kept_while_open_and_dispatched(monkeypatch):
+    seen = []
+    import types
+    handler = types.ModuleType("fake_alert_handler")
+    handler.alert_action = lambda aid, action: (seen.append((aid, action)), (True, {"done": 1}))[1]
+    monkeypatch.setitem(sys.modules, "fake_alert_handler", handler)
+    monkeypatch.setitem(alerts.ACTION_HANDLERS, "test.act.", "fake_alert_handler:alert_action")
+    ok, d = alerts.report({"id": "test.act.1", "level": "warn", "title": "t",
+                           "actions": [{"id": "apply", "label": "Do it"}, {"id": "Bad!", "label": "x"},
+                                       {"id": "keep", "label": "No"}]}, now=1)
+    assert [a["id"] for a in d["alert"]["actions"]] == ["apply", "keep"]
+    assert alerts.act("test.act.1", "nope")[1]["status"] == 409
+    assert alerts.act("test.act.1", "apply") == (True, {"done": 1}) and seen == [("test.act.1", "apply")]
+    assert alerts.act("missing", "apply")[1]["status"] == 404
+    alerts.report({"id": "test.act.1", "level": "ok"}, now=2)
+    assert alerts.listing(now=3)["alerts"][0]["actions"] == []
+    assert alerts.act("test.act.1", "apply")[1]["status"] == 409
+
+
+def test_an_alert_without_a_handler_is_refused():
+    alerts.report({"id": "other.thing", "level": "warn", "title": "t",
+                   "actions": [{"id": "apply", "label": "Do it"}]}, now=1)
+    assert alerts.act("other.thing", "apply")[1]["status"] == 501

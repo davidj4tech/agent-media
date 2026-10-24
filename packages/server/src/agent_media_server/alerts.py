@@ -47,9 +47,10 @@ reaches a phone whose ringer holds its speech (David, 27 Sep 2026).
 
 **Actions** (22 Oct 2026). A status alert may carry `actions`, up to three
 `{"id", "label"}` buttons, when its producer can act on the answer itself —
-the Rye booking mirror's "Change the website" / "Keep the website's time".
+a booking mirror's "Change the website" / "Keep the website's time".
 `POST /alerts/action {"id", "action"}` (`act`) runs the handler registered for
-the alert id's prefix (`ACTION_HANDLERS`), which settles the alert. A clear
+the alert id's prefix (`ACTION_HANDLERS`, or a command in config
+`[alerts.actions]`), which settles the alert. A clear
 drops them; an id with no handler is refused.
 """
 
@@ -94,11 +95,37 @@ _LOCK = threading.Lock()
 ACTION_ID_RE = re.compile(r"[a-z][a-z0-9-]{0,31}")
 ACTION_MAX = 3
 ACTION_LABEL_MAX = 40
-#: The alert-id prefixes whose actions this host can run, and what runs them:
-#: `module:function(alert_id, action) -> (ok, detail)`.
-ACTION_HANDLERS = {
-    "calendar.rye.booking.": "agent_media_server.booking_calendar:alert_action",
-}
+#: The alert-id prefixes whose actions this host can run in-process, and what
+#: runs them: `module:function(alert_id, action) -> (ok, detail)`. A producer
+#: outside this repo names a command instead, in config `[alerts.actions]`:
+#: `"<prefix>" = ["argv", …]`, run as `argv… <alert_id> <action>`, which
+#: prints `{"ok": true|false, …}` as its last stdout line.
+ACTION_HANDLERS: dict[str, str] = {}
+ACTION_TIMEOUT_S = 150
+
+
+def _action_commands() -> dict[str, list[str]]:
+    try:
+        from agent_media_core import config
+        got = (config.load().get("alerts") or {}).get("actions") or {}
+    except Exception:
+        return {}
+    return {str(k): [str(Path(str(x)).expanduser()) if i == 0 else str(x) for i, x in enumerate(v)]
+            for k, v in got.items() if k and isinstance(v, list) and v}
+
+
+def _run_action(argv: list[str], aid: str, action: str) -> tuple[bool, dict]:
+    done = subprocess.run([*argv, aid, action], capture_output=True, text=True,
+                          timeout=ACTION_TIMEOUT_S)
+    lines = [x for x in done.stdout.splitlines() if x.strip()]
+    try:
+        answer = json.loads(lines[-1]) if lines else {}
+    except ValueError:
+        answer = {}
+    if not isinstance(answer, dict) or not answer:
+        return False, {"error": "the action's command gave no answer"}
+    ok = answer.pop("ok", False) is True and done.returncode == 0
+    return ok, answer
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS alerts (
@@ -623,11 +650,15 @@ def act(aid: str, action: str) -> tuple[bool, dict]:
     if not pub["open"] or action not in {a["id"] for a in pub["actions"]}:
         return False, {"error": "not an action this alert offers now", "status": 409}
     target = next((v for k, v in ACTION_HANDLERS.items() if aid.startswith(k)), None)
-    if target is None:
+    command = next((v for k, v in _action_commands().items() if aid.startswith(k)), None)
+    if target is None and command is None:
         return False, {"error": "no handler for this alert here", "status": 501}
-    mod, _, fn = target.partition(":")
     try:
-        ok, detail = getattr(importlib.import_module(mod), fn)(aid, action)
+        if target is not None:
+            mod, _, fn = target.partition(":")
+            ok, detail = getattr(importlib.import_module(mod), fn)(aid, action)
+        else:
+            ok, detail = _run_action(command, aid, action)
     except Exception as e:  # noqa: BLE001 — the producer's word, not a 500
         return False, {"error": str(e)[:300] or type(e).__name__, "status": 502}
     if not ok:

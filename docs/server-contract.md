@@ -3927,17 +3927,19 @@ unknown id. The next raise forgets the ack.
 #### `POST /alerts/action {"id", "action"}` — gated (`auth.may_admin`; 22 Oct 2026)
 
 Runs one of an open alert's `actions` through the handler registered for its
-id's prefix (`alerts.ACTION_HANDLERS`), which does the work and settles the
-alert. → `{"ok": true, …the handler's answer}`. 404 unknown id; 409 not open,
-or not one of its actions now (already answered); 501 no handler on this
-host; 502 the handler refused or failed, with its `error` (a sentence to
-show). Today: `calendar.rye.booking.<n>` (the Rye booking mirror,
-`booking_calendar.alert_action`; docs/reference/shared-calendar.md) with
-`apply` | `apply-quiet` | `cancel` | `keep`. The app's Home renders each
-alert's `actions` as buttons (22 Oct 2026), asks first for any but `keep`, and
-shows the answer's `message` or `note` (else "Done: <label>") or its `error`;
-Fix it still opens a chat with the alert, whose `fix` names the matching
-`media calendar bookings-decide` commands.
+id's prefix (`alerts.ACTION_HANDLERS` in-process, or a command in config
+`[alerts.actions]`, run as `argv… <id> <action>` answering a last-line
+`{"ok", …}`; 25 Oct 2026), which does the work and settles the alert.
+→ `{"ok": true, …the handler's answer}`. 404 unknown id; 409 not open, or not
+one of its actions now (already answered); 501 no handler on this host; 502
+the handler refused or failed, with its `error` (a sentence to show). Today:
+`calendar.rye.booking.<n>` (the Rye booking mirror, agent-config's
+`rye-bookings alert-action`; docs/reference/shared-calendar.md) with `apply`
+| `apply-quiet` | `cancel` | `keep`. The app's Home renders each alert's
+`actions` as buttons (22 Oct 2026), asks first for any but `keep`, and shows
+the answer's `message` or `note` (else "Done: <label>") or its `error`; Fix it
+still opens a chat with the alert, whose `fix` names the matching
+`rye-bookings decide` commands.
 
 The `alerts` frame on `/sessions/events` (§6.13, 27 Sep 2026) carries the
 notifying changes to the phone; Home's Alerts section (27 Sep 2026) reads

@@ -21,134 +21,42 @@ existing MCP client to discover it. Harnesses without MCP use the CLI.
 The unauthenticated legacy HTTP MCP transport excludes this private tool.
 Configured feed URLs and filesystem paths are never returned in the response.
 
-Rye Remedial bookings are mirrored from the website's private ICS feed into
-the `ryeremedial@gmail.com` primary Google calendar. `calendar.rye.write_pair`
-names `cal_ryeremedial`; `calendar.rye.feed_url` stays in owner-only host config.
-`media calendar bookings-sync` verifies remote writes, preserves stable booking
-UIDs and pending/confirmed status, updates changed visits, and removes only
-its own future bookings absent from a complete fresh feed. Failed source reads
-leave Google entries intact. Client contact details and treatment notes are not
-copied. The existing ten-minute availability publication runs this mirror first,
-then syncs Google's copies locally. There is no separate direct-feed source in
-Sasonica, so bookings appear once. CLI jobs load the changed Python modules on
-each run; no shared service restart or app update is required.
+A booking site's own mirror lives outside this repo (David's Rye Remedial
+mirror and its client texts moved to agent-config, `rye-bookings`, on 25
+October 2026). It uses only generic pieces from here: `media calendar
+put`/`delete`/`get` (`get --uid UID` answers the event's ETag, start and end;
+`--no-sync` batches writes), the alert store with action buttons that run a
+configured command (`[alerts.actions]`, below), `media sms send` (below) and
+the availability publication's `before` hook.
 
-**Ask, don't overwrite** (David, 22 Oct 2026). The mirror records what it last
-wrote per booking in `$XDG_STATE_HOME/agent-media/rye-bookings.json`
-(owner-only: times and the first name the event title already shows), which
-is how a website edit is told from a Google one:
+### Texts: `media sms send`
 
-- Moved or resized on the website: Google follows.
-- Moved or resized in Google while the website still has the old time:
-  Google is kept as David left it and the alert `calendar.rye.booking.<n>`
-  asks, once ("You moved Nicole to 7:30–8:30pm Fri 23 Oct in Google. Change
-  the booking on the website?"); moved again, it asks again.
-- Deleted in Google: never cancelled on the website by itself. The same
-  alert asks ("Cancel it on the website?"); Google stays without it until he
-  decides.
-- Changed in both: the website wins, Google gets its time, and the alert
-  `calendar.rye.told.<n>` says so (cleared after a day).
-- `STATUS:CANCELLED` in the feed: skipped, and its Google copy removed. An
-  entry that cannot be read is skipped with its Google copy left alone; an
-  entry with no booking UID turns off removing absent bookings for that run.
-  One booking's failure never stops the rest or the availability publication;
-  failures and skipped entries raise `calendar.rye.mirror`.
+`media sms send --to +61… [--txn ID]`, the text on stdin, sends one SMS from
+the owner's own number through the Google Messages bridge (`sms.py`,
+mautrix-gmessages, the bridge the Messages tab uses). The number must be in
+international form; it is used for that one send and never logged, stored or
+printed, and errors (exit 2, on stderr) never carry it. `--txn` is the Matrix
+transaction id, so a retry after an unclear failure is the same message. It
+calls the bridge's provisioning API `POST
+/_matrix/provision/v3/create_dm/<+61…>?user_id=<owner>` (bearer = its
+`provisioning.shared_secret`, found as `bridges.py` finds it) for the
+number's portal room, joins it as the owner and sends `m.text` with
+`MATRIX_OWNER_TOKEN`. Config `[sms]`: `bridge` (default `gmessages`),
+`login_id`, `matrix_env` (default `~/.config/agent-media/matrix.env`, read
+when the process environment has no Matrix login).
 
-He answers with the alert's actions (`POST /alerts/action`, server-contract
-§6.17), or `media calendar bookings-decide --booking <n> --decision
-apply|cancel|keep` (the alert's Fix it text names both): `apply` puts a Google
-move onto the website, `cancel` cancels a Google-deleted booking there (the
-client is emailed and a credit refunded, as the website's own Cancel does),
-`keep` puts the website's booking back in Google. A move applied on the
-website emails the client only when its start or end changes by more than 15
-minutes, or it moves to another day (David, 22 Oct 2026): then the alert asks
-"Change the website and email Nicole?" and adds "Change, no email"
-(`apply-quiet`) to skip it once; 15 minutes or less it asks "Change the booking
-on the website?" and sends nothing. The email is the site's 'rescheduled' mail
-(`rye_booking_notify(…, 'rescheduled')`, websites `rye_booking`): moves are
-agreed with the client first, so it confirms the new time, "Your Rye Remedial
-booking: new time confirmed" / "Hi Nicole, as arranged, your booking has moved
-to Friday 23 October, 7:30–8:30pm (was 6:00pm). See you then.", with the
-booking's details, the calendar update and David's copy, and none of the Move
-form's flexible-window or "go back" wording. It is skipped for a client
-without an address, and a mail failure after the change is logged on the site
-rather than reported as a refusal. The site needs that event deployed first:
-an older site has no 'rescheduled' mail. While a Google move waits, the website's
-other changes to that booking (status, title) wait with it.
+### Alert buttons that run a command
 
-Changing the website needs `calendar.rye.site_command`: an argv that runs the
-site's drush with a PHP script on stdin, e.g. `["ssh", "red4", "podman exec
--i --user www-data ryeremedial vendor/bin/drush php:eval
-'eval(stream_get_contents(STDIN));' --uri=https://ryeremedial.com.au"]`,
-the way bookings were added by hand. The script (`booking_calendar._MOVE`)
-takes the `rye_booking` lock and changes the row only if it still starts
-when the mirror last saw it and is confirmed or pending; a resize re-prices
-it from the service's price list and refuses a length with no price; an
-overlap with another visit refuses. Unset, the alert offers only `keep` and
-says to change the booking at `/admin/content/bookings`. Tested against the
-real site on 22 Oct 2026 with the Test One booking: a move went through, a
-move onto another visit and one from a stale start were refused, and Google
-followed on the next mirror run. An update to Google carries a SEQUENCE one
-above Google's own, which Google requires (it answers 409 otherwise).
+An alert's `actions` (server-contract §6.17) run in-process handlers
+(`alerts.ACTION_HANDLERS`) or, for a producer outside this repo, a command
+named in config:
 
-### Texts to clients
+    [alerts.actions]
+    "calendar.rye.booking." = ["~/.local/bin/rye-bookings", "alert-action"]
 
-`booking_sms.py` texts clients from David's own number through the Google
-Messages bridge (David, 22 Oct 2026). It is off unless `calendar.rye.sms.enabled`
-is true. Each ten-minute mirror run compares the feed with what it saw last and
-queues a text for:
-
-- **confirmed**: a booking that appears confirmed, or a pending one that is
-  confirmed.
-- **moved**: the website moved a confirmed booking, or `bookings-decide …
-  apply` put a Google move on the website, by the email's rule (more than 15
-  minutes, or another day). `apply-quiet` sends no text.
-- **cancelled**: a future booking gone from a complete feed, or cancelled
-  through `bookings-decide … cancel`, if the website says `cancelled`. A
-  declined or deleted booking gets no text.
-- **reminder**: once, the day before a confirmed booking, inside
-  `reminder_hours` (default `10:00-18:00` Melbourne). It is skipped when a
-  confirmed or moved text went to that booking the same day. A booking moved
-  to another day can be reminded again.
-
-The first run after the feature arrives records what is already there and
-sends nothing. Changes seen while texts are disabled are recorded too, so
-turning texts on never sends a backlog. Nothing is sent in `quiet_hours`
-(default `21:00-08:00`). A text found then waits in the state file and goes at
-the first run after quiet hours end. A text is dropped once its visit has
-started. Each booking has at most one waiting text: a cancellation replaces
-any other, and a move of an unsent confirmation stays a confirmation, with the
-new time.
-
-Before each send, a read-only PHP script (`booking_calendar._LOOKUP`, through
-`site_command`) returns the booking's status, start and phone. If the status or
-start no longer fits, the text is dropped. The number is kept in memory for
-that one send only: it is never written to `rye-bookings.json` (which holds
-times, first names and what was sent), a log, Google or an alert.
-`calendar.rye.sms.test_to` sends every text to that one number instead, and
-works without `site_command`, with nothing checked. A failed send raises
-`calendar.rye.sms` (booking number and kind, never a number or name). It is
-retried on the next runs and given up after three tries. A failure never stops
-the mirror.
-
-The sender (`GmessagesSender`) calls the bridge's provisioning API
-`POST /_matrix/provision/v3/create_dm/<+61…>?user_id=<owner>` (bearer = its
-`provisioning.shared_secret`, found as `bridges.py` finds it) to get the
-portal room for the number. It joins that room as the owner and sends `m.text`
-with `MATRIX_OWNER_TOKEN`, as the Messages tab does. Each text uses a stable
-transaction id, so a retry does not send it twice. If the process environment
-has no Matrix login, it is read from `calendar.rye.sms.matrix_env` (default
-`~/.config/agent-media/matrix.env`). Other keys: `bridge` (default `gmessages`)
-and `login_id`. Not yet run against the live bridge.
-
-To try it: run `media calendar bookings-sms-test --to <your number> --kind
-confirmed|moved|reminder|cancelled`, which sends one text about a made-up
-booking (Nicole, tomorrow 7:00–8:00pm). Then set `enabled` with `test_to` set
-to your number, and later remove `test_to`.
-
-Availability publication excludes the site's own `rye-booking-<id>` event UIDs:
-Drupal already blocks these from its database, and echoing them back as
-external holds would create conflicts with themselves.
+The canvas runs `argv… <alert_id> <action>` (up to 150 s) and takes its last
+stdout line, `{"ok": true|false, …}`, as the answer; a non-zero exit or no
+JSON is a refusal (502). Restart the canvas after changing the table.
 
 Calendar writes use the host's existing CalDAV connection and the configured
 `calendar.write_pair` in agent-media's config. `media calendar put --event
@@ -166,12 +74,19 @@ No app update or OpenAI connector is required.
 
 ## Booking availability
 
-`calendar-availability-sync.timer` publishes every ten minutes to Rye Remedial
-over authenticated public HTTPS. Its owner-only configuration is
-`~/.config/agent-media/calendar-publish.json`; the matching scoped token lives
-in Drupal State and is never exported to Git. The payload contains only busy
-intervals and designated shift end plus 75 minutes, not event titles, locations,
-client identities or source URLs. Every publication requires a successful
+`calendar-availability-sync.timer` publishes every ten minutes to a booking
+site (Rye Remedial) over authenticated public HTTPS. Its owner-only
+configuration is `~/.config/agent-media/calendar-publish.json`: `endpoint`,
+`token` (the matching scoped token lives in Drupal State and is never
+exported to Git), and optionally `zone` (default the host's), `days` (default
+40), `shift_sources` (`{"<managed source>": <minutes>}`: a shift from that
+source opens the day that long after it ends; here `{"marlo": 75,
+"phs-shift": 75}`), `own_uids` (a regex for the site's own bookings mirrored
+into the calendar, left out so they are not echoed back as outside conflicts;
+here `rye-booking-\d+@ryeremedial\.com\.au`) and `before` (an argv run
+first; here `rye-bookings sync --no-local-sync`; its failure stops the
+publication). The payload contains only busy intervals and `open_after`
+times, not event titles, locations, client identities or source URLs. Every publication requires a successful
 vdirsyncer run. New bookings close if the last verified snapshot exceeds two
 hours; existing bookings stay in place, and conflicts raise an alert.
 

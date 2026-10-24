@@ -8677,25 +8677,13 @@ def cmd_calendar(a) -> int:
     if calendar is None:
         return 1
     try:
-        if a.action == "bookings-sync":
-            adapter = _server_module("booking_calendar")
-            if adapter is None:
+        if a.action == "get":
+            writer = _server_module("calendar_write")
+            if writer is None:
                 return 1
-            result = adapter.sync()
-        elif a.action == "bookings-decide":
-            adapter = _server_module("booking_calendar")
-            if adapter is None:
-                return 1
-            if not a.booking or a.decision not in ("apply", "apply-quiet", "cancel", "keep"):
-                raise ValueError("--booking N and --decision apply|apply-quiet|cancel|keep required")
-            result = adapter.decide(a.booking, a.decision)
-        elif a.action == "bookings-sms-test":
-            texts = _server_module("booking_sms")
-            if texts is None:
-                return 1
-            if not a.to or a.kind not in texts.KINDS:
-                raise ValueError("--to NUMBER and --kind confirmed|moved|reminder|cancelled required")
-            result = texts.trial(a.to, a.kind)
+            if not a.uid:
+                raise ValueError("--uid UID required")
+            result = writer.inspect_event(a.uid, calendar=a.calendar)
         elif a.action == "reconcile":
             adapter = _server_module("calendar_reconcile")
             if adapter is None:
@@ -8724,11 +8712,26 @@ def cmd_calendar(a) -> int:
             if not a.event:
                 raise ValueError("--event JSON_FILE required (use - for stdin)")
             event = json.load(sys.stdin) if a.event == "-" else json.loads(Path(a.event).read_text())
-            result = writer.write(event, a.calendar, a.etag, a.action == "delete")
+            result = writer.write(event, a.calendar, a.etag, a.action == "delete", sync=not a.no_sync)
     except (ValueError, RuntimeError, OSError) as e:
         print(f"media calendar: {e}", file=sys.stderr)
         return 2
     print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_sms(a) -> int:
+    """`media sms send --to +61… [--txn ID]`: one text from the owner's number
+    (agent_media_server.sms), the body on stdin."""
+    sms = _server_module("sms")
+    if sms is None:
+        return 1
+    try:
+        result = sms.send(a.to, sys.stdin.read(), a.txn)
+    except sms.SmsError as e:
+        print(f"media sms: {e}", file=sys.stderr)
+        return 2
+    print(json.dumps(result))
     return 0
 
 
@@ -9732,14 +9735,8 @@ def _build_parser() -> argparse.ArgumentParser:
     st.set_defaults(func=cmd_speech_target)
 
     calendar = sub.add_parser("calendar", help="read the owner's shared calendars (JSON)")
-    calendar.add_argument("action", nargs="?", choices=("events", "put", "delete", "publish", "reconcile", "bookings-sync", "bookings-decide", "bookings-sms-test"), default="events")
-    calendar.add_argument("--booking", default="", help="bookings-decide: the Rye booking number waiting on you")
-    calendar.add_argument("--decision", default="", help="bookings-decide: apply (Google's move onto the website; "
-                                                         "emails the client past 15 minutes), apply-quiet (the same, no email), "
-                                                         "cancel (Google's delete onto the website) or keep (the website's back in Google)")
-    calendar.add_argument("--to", default="", help="bookings-sms-test: the one number to text (your own)")
-    calendar.add_argument("--kind", default="", help="bookings-sms-test: confirmed, moved, reminder or cancelled "
-                                                     "(a made-up booking: Nicole, tomorrow 7–8pm)")
+    calendar.add_argument("action", nargs="?", choices=("events", "get", "put", "delete", "publish", "reconcile"), default="events")
+    calendar.add_argument("--uid", default="", help="get: the event's UID (answers its ETag, start and end)")
     calendar.add_argument("--publish-config", default="", help="private HTTPS publishing configuration")
     calendar.add_argument("--event", default="", help="event JSON file, or - for stdin (writes)")
     calendar.add_argument("--calendar", default="", help="vdirsyncer pair (default configured write_pair)")
@@ -9750,8 +9747,14 @@ def _build_parser() -> argparse.ArgumentParser:
     calendar.add_argument("--source", default="", help="reconcile: the managed source the events belong to")
     calendar.add_argument("--refuse-empty", action="store_true",
                           help="reconcile: fail, removing nothing, on an empty list when entries exist")
-    calendar.add_argument("--no-sync", action="store_true", help="reconcile: skip the closing vdirsyncer sync")
+    calendar.add_argument("--no-sync", action="store_true", help="put/delete/reconcile: skip the vdirsyncer sync (batch writes, sync once after)")
     calendar.set_defaults(func=cmd_calendar)
+
+    sms = sub.add_parser("sms", help="send one text from the owner's number (Google Messages bridge); body on stdin")
+    sms.add_argument("action", choices=("send",))
+    sms.add_argument("--to", required=True, help="the number, international form (+61…)")
+    sms.add_argument("--txn", default="", help="a stable id, so a retry is the same message")
+    sms.set_defaults(func=cmd_sms)
 
     contacts = sub.add_parser(
         "contacts", add_help=False,

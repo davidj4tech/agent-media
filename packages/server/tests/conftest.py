@@ -61,14 +61,14 @@ def _clean_media_env(monkeypatch, tmp_path, request):
     # the real ~/.amux token: on red5 that is the live server, which would
     # pull and restart the real phone. Nowhere, unless a test sets its own.
     monkeypatch.setenv("MEDIA_PHONE_JOBS_URL", "http://127.0.0.1:9")
-    # Texts to Rye Remedial clients (booking_sms.py) go out as SMS through
-    # the real Google Messages bridge: never from a test. Its one network
-    # call fails; a test fakes `booking_sms._sender` (or `_http`) instead.
-    from agent_media_server import booking_sms
+    # Texts (sms.py, `media sms send`) go out as SMS through the real Google
+    # Messages bridge: never from a test. Its one network call fails; a test
+    # fakes `sms._sender` (or `_http`) instead.
+    from agent_media_server import sms
 
     def _no_real_sms(*a, **kw):
-        raise AssertionError("a test reached the real SMS bridge (booking_sms.GmessagesSender)")
-    monkeypatch.setattr(booking_sms.GmessagesSender, "_http", staticmethod(_no_real_sms))
+        raise AssertionError("a test reached the real SMS bridge (sms.GmessagesSender)")
+    monkeypatch.setattr(sms.GmessagesSender, "_http", staticmethod(_no_real_sms))
     # Paired devices live under that state dir too (devices.json, the pairing
     # codes); the in-process bits — the parsed-file cache and the per-address
     # pairing-failure counts — are reset so one test's refusals cannot
