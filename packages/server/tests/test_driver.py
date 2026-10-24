@@ -24,10 +24,16 @@ def _fresh():
 
 
 def test_flag_off_is_always_the_pane_driver(monkeypatch):
-    def boom(*a, **k):
-        raise AssertionError("the headless driver asked with the flag off")
+    class NoRecord:
+        """sessiond with no record of the thread: owned_headless reads it for
+        Antigravity (which is headless whatever the flag says), so with the flag
+        off a thread it does not know is still the pane driver's."""
+        agents: tuple = ()
 
-    monkeypatch.setattr(driver, "headless_driver", boom)
+        def record(self, session):
+            return None
+
+    monkeypatch.setattr(driver, "headless_driver", lambda: NoRecord())
     assert driver.headless_enabled() is False
     assert driver.for_session(SID).kind == "pane"
     assert driver.for_new("claude").kind == "pane"
