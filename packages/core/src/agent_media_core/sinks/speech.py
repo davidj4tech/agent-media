@@ -368,6 +368,10 @@ def _clip_uri_for(uri: str, target: Target, prefer_url: bool = False) -> str:
     if localdir and not (prefer_url and base):
         return localdir.rstrip("/") + "/" + Path(uri).name
     if base:
+        # Signed: the base is the public route, whose clips need ?sig= (clip_sign.py).
+        if os.environ.get(_env_key("MEDIA_SPEECH_CLIP_SIGNED", target.name)) == "1":
+            from .. import clip_sign
+            return clip_sign.signed(base, Path(uri).name)
         return base.rstrip("/") + "/" + Path(uri).name
     return uri
 
