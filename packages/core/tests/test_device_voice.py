@@ -47,9 +47,20 @@ def test_the_player_is_handed_the_words(tmp_path, monkeypatch):
 
 def test_a_tts_uri_passes_through_and_audio_clips_are_untouched(tmp_path, monkeypatch):
     monkeypatch.setenv("MEDIA_SPEECH_CLIP_BASEURL_SASONICA", "http://red5:8780/audio")
+    monkeypatch.delenv("MEDIA_SPEECH_CLIP_SIGNED_SASONICA", raising=False)
     assert _clip_uri_for("tts:x?text=a", Target(name="sasonica")) == "tts:x?text=a"
     assert (_clip_uri_for(str(tmp_path / "a--000.mp3"), Target(name="sasonica"))
             == "http://red5:8780/audio/a--000.mp3")
+
+
+def test_a_signed_base_gets_signed_links(tmp_path, monkeypatch):
+    from agent_media_core import clip_sign
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("MEDIA_SPEECH_CLIP_BASEURL_SASONICA", "https://x/speech/clips")
+    monkeypatch.setenv("MEDIA_SPEECH_CLIP_SIGNED_SASONICA", "1")
+    assert (_clip_uri_for(str(tmp_path / "a--000.mp3"), Target(name="sasonica"))
+            == f"https://x/speech/clips/a--000.mp3?sig={clip_sign.sign('a--000.mp3')}")
 
 
 def test_replay_elsewhere_renders_once_and_keeps_it(tmp_path, monkeypatch):

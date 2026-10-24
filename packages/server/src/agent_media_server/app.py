@@ -301,7 +301,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler
 from typing import Callable
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
 
 from . import (abs_item, archive, auth, devices, drafts, harnesses, pins, routing, send,
                sessions, share, speech, threads)
@@ -632,12 +632,30 @@ def dispatch(h: BaseHTTPRequestHandler, method: str, path: str) -> bool:
         # Android's check that /app/t/<session> links are the app's (app_links.py).
         if path == app_links.PATH:
             return app_links.serve(h)
+        # A rendered clip by signed link, for a player off the tailnet (clip_sign.py).
+        if path.startswith("/speech/clips/"):
+            return _signed_clip(h, path.removeprefix("/speech/clips/"))
         return _get(h, path)
     if method == "POST":
         return _post(h, path)
     if method == "OPTIONS":
         return _options(h, path)
     return False
+
+
+def _signed_clip(h: BaseHTTPRequestHandler, name: str) -> bool:
+    """`GET /speech/clips/<name>?sig=` — no bearer: the link is the credential,
+    good for that one clip. 404 for a bad name, signature or missing file alike."""
+    from agent_media_core import clip_sign
+
+    sig = (parse_qs(urlsplit(h.path).query).get("sig") or [""])[0]
+    found = clip_sign.resolve(name, sig)
+    if not found:
+        _json(h, 404, {"ok": False, "error": "no such clip"})
+        return True
+    f, ctype = found
+    _send_file(h, f, f.stat().st_size, ctype)
+    return True
 
 
 def _options(h: BaseHTTPRequestHandler, path: str) -> bool:

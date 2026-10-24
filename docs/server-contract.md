@@ -2112,6 +2112,17 @@ phone's; the newest `speech=frames` stream is the one frames go to, so a
 browser turned on takes speech from the phone until the phone's stream
 reconnects.
 
+#### `GET /speech/clips/<name>?sig=…` — signed link (24 Oct 2026)
+
+A clip this server rendered (`<speech_audio_dir>/<name>`, `.mp3`/`.wav`/
+`.ogg`), with no bearer: the phone's clip cache sends none, so the link is
+the credential. `sig` is an HMAC of `<name>` under `<state_dir>/clip-sign.key`
+(`agent_media_core/clip_sign.py`), good for that one clip. A target gets
+signed links when `MEDIA_SPEECH_CLIP_SIGNED_<T>=1` and its
+`MEDIA_SPEECH_CLIP_BASEURL_<T>` points here
+(`https://<public host>/speech/clips`), which takes server-rendered speech
+off the tailnet. 404 for a bad name, a bad signature or a missing file alike.
+
 A phone paired with several servers plays one server's speech at a time
 (sasonica roadmap item 7, 20 Oct 2026). Its `POST /speech/state` reports to
 a server whose speech is not the one playing carry `elsewhere: {"owner":
