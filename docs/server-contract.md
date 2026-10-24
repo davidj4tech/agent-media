@@ -1413,7 +1413,7 @@ cut off or easily taken the wrong way; a recogniser `confidence` under
 `MEDIA_VOICE_CHECK_MIN_CONFIDENCE` (0.5) makes it unsure on its own. `gist`
 is in the words' language, phrased as the request itself. Anything that goes
 wrong answers `sure: true, gist: ""` with a `why` — `no_answer` (no gateway,
-an unusable answer, or none within `MEDIA_VOICE_CHECK_TIMEOUT`, 2.5 s, a
+an unusable answer, or none within `MEDIA_VOICE_CHECK_TIMEOUT`, 3 s, a
 hard deadline), `no_gist`, `no_words`, `off` (`MEDIA_VOICE_CHECK=0`) — so the
 loop sends as it would have; `low_confidence` marks an unsure answer the
 model alone would have passed.
