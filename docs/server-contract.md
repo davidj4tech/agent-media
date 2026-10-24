@@ -1429,7 +1429,15 @@ it to play, then listens for yes or no. Nothing is sent to the session;
 which words go, and when, is the app's call. 400 without `text`, or for a
 `session` that is not a session id. `voice_check.py`.
 
-Clients: W (`hooks/useHandsFree.ts`).
+Since 24 Oct 2026 every dictation with a countdown asks too, not only
+hands-free. The mic key with the screen on sends no `say` (nothing is
+spoken; the app shows the gist with Send and Edit) and asks alongside its
+countdown; the assistant and headset buttons, and a press in the dark, send
+`say` and ask first. A dictation in a new chat has no `session` and no
+`context` (no reply yet): it is checked on the words alone and never
+spoken.
+
+Clients: W (`hooks/useHandsFree.ts`, `hooks/useDictation.ts`).
 
 ### 6.4 Managing a thread
 
