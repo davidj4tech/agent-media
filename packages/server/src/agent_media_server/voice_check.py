@@ -22,8 +22,11 @@ Config (env / ~/.config/agent-media.env):
   MEDIA_VOICE_CHECK           "0" turns it off (always sure)
   MEDIA_VOICE_CHECK_MODEL     the model (default MEDIA_FOLLOWUP_MODEL, then
                               the summary's); the gateway is the summary's
-                              (intake/_summary.py, MEDIA_SUMMARY_*)
-  MEDIA_VOICE_CHECK_TIMEOUT   seconds the whole check may take (default 2.5)
+                              (intake/_summary.py, MEDIA_SUMMARY_*). It must
+                              answer in a second or two: on red5's gateway
+                              gemini-3-flash takes 0.5–2.8 s, claude-haiku-4-5
+                              about 15 s (24 Oct 2026)
+  MEDIA_VOICE_CHECK_TIMEOUT   seconds the whole check may take (default 3)
   MEDIA_VOICE_CHECK_MIN_CONFIDENCE  recogniser confidence under this is
                               unsure (default 0.5); 0 or less means unknown
 """
@@ -37,7 +40,7 @@ import threading
 
 from . import auth, sessions
 
-DEFAULT_TIMEOUT_S = 2.5
+DEFAULT_TIMEOUT_S = 3.0
 DEFAULT_MIN_CONFIDENCE = 0.5
 #: Characters of the heard words, and of the line they answer, sent to the model.
 MAX_WORDS = 1200
@@ -89,7 +92,8 @@ def _ask_model(words: str, context: str, timeout: float) -> dict | None:
 
     def run() -> None:
         try:
-            out.append(_summary._chat(PROMPT, user, timeout=max(1, round(timeout)),
+            # urlopen takes a float; the join below is the real deadline.
+            out.append(_summary._chat(PROMPT, user, timeout=timeout,  # type: ignore[arg-type]
                                       model=_model()))
         except Exception:  # noqa: BLE001 — a failed check is a sure one
             out.append(None)
