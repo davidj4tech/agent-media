@@ -277,6 +277,9 @@ device gets its token):
   POST /device/location {lat, lon, accuracy_m?, at?, precise?} | {off: true}
                   (a device, its background share switch) → kept in memory;
                   GET /device/location (host token) → {location: … | null}
+  POST /device/listen-log {lines: [...]} → a paired phone's mic listens, what
+                  each came to (taken, echo, error, rescued…), appended to
+                  <state>/listen-log.jsonl (listen_log.py, §6.21c)
   POST /notes {id, title, text, priority?, ttl_s?, keep?} (host token) → a
                   notification in the phone's shade; POST /notes/clear {id}.
                   Phones on /sessions/events?notes=1 get a `notes` frame
@@ -347,7 +350,7 @@ CORS_PATHS = frozenset({
     "/contacts/import", "/contacts/timeline/backfill", "/bridges",
     "/mail/message", "/mail/attachment", "/mail/say",
     "/mic/ask", "/mic/cancel", "/mic/answer",
-    "/phone/ask", "/phone/answer", "/phone/cancel", "/device/location",
+    "/phone/ask", "/phone/answer", "/phone/cancel", "/device/location", "/device/listen-log",
     "/notes", "/notes/clear",
     "/speech/state", "/music/state", "/handoff/state", "/book/state",
     "/follow/trace",
@@ -2537,6 +2540,12 @@ def _post(h: BaseHTTPRequestHandler, path: str) -> bool:
             return True
         ok, detail = speech_frames.report(dev, _read_json(h),
                                           channel=path.split("/")[1])
+        _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
+    elif path == "/device/listen-log":
+        # The phone's mic listens and what came of each (§6.21c, listen_log.py).
+        from . import listen_log
+
+        ok, detail = listen_log.post(_read_json(h), _bearer(h))
         _json(h, 200 if ok else detail.pop("status", 400), {"ok": ok, **detail})
     elif path == "/device/location":
         # A phone's background location share (§6.21b, phone.py): a paired

@@ -4214,6 +4214,29 @@ posts where it is now and then, and an agent reads it without asking. Code:
 - `phone_ask(kind="location")` (core `phone_ask.py`) answers from this when
   it is under 30 min old (`shared: true`, nothing asked), else asks (§6.21).
 
+### 6.21c The phone's mic listens, reported (built 25 Oct 2026)
+
+David, 25 Oct 2026: "In hands-free, so often the mic doesn't seem to accept
+my spoken text, even though it often shows up in the black screen
+transcript." The phone's own listen log (Readouts.java, loopback :8774) is
+out of reach off the home network, so the app reports each listen here,
+outbound (sasonica-app `lib/listenLog.ts`). Code: `listen_log.py`; tests in
+`test_listen_log.py`.
+
+- `POST /device/listen-log {lines: [{t, at, outcome, text?, partial?, error?,
+  confidence?, voiceNear?, session?}]}` — a paired device only (401
+  otherwise); 400 without a `lines` list. `at`: `handsfree`, `countdown`,
+  `confirm` or `dictation`. `outcome`: `taken`, `command`, `echo` (dropped as
+  the reply's own voice; `voiceNear` says a voice was playing), `error`,
+  `empty`, `stale` (heard after the listen was retired), `rescued` (the
+  listen ended on an error or empty, and its last partial was taken as the
+  words). Unknown fields are dropped, strings cut to 400 characters, 200
+  lines a post. → `{ok: true, kept}`.
+- Sent in batches: soon (5 s) after a line that dropped words, at 20 lines,
+  else a minute after the first; a failed post keeps them for the next.
+- Appended to `<state>/listen-log.jsonl`, one JSON line each with `received`
+  and `device`; the newest 5000 kept.
+
 ### 6.21a Restarting the phone's services — down the connection it opens (built 18 Oct 2026)
 
 `media restart-services --host p8a` on red5 must not need Tailscale or any
